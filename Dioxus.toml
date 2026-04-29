@@ -1,0 +1,9 @@
+[application]
+name = "ais-runner"
+default_platform = "desktop"
+
+[desktop]
+title = "AIS Local Runner"
+
+[web.app]
+title = "AIS Local Runner"
