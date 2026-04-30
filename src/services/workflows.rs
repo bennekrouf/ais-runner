@@ -189,6 +189,8 @@ pub struct ActionProperties {
     pub end_time: Option<String>,
     pub error: Option<ActionError>,
     pub code: Option<String>,
+    #[serde(rename = "type")]
+    pub action_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -200,6 +202,50 @@ pub struct ActionError {
 pub async fn list_actions(workflow: &str, run_id: &str) -> Result<Vec<ActionItem>, String> {
     // $expand=outputLinks makes the runtime include child actions of scopes
     let url = format!("{}/workflows/{}/runs/{}/actions?$expand=outputLinks", BASE, workflow, run_id);
+    let body: serde_json::Value = reqwest::get(&url)
+        .await.map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+    parse_value_array(body)
+}
+
+// ── ForEach repetitions ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RepetitionItem {
+    pub name: String,
+    pub properties: RepetitionProperties,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepetitionProperties {
+    pub status: String,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub error: Option<ActionError>,
+}
+
+/// Lists the iterations of a ForEach action.
+pub async fn list_repetitions(workflow: &str, run_id: &str, action: &str) -> Result<Vec<RepetitionItem>, String> {
+    let url = format!("{}/workflows/{}/runs/{}/actions/{}/repetitions", BASE, workflow, run_id, action);
+    let body: serde_json::Value = reqwest::get(&url)
+        .await.map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+    parse_value_array(body)
+}
+
+/// Lists the actions executed within a single ForEach iteration.
+pub async fn list_repetition_actions(workflow: &str, run_id: &str, action: &str, rep: &str) -> Result<Vec<ActionItem>, String> {
+    let url = format!("{}/workflows/{}/runs/{}/actions/{}/repetitions/{}/actions", BASE, workflow, run_id, action, rep);
+    let body: serde_json::Value = reqwest::get(&url)
+        .await.map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+    parse_value_array(body)
+}
+
+/// Lists the child actions of a Scope action.
+pub async fn list_scoped_repetitions(workflow: &str, run_id: &str, action: &str) -> Result<Vec<ActionItem>, String> {
+    let url = format!("{}/workflows/{}/runs/{}/actions/{}/scopedRepetitions", BASE, workflow, run_id, action);
     let body: serde_json::Value = reqwest::get(&url)
         .await.map_err(|e| e.to_string())?
         .json().await.map_err(|e| e.to_string())?;

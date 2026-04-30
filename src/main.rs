@@ -225,7 +225,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
     let mut source_text = use_signal(|| String::new());
     let mut runs    = use_signal(|| Vec::<RunItem>::new());
     let mut actions = use_signal(|| Vec::<ActionItem>::new());
-    let mut running_wfs = use_signal(|| HashSet::<String>::new());
+    let running_wfs = use_signal(|| HashSet::<String>::new());
     let current_view = use_signal(|| "Workflows".to_string());
     let mut is_light = use_signal(|| false);
     // (wf_name, trigger_name, trigger_type, suggested_payload)
@@ -493,7 +493,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
         let runs        = runs.clone();
         let actions     = actions.clone();
         let push        = push_log.clone();
-        let mut running = running_wfs.clone();
+        let running     = running_wfs.clone();
         let mut tab     = active_tab.clone();
         let mut traced  = traced_wfs.clone();
         let mut cleared = cleared_wfs.clone();
