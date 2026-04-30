@@ -206,10 +206,18 @@ fn MainScreen(props: MainScreenProps) -> Element {
     let dir = props.logic_apps_dir.clone();
 
     // ── Service states ─────────────────────────────────────────────────────
-    let azurite_state = use_signal(|| ServiceState::Stopped);
-    let func_state    = use_signal(|| ServiceState::Stopped);
-    let azurite_proc  = use_signal(|| std::sync::Arc::new(ManagedProcess::new()));
-    let func_proc     = use_signal(|| std::sync::Arc::new(ManagedProcess::new()));
+    let azurite_state    = use_signal(|| ServiceState::Stopped);
+    let func_state       = use_signal(|| ServiceState::Stopped);
+    let java_func_state  = use_signal(|| ServiceState::Stopped);
+    let azurite_proc     = use_signal(|| std::sync::Arc::new(ManagedProcess::new()));
+    let func_proc        = use_signal(|| std::sync::Arc::new(ManagedProcess::new()));
+    let java_func_proc   = use_signal(|| std::sync::Arc::new(ManagedProcess::new()));
+
+    // Derive function_apps dir: sibling of logic_apps_dir
+    let func_apps_dir = std::path::Path::new(&dir)
+        .parent()
+        .map(|p| p.join("function_apps").to_string_lossy().to_string())
+        .unwrap_or_else(|| format!("{}/function_apps", dir));
 
     // ── Data ───────────────────────────────────────────────────────────────
     let workflows   = use_signal(|| Vec::<WorkflowItem>::new());
@@ -217,7 +225,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
     let mut source_text = use_signal(|| String::new());
     let mut runs    = use_signal(|| Vec::<RunItem>::new());
     let mut actions = use_signal(|| Vec::<ActionItem>::new());
-    let is_live      = use_signal(|| false);
+    let mut running_wfs = use_signal(|| HashSet::<String>::new());
     let current_view = use_signal(|| "Workflows".to_string());
     let mut is_light = use_signal(|| false);
     // (wf_name, trigger_name, trigger_type, suggested_payload)
@@ -238,6 +246,19 @@ fn MainScreen(props: MainScreenProps) -> Element {
                 .await
                 .unwrap_or_default();
             tool_statuses.set(statuses);
+        });
+    });
+
+    // ── Azure login status ─────────────────────────────────────────────────
+    // None = still checking; Some(Ok(name)) = logged in; Some(Err(_)) = not logged in
+    let mut az_status: Signal<Option<Result<String, services::azure_cli::AzError>>> =
+        use_signal(|| None);
+    use_effect(move || {
+        spawn(async move {
+            let result = tokio::task::spawn_blocking(services::azure_cli::check_login)
+                .await
+                .unwrap_or(Err(services::azure_cli::AzError::Other("check failed".into())));
+            az_status.set(Some(result));
         });
     });
 
@@ -327,10 +348,44 @@ fn MainScreen(props: MainScreenProps) -> Element {
         }
     };
 
+    // ── Java Function App ──────────────────────────────────────────────────
+    let on_java_start = {
+        let mut state = java_func_state.clone();
+        let proc      = java_func_proc.clone();
+        let mut push  = push_log.clone();
+        let dir2      = func_apps_dir.clone();
+        move |_| {
+            state.set(ServiceState::Starting);
+            push(format!("$ cd {} && mvn azure-functions:run", dir2), LogLevel::Info);
+            match proc.read().start("mvn", &["azure-functions:run"], Some(&dir2)) {
+                Ok(_) => {
+                    state.set(ServiceState::Running);
+                    push("Java Function App starting on port 7072…".to_string(), LogLevel::Ok);
+                }
+                Err(e) => {
+                    state.set(ServiceState::Stopped);
+                    push(format!("Java Function App error: {}", e), LogLevel::Error);
+                }
+            }
+        }
+    };
+
+    let on_java_stop = {
+        let mut state = java_func_state.clone();
+        let proc      = java_func_proc.clone();
+        let mut push  = push_log.clone();
+        move |_| {
+            match proc.read().stop() {
+                Ok(_) => { state.set(ServiceState::Stopped); push("Java Function App stopped.".to_string(), LogLevel::Warn); }
+                Err(e) => push(format!("Error: {}", e), LogLevel::Error),
+            }
+        }
+    };
+
     // ── Load workflows ─────────────────────────────────────────────────────
     let on_load_workflows = {
-        let wfs  = workflows.clone();
-        let push = push_log.clone();
+        let wfs     = workflows.clone();
+        let push    = push_log.clone();
         let traced  = traced_wfs.clone();
         let cleared = cleared_wfs.clone();
         move |_| {
@@ -401,8 +456,19 @@ fn MainScreen(props: MainScreenProps) -> Element {
 
     // ── Open run dialog ────────────────────────────────────────────────────
     let on_open_dialog = {
-        let dir = dir.clone();
+        let dir     = dir.clone();
+        let dir_src = dir.clone();
+        let mut sel = selected_wf.clone();
+        let mut tab = active_tab.clone();
         move |(name, trigger_name, trigger_type): (String, String, String)| {
+            // Select the workflow and switch to Run tab so it's ready when the dialog confirms
+            sel.set(Some(name.clone()));
+            tab.set("Run".to_string());
+            let src_path = std::path::Path::new(&dir_src).join(&name).join("workflow.json");
+            source_text.set(match std::fs::read_to_string(&src_path) {
+                Ok(txt) => txt,
+                Err(e)  => format!("// could not read {}: {}", src_path.display(), e),
+            });
             let suggested = payload::suggest_payload(&dir, &name);
             run_dialog.set(Some((name, trigger_name, trigger_type, suggested)));
         }
@@ -424,12 +490,12 @@ fn MainScreen(props: MainScreenProps) -> Element {
 
     // ── Run workflow ───────────────────────────────────────────────────────
     let mut on_run_wf = {
-        let runs       = runs.clone();
-        let actions    = actions.clone();
-        let push       = push_log.clone();
-        let mut live   = is_live.clone();
-        let mut tab    = active_tab.clone();
-        let mut traced = traced_wfs.clone();
+        let runs        = runs.clone();
+        let actions     = actions.clone();
+        let push        = push_log.clone();
+        let mut running = running_wfs.clone();
+        let mut tab     = active_tab.clone();
+        let mut traced  = traced_wfs.clone();
         let mut cleared = cleared_wfs.clone();
         move |(name, trigger_name, trigger_type, body): (String, String, String, String)| {
             run_dialog.set(None);
@@ -443,17 +509,18 @@ fn MainScreen(props: MainScreenProps) -> Element {
             let mut runs    = runs.clone();
             let mut actions = actions.clone();
             let mut push    = push.clone();
+            let mut running = running.clone();
             let cleared_at  = Some(trigger_ts);
             push(format!("Triggering: {}", wf), LogLevel::Info);
             // only Request/Http triggers support listCallbackUrl
             let is_recurrence = !matches!(trigger_type.to_lowercase().as_str(), "request" | "http");
-            live.set(true);
+            running.write().insert(wf.clone());
             spawn(async move {
                 // ── Fire the trigger ──────────────────────────────────────
                 if is_recurrence {
                     match run_trigger_direct(&wf, &trigger_name, &body).await {
                         Ok(_) => push(format!("Run triggered ({})", trigger_type), LogLevel::Ok),
-                        Err(e) => { push(format!("Trigger error: {}", e), LogLevel::Error); live.set(false); return; }
+                        Err(e) => { push(format!("Trigger error: {}", e), LogLevel::Error); running.write().remove(&wf); return; }
                     }
                 } else {
                     match workflows::get_callback_url(&wf, &trigger_name).await {
@@ -461,10 +528,10 @@ fn MainScreen(props: MainScreenProps) -> Element {
                             push(format!("$ curl -X POST \"{}\"", url), LogLevel::Info);
                             match workflows::trigger_workflow(&url, &body).await {
                                 Ok(run_id) => push(format!("Run started: {}", run_id), LogLevel::Ok),
-                                Err(e) => { push(format!("Trigger error: {}", e), LogLevel::Error); live.set(false); return; }
+                                Err(e) => { push(format!("Trigger error: {}", e), LogLevel::Error); running.write().remove(&wf); return; }
                             }
                         }
-                        Err(e) => { push(format!("Callback URL error: {}", e), LogLevel::Error); live.set(false); return; }
+                        Err(e) => { push(format!("Callback URL error: {}", e), LogLevel::Error); running.write().remove(&wf); return; }
                     }
                 }
 
@@ -517,7 +584,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
                 }
-                live.set(false);
+                running.write().remove(&wf);
             });
         }
     };
@@ -662,9 +729,62 @@ fn MainScreen(props: MainScreenProps) -> Element {
                     on_start: on_func_start,
                     on_stop: on_func_stop,
                 }
+                ServiceBlock {
+                    label: "Java Functions".to_string(),
+                    cmd: "mvn azure-functions:run".to_string(),
+                    state: java_func_state.read().clone(),
+                    on_start: on_java_start,
+                    on_stop: on_java_stop,
+                }
+                // ── Azure login indicator ──────────────────────────────
+                div { class: "az-status-wrap", style: "margin-left:auto",
+                    match az_status.read().clone() {
+                        None => rsx! {
+                            span { class: "az-status az-checking", "az …" }
+                        },
+                        Some(Ok(name)) => rsx! {
+                            span { class: "az-status az-ok",
+                                span { class: "az-dot" }
+                                span { class: "az-name", title: "{name}", "{name}" }
+                                button {
+                                    class: "btn-icon az-recheck",
+                                    title: "Re-check az login",
+                                    onclick: move |_| {
+                                        az_status.set(None);
+                                        spawn(async move {
+                                            let result = tokio::task::spawn_blocking(services::azure_cli::check_login)
+                                                .await
+                                                .unwrap_or(Err(services::azure_cli::AzError::Other("check failed".into())));
+                                            az_status.set(Some(result));
+                                        });
+                                    },
+                                    "⟳"
+                                }
+                            }
+                        },
+                        Some(Err(_)) => rsx! {
+                            button {
+                                class: "btn btn-warn btn-small az-login-btn",
+                                title: "Not logged in — click to open az login",
+                                onclick: move |_| {
+                                    services::azure_cli::open_login("68fac18b-9e76-4cef-b2b7-2c51b521cb94");
+                                    az_status.set(None);
+                                    spawn(async move {
+                                        // give the user ~15 s to log in before re-checking
+                                        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                                        let result = tokio::task::spawn_blocking(services::azure_cli::check_login)
+                                            .await
+                                            .unwrap_or(Err(services::azure_cli::AzError::Other("check failed".into())));
+                                        az_status.set(Some(result));
+                                    });
+                                },
+                                "⚠ az login"
+                            }
+                        },
+                    }
+                }
                 button {
                     class: "btn btn-run btn-small",
-                    style: "margin-left:auto",
                     onclick: on_load_workflows,
                     "⟳ Load Workflows"
                 }
@@ -734,6 +854,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
                         workflows: workflows.read().clone(),
                         selected: selected_wf.read().clone(),
                         traced: traced_wfs.read().clone(),
+                        running: running_wfs.read().clone(),
                         on_select: on_select_wf,
                         on_run: on_open_dialog,
                     }
@@ -743,7 +864,9 @@ fn MainScreen(props: MainScreenProps) -> Element {
                         source_text: source_text.read().clone(),
                         runs: runs.read().clone(),
                         actions: actions.read().clone(),
-                        is_live: *is_live.read(),
+                        is_live: selected_wf.read().as_deref()
+                            .map(|n| running_wfs.read().contains(n))
+                            .unwrap_or(false),
                         active_tab: active_tab,
                         on_run: on_trigger_from_detail,
                         on_refresh: on_refresh,

@@ -27,6 +27,11 @@ fn run(args: &[&str]) -> Result<String, AzError> {
     Ok(stdout)
 }
 
+/// Checks whether az is logged in. Returns the signed-in account name on success.
+pub fn check_login() -> Result<String, AzError> {
+    run(&["account", "show", "--query", "user.name", "-o", "tsv"])
+}
+
 /// Opens an interactive az login in a new terminal window (macOS).
 pub fn open_login(tenant: &str) {
     let script = format!(

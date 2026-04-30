@@ -14,6 +14,7 @@ pub fn check_tools() -> Vec<ToolStatus> {
         probe("azurite", &["--version"], "npm install -g azurite"),
         probe("az",      &["--version"], "https://aka.ms/installazurecli"),
         probe("node",    &["--version"], "https://nodejs.org"),
+        probe("mvn",     &["--version"], "https://maven.apache.org/install.html"),
     ]
 }
 

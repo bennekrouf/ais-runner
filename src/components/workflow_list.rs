@@ -4,11 +4,12 @@ use crate::services::workflows::WorkflowItem;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct WorkflowListProps {
-    pub workflows: Vec<WorkflowItem>,
-    pub selected:  Option<String>,
-    pub traced:    HashSet<String>,
-    pub on_select: EventHandler<String>,
-    pub on_run:    EventHandler<(String, String, String)>, // (name, trigger_name, trigger_type)
+    pub workflows:  Vec<WorkflowItem>,
+    pub selected:   Option<String>,
+    pub traced:     HashSet<String>,
+    pub running:    HashSet<String>,
+    pub on_select:  EventHandler<String>,
+    pub on_run:     EventHandler<(String, String, String)>,
 }
 
 fn trigger_icon(trigger: &str) -> &'static str {
@@ -25,17 +26,41 @@ fn trigger_icon(trigger: &str) -> &'static str {
 
 #[component]
 pub fn WorkflowList(props: WorkflowListProps) -> Element {
-    let mut filter = use_signal(|| String::new());
+    let mut filter     = use_signal(|| String::new());
+    let mut local_only = use_signal(|| true);
 
     let query = filter.read().to_lowercase();
+    let healthy_count = props.workflows.iter().filter(|wf| wf.healthy).count();
+    let total = props.workflows.len();
+
     let visible: Vec<_> = props.workflows.iter()
-        .filter(|wf| query.is_empty() || wf.name.to_lowercase().contains(&query))
+        .filter(|wf| {
+            if *local_only.read() && !wf.healthy {
+                return false;
+            }
+            query.is_empty() || wf.name.to_lowercase().contains(&query)
+        })
         .collect();
 
     rsx! {
         div { id: "workflows",
             div { id: "wf-header",
-                h2 { "Workflows ({props.workflows.len()})" }
+                div { id: "wf-title-row",
+                    if total == 0 {
+                        h2 { "Workflows" }
+                    } else if *local_only.read() {
+                        h2 { "Workflows ({healthy_count}/{total})" }
+                    } else {
+                        h2 { "Workflows ({total})" }
+                    }
+                    button {
+                        id: "wf-local-toggle",
+                        class: if *local_only.read() { "btn btn-small toggle-on" } else { "btn btn-small toggle-off" },
+                        title: if *local_only.read() { "Showing locally runnable only — click to show all" } else { "Showing all workflows — click to hide non-local" },
+                        onclick: move |_| { let v = *local_only.read(); local_only.set(!v); },
+                        if *local_only.read() { "💻 Local" } else { "🌐 All" }
+                    }
+                }
                 input {
                     id: "wf-filter",
                     placeholder: "Filter…",
@@ -58,6 +83,7 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
                         let ttype     = wf.trigger_type.clone();
                         let is_sel    = props.selected.as_deref() == Some(&name);
                         let has_trace = props.traced.contains(&name);
+                        let is_running = props.running.contains(&name);
                         let health_cls = if wf.healthy { "wf-dot healthy" } else { "wf-dot unhealthy" };
                         let icon      = trigger_icon(&wf.trigger_type);
                         let disabled  = wf.disabled;
@@ -76,7 +102,9 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
                                     class: if disabled { "workflow-name disabled" } else { "workflow-name" },
                                     "{name}"
                                 }
-                                if has_trace {
+                                if is_running {
+                                    span { class: "wf-spinner", title: "Running…" }
+                                } else if has_trace {
                                     span { class: "wf-trace-dot", title: "Has run history — click to view" }
                                 }
                                 button {

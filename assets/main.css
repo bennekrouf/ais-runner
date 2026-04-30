@@ -282,9 +282,50 @@ body.light .tool-banner-item code { background: #f0f3f6; color: #9a6700; }
     padding: 3px 7px;
     color: var(--text2);
     transition: border-color 0.15s;
-    margin-left: auto;
 }
 .btn-theme:hover { border-color: var(--blue); color: var(--blue); }
+
+/* ── Azure login status ── */
+.az-status-wrap {
+    display: flex;
+    align-items: center;
+}
+.az-status {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    padding: 3px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    white-space: nowrap;
+}
+.az-checking { color: var(--text3); background: var(--bg2); }
+.az-ok       { color: var(--green); background: var(--bg0); border-color: var(--green-bg); }
+.az-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 4px var(--green);
+    flex-shrink: 0;
+}
+.az-name {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.az-recheck {
+    font-size: 11px;
+    color: var(--text3);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0 2px;
+    line-height: 1;
+}
+.az-recheck:hover { color: var(--green); }
+.az-login-btn { }
+body.light .az-ok { border-color: #2da44e; }
 
 /* ── MAIN AREA ── */
 #main {
@@ -324,12 +365,29 @@ body.light .tool-banner-item code { background: #f0f3f6; color: #9a6700; }
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
 }
+#wf-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
 #wf-header h2 {
     font-size: 11px;
     font-weight: 600;
     color: var(--text2);
     text-transform: uppercase;
     letter-spacing: 0.08em;
+    flex: 1;
+}
+#wf-local-toggle { font-size: 11px; padding: 2px 7px; flex-shrink: 0; }
+.toggle-on  { background: var(--blue) !important; color: #fff !important; border-color: var(--blue) !important; }
+.toggle-off { opacity: 0.6; }
+
+.wf-cloud-badge {
+    font-size: 10px;
+    opacity: 0.4;
+    flex-shrink: 0;
+    margin-right: 2px;
 }
 #wf-filter {
     font-family: inherit;
@@ -392,6 +450,20 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
     opacity: 0.55;
 }
 .workflow-item.selected .wf-trace-dot { opacity: 0.9; }
+
+@keyframes wf-spin {
+    to { transform: rotate(360deg); }
+}
+.wf-spinner {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 2px solid var(--blue-bg);
+    border-top-color: var(--blue);
+    flex-shrink: 0;
+    margin-right: 4px;
+    animation: wf-spin 0.7s linear infinite;
+}
 
 /* ── RUN DETAIL PANEL ── */
 #detail {

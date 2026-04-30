@@ -71,9 +71,22 @@ fn find_trigger_body_schema(actions: &serde_json::Map<String, Value>) -> Option<
     None
 }
 
+/// Extract the effective type string from a schema, handling both `"type": "foo"`
+/// and `"type": ["foo", "null"]` (JSON Schema draft-04 nullable convention).
+fn resolve_type(schema: &Value) -> &str {
+    match &schema["type"] {
+        Value::String(s) => s.as_str(),
+        Value::Array(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .find(|s| *s != "null")
+            .unwrap_or(""),
+        _ => "",
+    }
+}
+
 fn schema_to_sample(schema: &Value) -> Value {
-    let ty = schema["type"].as_str().unwrap_or("");
-    match ty {
+    match resolve_type(schema) {
         "object" => {
             let mut map = serde_json::Map::new();
             if let Some(props) = schema["properties"].as_object() {
@@ -87,7 +100,7 @@ fn schema_to_sample(schema: &Value) -> Value {
         "integer" | "number" => Value::Number(serde_json::Number::from(0)),
         "boolean" => Value::Bool(false),
         _ => {
-            // implicit object (no "type" but has "properties")
+            // implicit object — no "type" field but has "properties"
             if schema["properties"].is_object() {
                 let mut map = serde_json::Map::new();
                 if let Some(props) = schema["properties"].as_object() {
@@ -173,8 +186,8 @@ fn leaf_value(name: &str) -> Value {
 
 /// Generate a meaningful value based on the field name when type is string.
 fn sample_named(name: &str, schema: &Value) -> Value {
-    let ty = schema["type"].as_str().unwrap_or("string");
-    if ty != "string" && ty != "" {
+    let ty = resolve_type(schema);
+    if !ty.is_empty() && ty != "string" {
         return schema_to_sample(schema);
     }
     let n = name.to_lowercase();
