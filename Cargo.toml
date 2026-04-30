@@ -15,3 +15,4 @@ chrono = { version = "0.4", features = ["serde"] }
 rfd = "0.15"
 dirs = "5"
 indexmap = "2"
+regex = { version = "1.12.3", features = ["std"] }

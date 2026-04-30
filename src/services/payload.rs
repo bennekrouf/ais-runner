@@ -1,3 +1,4 @@
+use regex::Regex;
 use serde_json::Value;
 
 /// Reads a workflow.json and returns a pretty-printed sample JSON body for its trigger.
@@ -33,6 +34,11 @@ pub fn suggest_payload(logic_apps_dir: &str, workflow_name: &str) -> String {
         if let Some(schema) = find_trigger_body_schema(actions) {
             return pretty(schema_to_sample(&schema));
         }
+    }
+
+    // 3. Regex-scan the raw workflow text for @triggerBody()?['field'] access chains
+    if let Some(skeleton) = scan_trigger_body_refs(&content) {
+        return pretty(skeleton);
     }
 
     "{}".to_string()
@@ -95,6 +101,74 @@ fn schema_to_sample(schema: &Value) -> Value {
             }
         }
     }
+}
+
+/// Scan raw workflow JSON text for @triggerBody()?['k1']?['k2']... chains,
+/// then build a nested skeleton object from all unique paths found.
+fn scan_trigger_body_refs(content: &str) -> Option<Value> {
+    // Match: triggerBody() optionally followed by one or more ?['key'] segments
+    let chain_re = Regex::new(r"triggerBody\(\)\??(?:\[?'([^']+)'\]?\??)+").ok()?;
+    let seg_re = Regex::new(r"\[?'([^']+)'\]?").ok()?;
+
+    let mut paths: Vec<Vec<String>> = Vec::new();
+
+    for cap in chain_re.find_iter(content) {
+        let matched = cap.as_str();
+        // strip the triggerBody() prefix
+        let after = &matched["triggerBody()".len()..];
+        let segs: Vec<String> = seg_re
+            .captures_iter(after)
+            .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+            .collect();
+        if !segs.is_empty() && !paths.contains(&segs) {
+            paths.push(segs);
+        }
+    }
+
+    if paths.is_empty() {
+        return None;
+    }
+
+    // Build a nested serde_json object from the collected paths
+    let mut root = serde_json::Map::new();
+    for path in &paths {
+        insert_path(&mut root, path);
+    }
+    Some(Value::Object(root))
+}
+
+fn insert_path(map: &mut serde_json::Map<String, Value>, path: &[String]) {
+    if path.is_empty() {
+        return;
+    }
+    let key = &path[0];
+    if path.len() == 1 {
+        // Leaf — only set if not already a richer object
+        map.entry(key.clone()).or_insert_with(|| leaf_value(key));
+    } else {
+        let child = map
+            .entry(key.clone())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if let Value::Object(ref mut m) = child {
+            insert_path(m, &path[1..]);
+        }
+    }
+}
+
+fn leaf_value(name: &str) -> Value {
+    let n = name.to_lowercase();
+    let s = if n.contains("error") || n.contains("message") {
+        "Something went wrong"
+    } else if n.contains("code") {
+        "TEST-001"
+    } else if n.contains("id") || n.contains("key") {
+        "TEST-001"
+    } else if n.contains("date") || n.contains("time") {
+        "2026-04-29T10:00:00Z"
+    } else {
+        "text"
+    };
+    Value::String(s.to_string())
 }
 
 /// Generate a meaningful value based on the field name when type is string.

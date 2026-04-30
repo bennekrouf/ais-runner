@@ -3,12 +3,14 @@ use crate::services::workflows::{ActionItem, RunItem, duration_ms};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct RunDetailProps {
-    pub workflow:    Option<String>,
-    pub source_text: String,       // loaded by parent when workflow is selected
-    pub runs:        Vec<RunItem>,
-    pub actions:     Vec<ActionItem>,
-    pub is_live:     bool,
-    pub on_refresh:   EventHandler<()>,
+    pub workflow:      Option<String>,
+    pub source_text:   String,
+    pub runs:          Vec<RunItem>,
+    pub actions:       Vec<ActionItem>,
+    pub is_live:       bool,
+    pub active_tab:    Signal<String>,
+    pub on_run:        EventHandler<()>,
+    pub on_refresh:    EventHandler<()>,
     pub on_clear_runs: EventHandler<()>,
     pub on_select_run: EventHandler<String>,
 }
@@ -16,7 +18,7 @@ pub struct RunDetailProps {
 #[component]
 pub fn RunDetail(props: RunDetailProps) -> Element {
     let title = props.workflow.clone().unwrap_or_else(|| "Select a workflow".to_string());
-    let mut active_tab = use_signal(|| "Source".to_string());
+    let mut active_tab = props.active_tab;
 
     let max_ms = props.actions.iter()
         .filter_map(|a| duration_ms(&a.properties.start_time, &a.properties.end_time))
@@ -29,37 +31,48 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
 
             // ── Tab bar + header ───────────────────────────────────────
             div { id: "detail-header",
-                h2 { "{title}" }
 
-                div { class: "detail-tabs",
-                    button {
-                        class: if *active_tab.read() == "Source" { "detail-tab active" } else { "detail-tab" },
-                        onclick: move |_| active_tab.set("Source".to_string()),
-                        "⟨/⟩ Source"
-                    }
-                    button {
-                        class: if *active_tab.read() == "Run" { "detail-tab active" } else { "detail-tab" },
-                        onclick: move |_| active_tab.set("Run".to_string()),
-                        "▶ Run"
+                // left: workflow name + tabs
+                div { class: "detail-header-left",
+                    h2 { "{title}" }
+                    div { class: "detail-tabs",
+                        button {
+                            class: if *active_tab.read() == "Source" { "detail-tab active" } else { "detail-tab" },
+                            onclick: move |_| active_tab.set("Source".to_string()),
+                            "⟨/⟩ Source"
+                        }
+                        button {
+                            class: if *active_tab.read() == "Run" { "detail-tab active" } else { "detail-tab" },
+                            onclick: move |_| active_tab.set("Run".to_string()),
+                            "▶ Run"
+                        }
                     }
                 }
 
-                if props.is_live {
-                    span { class: "live-badge", "● LIVE" }
-                }
-                if !props.is_live {
+                // right: action buttons + live badge (fixed positions)
+                div { class: "detail-header-right",
                     button {
                         class: "btn btn-run btn-small",
+                        disabled: props.workflow.is_none() || props.is_live,
+                        title: "Trigger workflow",
+                        onclick: move |_| props.on_run.call(()),
+                        "▶ Trigger"
+                    }
+                    button {
+                        class: "btn btn-run btn-small",
+                        disabled: props.is_live,
+                        title: "Refresh run history",
                         onclick: move |_| props.on_refresh.call(()),
                         "⟳ Refresh"
                     }
-                    if !props.runs.is_empty() {
-                        button {
-                            class: "btn btn-small btn-clear",
-                            title: "Clear run history",
-                            onclick: move |_| props.on_clear_runs.call(()),
-                            "✕ Clear"
-                        }
+                    button {
+                        class: "btn btn-small btn-clear",
+                        title: "Clear run history",
+                        onclick: move |_| props.on_clear_runs.call(()),
+                        "✕ Clear"
+                    }
+                    if props.is_live {
+                        span { class: "live-badge", "● LIVE" }
                     }
                 }
             }

@@ -1,8 +1,9 @@
 mod components;
 mod services;
 
-use chrono::Local;
+use chrono::{Local, Utc};
 use dioxus::prelude::*;
+use std::collections::{HashMap, HashSet};
 use dioxus::desktop::LogicalSize;
 
 use components::{
@@ -162,6 +163,34 @@ fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
     }
 }
 
+/// Keep only runs whose start_time is after `cleared_at` (RFC3339 lexicographic order works).
+fn filter_cleared(runs: Vec<services::workflows::RunItem>, cleared_at: Option<&str>) -> Vec<services::workflows::RunItem> {
+    let Some(ts) = cleared_at else { return runs };
+    runs.into_iter()
+        .filter(|r| r.properties.start_time.as_deref().map(|s| s > ts).unwrap_or(false))
+        .collect()
+}
+
+/// Background sweep: checks every workflow for existing runs and populates traced_wfs.
+/// Skips workflows the user explicitly cleared this session.
+async fn sweep_run_history(
+    names: Vec<String>,
+    traced: &mut Signal<HashSet<String>>,
+    cleared: &Signal<HashMap<String, String>>,
+) {
+    for name in names {
+        if workflows::check_has_runs(&name).await {
+            // Only mark as traced if there are runs newer than any clear timestamp
+            let cleared_at = cleared.read().get(&name).cloned();
+            if cleared_at.is_none() {
+                traced.write().insert(name);
+            }
+            // If there's a clear timestamp we'd need a full fetch to know if newer runs exist;
+            // leave it to on_select_wf to decide — don't mark traced here.
+        }
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // MAIN SCREEN
 // ══════════════════════════════════════════════════════════════════════════
@@ -192,7 +221,13 @@ fn MainScreen(props: MainScreenProps) -> Element {
     let current_view = use_signal(|| "Workflows".to_string());
     let mut is_light = use_signal(|| false);
     // (wf_name, trigger_name, trigger_type, suggested_payload)
-    let mut run_dialog = use_signal(|| Option::<(String, String, String, String)>::None);
+    let mut run_dialog  = use_signal(|| Option::<(String, String, String, String)>::None);
+    let active_tab       = use_signal(|| "Source".to_string());
+    // workflows that have at least one run in history (survives workflow selection changes)
+    let mut traced_wfs   = use_signal(|| HashSet::<String>::new());
+    // workflows the user explicitly cleared → timestamp of the clear (ISO 8601)
+    // runs with start_time before this timestamp are hidden even after re-fetch
+    let mut cleared_wfs  = use_signal(|| HashMap::<String, String>::new());
 
     // ── Tool check ─────────────────────────────────────────────────────────
     let mut tool_statuses = use_signal(|| Vec::<system_check::ToolStatus>::new());
@@ -258,13 +293,20 @@ fn MainScreen(props: MainScreenProps) -> Element {
                 Ok(_) => {
                     state.set(ServiceState::Running);
                     push("func start launched — waiting for workflows…".to_string(), LogLevel::Ok);
-                    let mut wfs   = wfs.clone();
-                    let mut push2 = push.clone();
+                    let mut wfs    = wfs.clone();
+                    let mut push2  = push.clone();
+                    let mut traced = traced_wfs.clone();
+                    let cleared    = cleared_wfs.clone();
                     spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                         match workflows::list_workflows().await {
-                            Ok(list) => { push2(format!("Loaded {} workflow(s)", list.len()), LogLevel::Ok); wfs.set(list); }
-                            Err(e)   => push2(format!("Workflow list error: {}", e), LogLevel::Warn),
+                            Ok(list) => {
+                                push2(format!("Loaded {} workflow(s)", list.len()), LogLevel::Ok);
+                                let names: Vec<String> = list.iter().map(|w| w.name.clone()).collect();
+                                wfs.set(list);
+                                sweep_run_history(names, &mut traced, &cleared).await;
+                            }
+                            Err(e) => push2(format!("Workflow list error: {}", e), LogLevel::Warn),
                         }
                     });
                 }
@@ -289,14 +331,23 @@ fn MainScreen(props: MainScreenProps) -> Element {
     let on_load_workflows = {
         let wfs  = workflows.clone();
         let push = push_log.clone();
+        let traced  = traced_wfs.clone();
+        let cleared = cleared_wfs.clone();
         move |_| {
-            let mut wfs  = wfs.clone();
-            let mut push = push.clone();
+            let mut wfs    = wfs.clone();
+            let mut push   = push.clone();
+            let mut traced = traced.clone();
+            let cleared    = cleared.clone();
             spawn(async move {
                 push("Fetching workflows from localhost:7071…".to_string(), LogLevel::Info);
                 match workflows::list_workflows().await {
-                    Ok(list) => { push(format!("Loaded {} workflow(s)", list.len()), LogLevel::Ok); wfs.set(list); }
-                    Err(e)   => push(format!("Cannot reach func start: {}", e), LogLevel::Error),
+                    Ok(list) => {
+                        push(format!("Loaded {} workflow(s)", list.len()), LogLevel::Ok);
+                        let names: Vec<String> = list.iter().map(|w| w.name.clone()).collect();
+                        wfs.set(list);
+                        sweep_run_history(names, &mut traced, &cleared).await;
+                    }
+                    Err(e) => push(format!("Cannot reach func start: {}", e), LogLevel::Error),
                 }
             });
         }
@@ -305,10 +356,12 @@ fn MainScreen(props: MainScreenProps) -> Element {
     // ── Select workflow ────────────────────────────────────────────────────
     let on_select_wf = {
         let mut selected = selected_wf.clone();
-        let runs     = runs.clone();
+        let runs         = runs.clone();
         let mut actions  = actions.clone();
-        let push     = push_log.clone();
-        let dir_src  = dir.clone();
+        let push         = push_log.clone();
+        let dir_src      = dir.clone();
+        let traced       = traced_wfs.clone();
+        let cleared      = cleared_wfs.clone();
         move |name: String| {
             let wf = name.clone();
             selected.set(Some(name.clone()));
@@ -319,12 +372,20 @@ fn MainScreen(props: MainScreenProps) -> Element {
                 Ok(txt) => txt,
                 Err(e)  => format!("// could not read {}: {}", src_path.display(), e),
             });
+            let cleared_at  = cleared.read().get(&wf).cloned();
             let mut runs    = runs.clone();
             let mut actions = actions.clone();
             let mut push    = push.clone();
+            let mut traced  = traced.clone();
             spawn(async move {
                 match workflows::list_runs(&wf).await {
                     Ok(r) => {
+                        let r = filter_cleared(r, cleared_at.as_deref());
+                        if !r.is_empty() {
+                            traced.write().insert(wf.clone());
+                        } else {
+                            traced.write().remove(&wf);
+                        }
                         if let Some(latest) = r.first() {
                             if let Ok(a) = workflows::list_actions(&wf, &latest.name).await {
                                 actions.set(a);
@@ -346,19 +407,43 @@ fn MainScreen(props: MainScreenProps) -> Element {
             run_dialog.set(Some((name, trigger_name, trigger_type, suggested)));
         }
     };
+    // Same logic invoked from the detail panel's Trigger button (no workflow args needed)
+    let on_trigger_from_detail = {
+        let dir = dir.clone();
+        let wfs = workflows.clone();
+        let sel = selected_wf.clone();
+        move |_| {
+            if let Some(wf_name) = sel.read().clone() {
+                if let Some(wf) = wfs.read().iter().find(|w| w.name == wf_name).cloned() {
+                    let suggested = payload::suggest_payload(&dir, &wf.name);
+                    run_dialog.set(Some((wf.name, wf.trigger_name, wf.trigger_type, suggested)));
+                }
+            }
+        }
+    };
 
     // ── Run workflow ───────────────────────────────────────────────────────
     let mut on_run_wf = {
-        let runs    = runs.clone();
-        let actions = actions.clone();
-        let push    = push_log.clone();
-        let mut live = is_live.clone();
+        let runs       = runs.clone();
+        let actions    = actions.clone();
+        let push       = push_log.clone();
+        let mut live   = is_live.clone();
+        let mut tab    = active_tab.clone();
+        let mut traced = traced_wfs.clone();
+        let mut cleared = cleared_wfs.clone();
         move |(name, trigger_name, trigger_type, body): (String, String, String, String)| {
             run_dialog.set(None);
+            tab.set("Run".to_string());
+            traced.write().insert(name.clone());
+            // Record now as the trigger time so the poll filter only shows this new run
+            // (and any future runs), not the pre-clear history.
+            let trigger_ts = Utc::now().to_rfc3339();
+            cleared.write().insert(name.clone(), trigger_ts.clone());
             let wf = name.clone();
             let mut runs    = runs.clone();
             let mut actions = actions.clone();
             let mut push    = push.clone();
+            let cleared_at  = Some(trigger_ts);
             push(format!("Triggering: {}", wf), LogLevel::Info);
             // only Request/Http triggers support listCallbackUrl
             let is_recurrence = !matches!(trigger_type.to_lowercase().as_str(), "request" | "http");
@@ -388,15 +473,16 @@ fn MainScreen(props: MainScreenProps) -> Element {
                 let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
                 loop {
                     if let Ok(r) = workflows::list_runs(&wf).await {
+                        let r = filter_cleared(r, cleared_at.as_deref());
                         if let Some(latest) = r.first() {
                             let run_name = latest.name.clone();
+                            runs.set(r.clone());
                             if let Ok(a) = workflows::list_actions(&wf, &run_name).await {
                                 let all_terminal = !a.is_empty() && a.iter().all(|act| {
                                     matches!(act.properties.status.to_lowercase().as_str(),
                                         "succeeded" | "failed" | "skipped" | "timedout" | "cancelled")
                                 });
                                 actions.set(a.clone());
-                                runs.set(r);
                                 if all_terminal {
                                     let ok  = a.iter().filter(|x| x.properties.status.to_lowercase() == "succeeded").count();
                                     let err = a.iter().filter(|x| x.properties.status.to_lowercase() == "failed").count();
@@ -647,6 +733,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
                     WorkflowList {
                         workflows: workflows.read().clone(),
                         selected: selected_wf.read().clone(),
+                        traced: traced_wfs.read().clone(),
                         on_select: on_select_wf,
                         on_run: on_open_dialog,
                     }
@@ -657,8 +744,17 @@ fn MainScreen(props: MainScreenProps) -> Element {
                         runs: runs.read().clone(),
                         actions: actions.read().clone(),
                         is_live: *is_live.read(),
+                        active_tab: active_tab,
+                        on_run: on_trigger_from_detail,
                         on_refresh: on_refresh,
-                        on_clear_runs: move |_| { runs.write().clear(); actions.write().clear(); },
+                        on_clear_runs: move |_| {
+                            runs.write().clear();
+                            actions.write().clear();
+                            if let Some(wf) = selected_wf.read().clone() {
+                                traced_wfs.write().remove(&wf);
+                                cleared_wfs.write().insert(wf, Utc::now().to_rfc3339());
+                            }
+                        },
                         on_select_run: on_select_run,
                     }
                 }

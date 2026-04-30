@@ -16,6 +16,13 @@ fn fetch_kind(key: &str) -> Option<FetchKind> {
     else { None }
 }
 
+fn is_placeholder(val: &str) -> bool {
+    let v = val.trim();
+    v.is_empty()
+        || v.starts_with('<')
+        || v.to_lowercase().contains("placeholder")
+}
+
 fn is_secret(key: &str) -> bool {
     let k = key.to_lowercase();
     k.contains("secret") || k.contains("password") || k.contains("_key")
@@ -315,9 +322,10 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                 let visible   = show_keys.read().contains(&key);
                                 let fkind     = fetch_kind(&key);
                                 let busy      = *fetching.read() == key;
+                                let ph        = is_placeholder(&value);
 
                                 rsx! {
-                                    div { class: "settings-row",
+                                    div { class: if ph { "settings-row settings-row-placeholder" } else { "settings-row" },
                                         span { class: "settings-key", title: "{key}", "{key}" }
                                         div { class: "settings-val-wrap",
 

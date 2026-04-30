@@ -162,6 +162,17 @@ pub async fn list_runs(workflow: &str) -> Result<Vec<RunItem>, String> {
     parse_value_array(body)
 }
 
+/// Lightweight existence check — fetches at most 1 run to minimise data transfer.
+pub async fn check_has_runs(workflow: &str) -> bool {
+    let url = format!("{}/workflows/{}/runs?$top=1", BASE, workflow);
+    let Ok(resp) = reqwest::get(&url).await else { return false };
+    let Ok(body) = resp.json::<serde_json::Value>().await else { return false };
+    body.as_array()
+        .or_else(|| body["value"].as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false)
+}
+
 // ── Action details ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]

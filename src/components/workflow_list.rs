@@ -1,12 +1,14 @@
 use dioxus::prelude::*;
+use std::collections::HashSet;
 use crate::services::workflows::WorkflowItem;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct WorkflowListProps {
     pub workflows: Vec<WorkflowItem>,
-    pub selected: Option<String>,
+    pub selected:  Option<String>,
+    pub traced:    HashSet<String>,
     pub on_select: EventHandler<String>,
-    pub on_run: EventHandler<(String, String, String)>, // (name, trigger_name, trigger_type)
+    pub on_run:    EventHandler<(String, String, String)>, // (name, trigger_name, trigger_type)
 }
 
 fn trigger_icon(trigger: &str) -> &'static str {
@@ -55,6 +57,7 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
                         let trigger   = wf.trigger_name.clone();
                         let ttype     = wf.trigger_type.clone();
                         let is_sel    = props.selected.as_deref() == Some(&name);
+                        let has_trace = props.traced.contains(&name);
                         let health_cls = if wf.healthy { "wf-dot healthy" } else { "wf-dot unhealthy" };
                         let icon      = trigger_icon(&wf.trigger_type);
                         let disabled  = wf.disabled;
@@ -72,6 +75,9 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
                                 span {
                                     class: if disabled { "workflow-name disabled" } else { "workflow-name" },
                                     "{name}"
+                                }
+                                if has_trace {
+                                    span { class: "wf-trace-dot", title: "Has run history — click to view" }
                                 }
                                 button {
                                     class: "btn btn-run btn-small",
