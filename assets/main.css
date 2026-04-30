@@ -1156,3 +1156,67 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
     flex-direction: column;
     gap: 6px;
 }
+
+/* ── Namespace combobox ─────────────────────────────────────────────────── */
+.db-ns-combobox {
+    flex: 1;
+    position: relative;
+}
+.db-ns-field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: var(--bg0);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text1);
+    user-select: none;
+    transition: border-color 0.1s;
+}
+.db-ns-field:hover       { border-color: var(--blue); }
+.db-ns-field.loading     { opacity: 0.6; cursor: wait; }
+.db-ns-field-value       { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-ns-placeholder       { color: var(--text3); }
+.db-ns-chevron           { color: var(--text3); font-size: 10px; flex-shrink: 0; }
+
+.db-ns-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0; right: 0;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+.db-ns-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 7px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.1s;
+}
+.db-ns-item:last-child { border-bottom: none; }
+.db-ns-item:hover      { background: var(--bg3); }
+.db-ns-item.active     { background: var(--blue-bg); }
+.db-ns-item-name {
+    font-weight: 600;
+    color: var(--text1);
+    flex: 1;
+}
+.db-ns-item-rg {
+    color: var(--text3);
+    font-size: 11px;
+}
+
+/* ── Conn string status indicator ───────────────────────────────────────── */
+.db-cs-status      { font-size: 12px; flex: 1; }
+.db-cs-status.ok   { color: var(--green); }
+.db-cs-status.warn { color: var(--yellow); }

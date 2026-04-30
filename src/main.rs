@@ -245,8 +245,11 @@ fn MainScreen(props: MainScreenProps) -> Element {
     let mut db_panel_open = use_signal(|| false);
 
     // Service Bus panel state
-    let mut sb_namespace = use_signal(|| String::new());
-    let mut sb_queues    = use_signal(|| Vec::<sb_check::SbQueueInfo>::new());
+    let mut sb_namespace      = use_signal(|| String::new());
+    let mut sb_namespace_key  = use_signal(|| Option::<String>::None);
+    // (setting_key, current_value)
+    let mut sb_conn_str       = use_signal(|| Option::<(String, String)>::None);
+    let mut sb_queues         = use_signal(|| Vec::<sb_check::SbQueueInfo>::new());
 
     // ── Tool check ─────────────────────────────────────────────────────────
     let mut tool_statuses = use_signal(|| Vec::<system_check::ToolStatus>::new());
@@ -280,17 +283,24 @@ fn MainScreen(props: MainScreenProps) -> Element {
             let dir3 = dir2.clone();
             let dir4 = dir2.clone();
             let dir5 = dir2.clone();
+            let dir6 = dir2.clone();
+            let dir7 = dir2.clone();
             spawn(async move {
-                let (wfs, conns, (sb_ns, sb_qs)) = tokio::task::spawn_blocking(move || {
-                    let wfs   = sql_check::detect_sql_workflows(&dir3);
-                    let conns = sql_check::load_sql_connections(&dir4);
-                    let sb    = sb_check::detect_sb_queues(&dir5);
-                    (wfs, conns, sb)
-                }).await.unwrap_or_default();
+                let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key) =
+                    tokio::task::spawn_blocking(move || {
+                        let wfs      = sql_check::detect_sql_workflows(&dir3);
+                        let conns    = sql_check::load_sql_connections(&dir4);
+                        let sb       = sb_check::detect_sb_queues(&dir5);
+                        let sb_key   = sb_check::detect_sb_namespace_key(&dir6);
+                        let sb_cs_key = sb_check::detect_sb_conn_str_key(&dir7);
+                        (wfs, conns, sb, sb_key, sb_cs_key)
+                    }).await.unwrap_or_default();
                 sql_wfs.set(wfs);
                 sql_conns.set(conns);
                 sb_namespace.set(sb_ns);
                 sb_queues.set(sb_qs);
+                sb_namespace_key.set(sb_key);
+                sb_conn_str.set(sb_cs_key);
             });
         }
     });
@@ -841,17 +851,24 @@ fn MainScreen(props: MainScreenProps) -> Element {
                                 let dir5 = dir_sql.clone();
                                 let dir6 = dir_sql.clone();
                                 let dir7 = dir_sql.clone();
+                                let dir8 = dir_sql.clone();
+                                let dir9 = dir_sql.clone();
                                 spawn(async move {
-                                    let (wfs, conns, (sb_ns, sb_qs)) = tokio::task::spawn_blocking(move || {
-                                        let wfs   = sql_check::detect_sql_workflows(&dir5);
-                                        let conns = sql_check::load_sql_connections(&dir6);
-                                        let sb    = sb_check::detect_sb_queues(&dir7);
-                                        (wfs, conns, sb)
-                                    }).await.unwrap_or_default();
+                                    let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key) =
+                                        tokio::task::spawn_blocking(move || {
+                                            let wfs       = sql_check::detect_sql_workflows(&dir5);
+                                            let conns     = sql_check::load_sql_connections(&dir6);
+                                            let sb        = sb_check::detect_sb_queues(&dir7);
+                                            let sb_key    = sb_check::detect_sb_namespace_key(&dir8);
+                                            let sb_cs_key = sb_check::detect_sb_conn_str_key(&dir9);
+                                            (wfs, conns, sb, sb_key, sb_cs_key)
+                                        }).await.unwrap_or_default();
                                     sql_wfs.set(wfs);
                                     sql_conns.set(conns);
                                     sb_namespace.set(sb_ns);
                                     sb_queues.set(sb_qs);
+                                    sb_namespace_key.set(sb_key);
+                                    sb_conn_str.set(sb_cs_key);
                                 });
                                 db_panel_open.set(true);
                             },
@@ -980,26 +997,35 @@ fn MainScreen(props: MainScreenProps) -> Element {
             // CONNECTIONS PANEL
             if *db_panel_open.read() {
                 DbPanel {
-                    logic_apps_dir: dir.clone(),
-                    connections: sql_conns.read().clone(),
-                    sb_namespace: sb_namespace.read().clone(),
-                    sb_queues: sb_queues.read().clone(),
+                    logic_apps_dir:    dir.clone(),
+                    connections:       sql_conns.read().clone(),
+                    sb_namespace:      sb_namespace.read().clone(),
+                    sb_namespace_key:  sb_namespace_key.read().clone(),
+                    sb_conn_str:       sb_conn_str.read().clone(),
+                    sb_queues:         sb_queues.read().clone(),
                     on_close: move |_| db_panel_open.set(false),
                     on_saved: move |_| {
                         let dir7 = dir.clone();
                         let dir8 = dir.clone();
                         let dir9 = dir.clone();
+                        let dira = dir.clone();
+                        let dirb = dir.clone();
                         spawn(async move {
-                            let (wfs, conns, (sb_ns, sb_qs)) = tokio::task::spawn_blocking(move || {
-                                let wfs   = sql_check::detect_sql_workflows(&dir7);
-                                let conns = sql_check::load_sql_connections(&dir8);
-                                let sb    = sb_check::detect_sb_queues(&dir9);
-                                (wfs, conns, sb)
-                            }).await.unwrap_or_default();
+                            let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key) =
+                                tokio::task::spawn_blocking(move || {
+                                    let wfs       = sql_check::detect_sql_workflows(&dir7);
+                                    let conns     = sql_check::load_sql_connections(&dir8);
+                                    let sb        = sb_check::detect_sb_queues(&dir9);
+                                    let sb_key    = sb_check::detect_sb_namespace_key(&dira);
+                                    let sb_cs_key = sb_check::detect_sb_conn_str_key(&dirb);
+                                    (wfs, conns, sb, sb_key, sb_cs_key)
+                                }).await.unwrap_or_default();
                             sql_wfs.set(wfs);
                             sql_conns.set(conns);
                             sb_namespace.set(sb_ns);
                             sb_queues.set(sb_qs);
+                            sb_namespace_key.set(sb_key);
+                            sb_conn_str.set(sb_cs_key);
                         });
                     },
                 }

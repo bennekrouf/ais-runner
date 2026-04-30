@@ -7,14 +7,54 @@ use crate::services::{
     settings_file,
 };
 
+fn do_fetch_conn_str(
+    ns:             String,
+    rg_cached:      Option<String>,
+    mut sb_rg:      Signal<Option<String>>,
+    mut sb_cs_edit: Signal<String>,
+    mut fetching:   Signal<bool>,
+    mut status:     Signal<Option<(String, bool)>>,
+) {
+    fetching.set(true);
+    spawn(async move {
+        let rg = if let Some(r) = rg_cached {
+            Ok(r)
+        } else {
+            let ns2 = ns.clone();
+            tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns2))
+                .await
+                .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
+        };
+        match rg {
+            Ok(r) => {
+                sb_rg.set(Some(r.clone()));
+                match tokio::task::spawn_blocking(move || azure_cli::sb_fetch_conn_str(&r, &ns)).await {
+                    Ok(Ok(cs)) => {
+                        sb_cs_edit.set(cs);
+                        status.set(Some(("Connection string fetched — click 💾 Save to apply.".into(), false)));
+                    }
+                    Ok(Err(e)) => { status.set(Some((format!("Fetch error: {:?}", e), true))); }
+                    Err(_)     => { status.set(Some(("Task failed".into(), true))); }
+                }
+            }
+            Err(e) => { status.set(Some((format!("RG lookup failed: {:?}", e), true))); }
+        }
+        fetching.set(false);
+    });
+}
+
 #[derive(Props, Clone, PartialEq)]
 pub struct DbPanelProps {
-    pub logic_apps_dir: String,
-    pub connections:    Vec<SqlConnection>,
-    pub sb_namespace:   String,
-    pub sb_queues:      Vec<SbQueueInfo>,
-    pub on_close:       EventHandler<()>,
-    pub on_saved:       EventHandler<()>,
+    pub logic_apps_dir:    String,
+    pub connections:       Vec<SqlConnection>,
+    pub sb_namespace:      String,
+    /// The local.settings.json key that holds the SB FQDN (e.g. "serviceBus_fullyQualifiedNamespace")
+    pub sb_namespace_key:  Option<String>,
+    /// (setting_key, current_value) for the SB connection string, if detected
+    pub sb_conn_str:       Option<(String, String)>,
+    pub sb_queues:         Vec<SbQueueInfo>,
+    pub on_close:          EventHandler<()>,
+    pub on_saved:          EventHandler<()>,
 }
 
 #[component]
@@ -41,14 +81,30 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     let mut sb_send_open:   Signal<HashSet<String>>   = use_signal(HashSet::new);
     let mut sb_send_bodies: Signal<HashMap<String, String>> = use_signal(HashMap::new);
 
+    // Namespace editing
+    let mut sb_ns_edit: Signal<String> =
+        use_signal(|| props.sb_namespace.clone());
+    // (short_name, fqdn, rg) list fetched from az
+    let mut sb_ns_list:    Signal<Vec<(String, String, String)>> = use_signal(Vec::new);
+    let mut sb_ns_loading: Signal<bool>                          = use_signal(|| false);
+
+    // Connection string (for local dev — alternative to MSI)
+    let initial_conn_str = props.sb_conn_str.as_ref()
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    let mut sb_cs_edit:    Signal<String> = use_signal(|| initial_conn_str);
+    let mut sb_cs_fetching: Signal<bool>  = use_signal(|| false);
+
     // ── Shared status bar ────────────────────────────────────────────────────
     let mut status: Signal<Option<(String, bool)>> = use_signal(|| None);
 
     let dir = props.logic_apps_dir.clone();
 
-    // ── Save SQL settings ───────────────────────────────────────────────────
+    // ── Save SQL + SB namespace + SB connection string ───────────────────────
     let on_save = {
-        let dir = dir.clone();
+        let dir    = dir.clone();
+        let ns_key = props.sb_namespace_key.clone();
+        let cs_key = props.sb_conn_str.as_ref().map(|(k, _)| k.clone());
         move |_| {
             match settings_file::read_local_settings(&dir) {
                 Err(e) => { status.set(Some((e, true))); return; }
@@ -60,6 +116,18 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     if let Some(vals) = root["Values"].as_object_mut() {
                         for (k, v) in edits.read().iter() {
                             vals.insert(k.clone(), serde_json::Value::String(v.clone()));
+                        }
+                        if let Some(ref key) = ns_key {
+                            let new_ns = sb_ns_edit.read().clone();
+                            if !new_ns.is_empty() {
+                                vals.insert(key.clone(), serde_json::Value::String(new_ns));
+                            }
+                        }
+                        if let Some(ref key) = cs_key {
+                            let new_cs = sb_cs_edit.read().clone();
+                            if !new_cs.is_empty() {
+                                vals.insert(key.clone(), serde_json::Value::String(new_cs));
+                            }
                         }
                     }
                     let text = serde_json::to_string_pretty(&root).unwrap_or_default();
@@ -250,17 +318,32 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                 if props.sb_namespace.is_empty() {
                     div { class: "empty-state", "No Service Bus connection found in connections.json" }
                 } else {
-                    // Namespace TCP card
+                    // Namespace card — editable + browse
                     {
-                        let ns = props.sb_namespace.clone();
-                        let ns2 = ns.clone();
                         let tcp_res = sb_tcp_result.read().clone();
                         let is_tcp_testing = *sb_tcp_testing.read();
+                        let is_loading = *sb_ns_loading.read();
+                        let ns_list = sb_ns_list.read().clone();
+                        let current_edit = sb_ns_edit.read().clone();
+                        let has_key = props.sb_namespace_key.is_some();
+                        let uses_conn_str = props.sb_conn_str.is_some();
+                        // FQDN is editable only when it maps directly to a setting key (MSI mode)
+                        let fqdn_editable = has_key && !uses_conn_str;
+                        let auth_badge: &str = if uses_conn_str { "ConnStr" } else { "MSI" };
+                        let auth_class: &str = if uses_conn_str { "db-auth-badge cs" } else { "db-auth-badge msi" };
+                        let fqdn_title: &str = if fqdn_editable {
+                            "Edit to switch to a different namespace"
+                        } else if uses_conn_str {
+                            "FQDN is derived from the connection string — edit the connection string to change it"
+                        } else {
+                            "Namespace is hardcoded in connections.json"
+                        };
+
                         rsx! {
                             div { class: "db-card",
                                 div { class: "db-card-header",
-                                    span { class: "db-card-name", "{ns}" }
-                                    span { class: "db-auth-badge msi", "MSI" }
+                                    span { class: "db-card-name", "Namespace" }
+                                    span { class: "{auth_class}", "{auth_badge}" }
                                     div { style: "margin-left:auto;display:flex;gap:8px;align-items:center",
                                         if let Some(ref r) = tcp_res {
                                             if r.reachable {
@@ -274,13 +357,14 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                         }
                                         button {
                                             class: "btn btn-small btn-fetch",
-                                            disabled: is_tcp_testing,
+                                            disabled: is_tcp_testing || current_edit.is_empty(),
                                             onclick: move |_| {
-                                                let ns3 = ns2.clone();
+                                                let ns = sb_ns_edit.read().clone();
+                                                sb_tcp_result.set(None);
                                                 sb_tcp_testing.set(true);
                                                 spawn(async move {
                                                     let result = tokio::task::spawn_blocking(move || {
-                                                        sb_check::test_sb_tcp(&ns3)
+                                                        sb_check::test_sb_tcp(&ns)
                                                     }).await.unwrap_or(TestResult {
                                                         reachable: false, latency_ms: None,
                                                         error: Some("Task failed".into()),
@@ -293,11 +377,132 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                         }
                                     }
                                 }
+
+                                // Namespace combobox — click to open list, pick to close
+                                div { class: "db-field-row",
+                                    label { class: "db-field-label", "Namespace" }
+                                    div { class: "db-ns-combobox",
+                                        // The clickable field
+                                        div {
+                                            class: if is_loading { "db-ns-field loading" } else { "db-ns-field" },
+                                            title: fqdn_title,
+                                            onclick: move |_| {
+                                                if ns_list.is_empty() && !is_loading {
+                                                    sb_ns_loading.set(true);
+                                                    spawn(async move {
+                                                        match tokio::task::spawn_blocking(azure_cli::sb_list_namespaces).await {
+                                                            Ok(Ok(list)) => { sb_ns_list.set(list); }
+                                                            Ok(Err(e)) => {
+                                                                status.set(Some((format!("az error: {:?}", e), true)));
+                                                            }
+                                                            Err(_) => {
+                                                                status.set(Some(("Could not list namespaces — az login required".into(), true)));
+                                                            }
+                                                        }
+                                                        sb_ns_loading.set(false);
+                                                    });
+                                                } else {
+                                                    // Toggle — close if already open
+                                                    sb_ns_list.write().clear();
+                                                }
+                                            },
+                                            span { class: "db-ns-field-value",
+                                                if current_edit.is_empty() {
+                                                    span { class: "db-ns-placeholder", "Click to pick a namespace…" }
+                                                } else {
+                                                    "{current_edit}"
+                                                }
+                                            }
+                                            span { class: "db-ns-chevron",
+                                                if is_loading { "…" } else if !ns_list.is_empty() { "▲" } else { "▾" }
+                                            }
+                                        }
+                                        // Dropdown list
+                                        if !ns_list.is_empty() {
+                                            {
+                                                let uses_cs = uses_conn_str;
+                                                rsx! {
+                                                    div { class: "db-ns-dropdown",
+                                                        for (short_name, fqdn, rg) in ns_list.iter() {
+                                                            {
+                                                                let fqdn2 = fqdn.clone();
+                                                                let fqdn3 = fqdn.clone();
+                                                                let rg2   = rg.clone();
+                                                                let is_active = *fqdn == current_edit;
+                                                                rsx! {
+                                                                    div {
+                                                                        class: if is_active { "db-ns-item active" } else { "db-ns-item" },
+                                                                        onclick: move |_| {
+                                                                            sb_ns_edit.set(fqdn2.clone());
+                                                                            sb_tcp_result.set(None);
+                                                                            sb_ns_list.write().clear(); // close
+                                                                            if uses_cs {
+                                                                                sb_rg.set(Some(rg2.clone()));
+                                                                                do_fetch_conn_str(
+                                                                                    fqdn3.clone(),
+                                                                                    Some(rg2.clone()),
+                                                                                    sb_rg, sb_cs_edit,
+                                                                                    sb_cs_fetching, status,
+                                                                                );
+                                                                            }
+                                                                        },
+                                                                        span { class: "db-ns-item-name", "{short_name}" }
+                                                                        span { class: "db-ns-item-rg", "{rg}" }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Connection string status row
+                                if let Some((ref cs_key_label, _)) = props.sb_conn_str {
+                                    {
+                                        let cs_key_label   = cs_key_label.clone();
+                                        let is_cs_fetching = *sb_cs_fetching.read();
+                                        let cs_value       = sb_cs_edit.read().clone();
+                                        let cs_status: &str = if is_cs_fetching {
+                                            "Fetching…"
+                                        } else if !cs_value.is_empty() {
+                                            "✅ Set"
+                                        } else {
+                                            "⚠ Not set — pick a namespace above"
+                                        };
+                                        let cs_status_class: &str = if is_cs_fetching || cs_value.is_empty() {
+                                            "db-cs-status warn"
+                                        } else {
+                                            "db-cs-status ok"
+                                        };
+                                        rsx! {
+                                            div { class: "db-field-row", style: "margin-top:6px",
+                                                label {
+                                                    class: "db-field-label",
+                                                    title: "Setting: {cs_key_label}",
+                                                    "Conn string"
+                                                }
+                                                span { class: "{cs_status_class}", "{cs_status}" }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if !has_key && !uses_conn_str {
+                                    div { class: "db-msi-note",
+                                        "⚠ Namespace is hardcoded — add "
+                                        code { "\"fullyQualifiedNamespace\": \"@appsetting('serviceBus_fullyQualifiedNamespace')\"" }
+                                        " to connections.json to make it switchable."
+                                    }
+                                }
+
                                 if let Some(ref r) = tcp_res {
                                     if !r.reachable {
                                         if let Some(ref err) = r.error {
                                             div { class: "db-test-error-detail",
-                                                "{err} — port 443 may also work; AMQP over WebSockets uses 443."
+                                                "{err} — try port 443 (AMQP over WebSockets)."
                                             }
                                         }
                                     }
@@ -462,7 +667,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                                                 .post(&url)
                                                                                 .header("Authorization", format!("Bearer {}", t))
                                                                                 .header("Content-Type", "application/json")
-                                                                                .body(body)
+                                                                                .body(reqwest::Body::from(body))
                                                                                 .send()
                                                                                 .await
                                                                             {
