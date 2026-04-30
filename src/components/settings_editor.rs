@@ -58,6 +58,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
     let mut status     = use_signal(|| String::new());
     let mut is_err     = use_signal(|| false);
     let mut az_expired = use_signal(|| false);
+    let mut filter     = use_signal(|| String::new());
     let mut fetching   = use_signal(|| String::new());
     let mut show_keys  = use_signal(|| std::collections::HashSet::<String>::new());
     // namespace & subscription editable in the UI, persisted to AppConfig
@@ -106,10 +107,13 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
     };
 
     // group keys by category
+    let query = filter.read().to_lowercase();
     let grouped: Vec<(&'static str, Vec<String>)> = {
         let mut cats: IndexMap<&'static str, Vec<String>> = IndexMap::new();
         for key in pairs.read().keys() {
-            cats.entry(category(key)).or_default().push(key.clone());
+            if query.is_empty() || key.to_lowercase().contains(&query) {
+                cats.entry(category(key)).or_default().push(key.clone());
+            }
         }
         cats.into_iter().collect()
     };
@@ -137,6 +141,12 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                         class: "btn btn-run btn-small",
                         onclick: on_save,
                         "💾 Save"
+                    }
+                    input {
+                        id: "settings-filter",
+                        placeholder: "Filter…",
+                        value: "{filter}",
+                        oninput: move |e| filter.set(e.value()),
                     }
                 }
             }

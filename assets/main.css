@@ -23,24 +23,24 @@
 }
 
 body.light {
-    --bg0:        #ffffff;
-    --bg1:        #f6f8fa;
-    --bg2:        #eaeef2;
-    --bg3:        #f0f3f6;
-    --border:     #d0d7de;
-    --border2:    #e1e4e8;
-    --text1:      #1f2328;
-    --text2:      #57606a;
-    --text3:      #6e7781;
-    --green:      #1a7f37;
-    --green-bg:   #2da44e;
-    --red:        #cf222e;
-    --red-bg:     #d1242f;
-    --blue:       #0969da;
-    --blue-bg:    #218bff;
-    --blue-dark:  #ddf4ff;
-    --yellow:     #9a6700;
-    --live-row:   #dafbe1;
+    --bg0:        #fdf6e3;
+    --bg1:        #eee8d5;
+    --bg2:        #e5dfcc;
+    --bg3:        #dcd6c3;
+    --border:     #d5cebc;
+    --border2:    #e0d9c6;
+    --text1:      #586e75;
+    --text2:      #657b83;
+    --text3:      #93a1a1;
+    --green:      #859900;
+    --green-bg:   #738500;
+    --red:        #dc322f;
+    --red-bg:     #c62d2a;
+    --blue:       #268bd2;
+    --blue-bg:    #2179b8;
+    --blue-dark:  #e0eaf0;
+    --yellow:     #b58900;
+    --live-row:   #eef2db;
 }
 
 * {
@@ -389,7 +389,7 @@ body.light .az-ok { border-color: #2da44e; }
     flex-shrink: 0;
     margin-right: 2px;
 }
-#wf-filter {
+#wf-filter, #settings-filter {
     font-family: inherit;
     font-size: 13px;
     background: var(--bg2);
@@ -400,8 +400,9 @@ body.light .az-ok { border-color: #2da44e; }
     width: 100%;
     outline: none;
 }
-#wf-filter:focus { border-color: var(--blue); background: var(--bg0); }
-#wf-filter::placeholder { color: var(--text3); }
+#wf-filter:focus, #settings-filter:focus { border-color: var(--blue); background: var(--bg0); }
+#wf-filter::placeholder, #settings-filter::placeholder { color: var(--text3); }
+#settings-filter { width: 180px; }
 #workflow-list { flex: 1; overflow-y: auto; padding: 4px 0; }
 
 .workflow-item {

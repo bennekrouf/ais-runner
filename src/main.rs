@@ -493,7 +493,13 @@ fn MainScreen(props: MainScreenProps) -> Element {
         let dir_src = dir.clone();
         let mut sel = selected_wf.clone();
         let mut tab = active_tab.clone();
+        let az_status = az_status.clone();
+        let mut push = push_log.clone();
         move |(name, trigger_name, trigger_type): (String, String, String)| {
+            if !matches!(az_status.read().as_ref(), Some(Ok(_))) {
+                push("Cannot run workflow: not logged into Azure. Please click '⚠ az login' in the toolbar first.".to_string(), LogLevel::Error);
+                return;
+            }
             // Select the workflow and switch to Run tab so it's ready when the dialog confirms
             sel.set(Some(name.clone()));
             tab.set("Run".to_string());
@@ -511,7 +517,13 @@ fn MainScreen(props: MainScreenProps) -> Element {
         let dir = dir.clone();
         let wfs = workflows.clone();
         let sel = selected_wf.clone();
+        let az_status = az_status.clone();
+        let mut push = push_log.clone();
         move |_| {
+            if !matches!(az_status.read().as_ref(), Some(Ok(_))) {
+                push("Cannot run workflow: not logged into Azure. Please click '⚠ az login' in the toolbar first.".to_string(), LogLevel::Error);
+                return;
+            }
             if let Some(wf_name) = sel.read().clone() {
                 if let Some(wf) = wfs.read().iter().find(|w| w.name == wf_name).cloned() {
                     let suggested = payload::suggest_payload(&dir, &wf.name);
@@ -671,25 +683,27 @@ fn MainScreen(props: MainScreenProps) -> Element {
     use_effect(move || {
         document::eval(r#"
             (function() {
-                // ── Log panel (horizontal drag) ────────────────────────
-                var lh = document.getElementById('log-resize-handle');
-                var lp = document.getElementById('log-panel');
-                if (lh && lp) {
-                    var startY, startH;
-                    lh.addEventListener('mousedown', function(e) {
+                if (window.__ais_resize_init) return;
+                window.__ais_resize_init = true;
+
+                document.body.addEventListener('mousedown', function(e) {
+                    if (e.target && e.target.id === 'log-resize-handle') {
                         e.preventDefault();
-                        startY = e.clientY;
-                        startH = lp.getBoundingClientRect().height;
-                        lh.classList.add('dragging');
+                        var lp = document.getElementById('log-panel');
+                        if (!lp) return;
+                        var startY = e.clientY;
+                        var startH = lp.getBoundingClientRect().height;
+                        e.target.classList.add('dragging');
                         document.body.style.cursor              = 'ns-resize';
                         document.body.style.userSelect          = 'none';
                         document.body.style.webkitUserSelect    = 'none';
-                        function onMove(e) {
-                            var newH = Math.max(80, Math.min(600, startH + (startY - e.clientY)));
+                        function onMove(eMove) {
+                            var newH = Math.max(80, Math.min(600, startH + (startY - eMove.clientY)));
                             lp.style.height = newH + 'px';
                         }
                         function onUp() {
-                            lh.classList.remove('dragging');
+                            var handle = document.getElementById('log-resize-handle');
+                            if (handle) handle.classList.remove('dragging');
                             document.body.style.cursor              = '';
                             document.body.style.userSelect          = '';
                             document.body.style.webkitUserSelect    = '';
@@ -698,28 +712,23 @@ fn MainScreen(props: MainScreenProps) -> Element {
                         }
                         document.addEventListener('mousemove', onMove);
                         document.addEventListener('mouseup', onUp);
-                    });
-                }
-
-                // ── Workflow panel (vertical drag) ─────────────────────
-                var wh = document.getElementById('wf-resize-handle');
-                var wp = document.getElementById('workflows');
-                if (wh && wp) {
-                    var startX, startW;
-                    wh.addEventListener('mousedown', function(e) {
+                    } else if (e.target && e.target.id === 'wf-resize-handle') {
                         e.preventDefault();
-                        startX = e.clientX;
-                        startW = wp.getBoundingClientRect().width;
-                        wh.classList.add('dragging');
+                        var wp = document.getElementById('workflows');
+                        if (!wp) return;
+                        var startX = e.clientX;
+                        var startW = wp.getBoundingClientRect().width;
+                        e.target.classList.add('dragging');
                         document.body.style.cursor              = 'ew-resize';
                         document.body.style.userSelect          = 'none';
                         document.body.style.webkitUserSelect    = 'none';
-                        function onMove(e) {
-                            var newW = Math.max(160, Math.min(520, startW + (e.clientX - startX)));
+                        function onMove(eMove) {
+                            var newW = Math.max(160, Math.min(520, startW + (eMove.clientX - startX)));
                             wp.style.width = newW + 'px';
                         }
                         function onUp() {
-                            wh.classList.remove('dragging');
+                            var handle = document.getElementById('wf-resize-handle');
+                            if (handle) handle.classList.remove('dragging');
                             document.body.style.cursor              = '';
                             document.body.style.userSelect          = '';
                             document.body.style.webkitUserSelect    = '';
@@ -728,8 +737,8 @@ fn MainScreen(props: MainScreenProps) -> Element {
                         }
                         document.addEventListener('mousemove', onMove);
                         document.addEventListener('mouseup', onUp);
-                    });
-                }
+                    }
+                });
             })();
         "#);
     });
