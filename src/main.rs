@@ -13,12 +13,15 @@ use components::{
     toolbar::ServiceBlock,
     workflow_list::WorkflowList,
     settings_editor::SettingsEditor,
+    db_panel::DbPanel,
 };
 use services::{
     config,
     payload,
     process::{ManagedProcess, ServiceState},
     system_check,
+    sql_check,
+    sb_check,
     workflows::{self, ActionItem, RunItem, WorkflowItem, run_trigger_direct},
 };
 
@@ -236,6 +239,14 @@ fn MainScreen(props: MainScreenProps) -> Element {
     // workflows the user explicitly cleared → timestamp of the clear (ISO 8601)
     // runs with start_time before this timestamp are hidden even after re-fetch
     let mut cleared_wfs  = use_signal(|| HashMap::<String, String>::new());
+    // SQL-dependent workflows and DB panel state
+    let mut sql_wfs      = use_signal(|| HashSet::<String>::new());
+    let mut sql_conns    = use_signal(|| Vec::<sql_check::SqlConnection>::new());
+    let mut db_panel_open = use_signal(|| false);
+
+    // Service Bus panel state
+    let mut sb_namespace = use_signal(|| String::new());
+    let mut sb_queues    = use_signal(|| Vec::<sb_check::SbQueueInfo>::new());
 
     // ── Tool check ─────────────────────────────────────────────────────────
     let mut tool_statuses = use_signal(|| Vec::<system_check::ToolStatus>::new());
@@ -260,6 +271,28 @@ fn MainScreen(props: MainScreenProps) -> Element {
                 .unwrap_or(Err(services::azure_cli::AzError::Other("check failed".into())));
             az_status.set(Some(result));
         });
+    });
+
+    // ── SQL + SB detection on mount ────────────────────────────────────────
+    use_effect({
+        let dir2 = dir.clone();
+        move || {
+            let dir3 = dir2.clone();
+            let dir4 = dir2.clone();
+            let dir5 = dir2.clone();
+            spawn(async move {
+                let (wfs, conns, (sb_ns, sb_qs)) = tokio::task::spawn_blocking(move || {
+                    let wfs   = sql_check::detect_sql_workflows(&dir3);
+                    let conns = sql_check::load_sql_connections(&dir4);
+                    let sb    = sb_check::detect_sb_queues(&dir5);
+                    (wfs, conns, sb)
+                }).await.unwrap_or_default();
+                sql_wfs.set(wfs);
+                sql_conns.set(conns);
+                sb_namespace.set(sb_ns);
+                sb_queues.set(sb_qs);
+            });
+        }
     });
 
     // ── Log ────────────────────────────────────────────────────────────────
@@ -788,6 +821,35 @@ fn MainScreen(props: MainScreenProps) -> Element {
                     onclick: on_load_workflows,
                     "⟳ Load Workflows"
                 }
+                {
+                    let dir_sql = dir.clone();
+                    rsx! {
+                        button {
+                            class: "btn btn-run btn-small",
+                            style: "margin-left: 10px;",
+                            title: "SQL & Service Bus connections — test & configure",
+                            onclick: move |_| {
+                                let dir5 = dir_sql.clone();
+                                let dir6 = dir_sql.clone();
+                                let dir7 = dir_sql.clone();
+                                spawn(async move {
+                                    let (wfs, conns, (sb_ns, sb_qs)) = tokio::task::spawn_blocking(move || {
+                                        let wfs   = sql_check::detect_sql_workflows(&dir5);
+                                        let conns = sql_check::load_sql_connections(&dir6);
+                                        let sb    = sb_check::detect_sb_queues(&dir7);
+                                        (wfs, conns, sb)
+                                    }).await.unwrap_or_default();
+                                    sql_wfs.set(wfs);
+                                    sql_conns.set(conns);
+                                    sb_namespace.set(sb_ns);
+                                    sb_queues.set(sb_qs);
+                                });
+                                db_panel_open.set(true);
+                            },
+                            "🔌 Connections"
+                        }
+                    }
+                }
                 button {
                     class: "btn btn-run btn-small",
                     style: "margin-left: 10px;",
@@ -855,6 +917,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
                         selected: selected_wf.read().clone(),
                         traced: traced_wfs.read().clone(),
                         running: running_wfs.read().clone(),
+                        sql_wfs: sql_wfs.read().clone(),
                         on_select: on_select_wf,
                         on_run: on_open_dialog,
                     }
@@ -901,6 +964,34 @@ fn MainScreen(props: MainScreenProps) -> Element {
                     on_cancel:    move |_| run_dialog.set(None),
                     on_run:       move |body: String| {
                         on_run_wf((wf_name.clone(), trigger_name.clone(), trigger_type.clone(), body));
+                    },
+                }
+            }
+
+            // CONNECTIONS PANEL
+            if *db_panel_open.read() {
+                DbPanel {
+                    logic_apps_dir: dir.clone(),
+                    connections: sql_conns.read().clone(),
+                    sb_namespace: sb_namespace.read().clone(),
+                    sb_queues: sb_queues.read().clone(),
+                    on_close: move |_| db_panel_open.set(false),
+                    on_saved: move |_| {
+                        let dir7 = dir.clone();
+                        let dir8 = dir.clone();
+                        let dir9 = dir.clone();
+                        spawn(async move {
+                            let (wfs, conns, (sb_ns, sb_qs)) = tokio::task::spawn_blocking(move || {
+                                let wfs   = sql_check::detect_sql_workflows(&dir7);
+                                let conns = sql_check::load_sql_connections(&dir8);
+                                let sb    = sb_check::detect_sb_queues(&dir9);
+                                (wfs, conns, sb)
+                            }).await.unwrap_or_default();
+                            sql_wfs.set(wfs);
+                            sql_conns.set(conns);
+                            sb_namespace.set(sb_ns);
+                            sb_queues.set(sb_qs);
+                        });
                     },
                 }
             }

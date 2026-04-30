@@ -81,6 +81,58 @@ pub fn list_all_servicebus_namespaces(subscription: &str) -> Result<Vec<String>,
     Ok(out.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
 }
 
+// ── Service Bus data-plane helpers ─────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SbQueueStats {
+    pub active_message_count: u64,
+    pub dead_letter_count:    u64,
+    pub size_bytes:           u64,
+}
+
+/// Find the resource group of a SB namespace without knowing it upfront.
+pub fn sb_find_rg(namespace_fqdn: &str) -> Result<String, AzError> {
+    let short_name = namespace_fqdn.split('.').next().unwrap_or(namespace_fqdn);
+    run(&[
+        "resource", "list",
+        "--resource-type", "Microsoft.ServiceBus/namespaces",
+        "--name", short_name,
+        "--query", "[0].resourceGroup",
+        "-o", "tsv",
+    ])
+}
+
+/// Fetch active + DLQ message counts and size for one queue.
+pub fn sb_queue_stats(rg: &str, namespace_fqdn: &str, queue: &str) -> Result<SbQueueStats, AzError> {
+    let short_name = namespace_fqdn.split('.').next().unwrap_or(namespace_fqdn);
+    let out = run(&[
+        "servicebus", "queue", "show",
+        "--resource-group", rg,
+        "--namespace-name", short_name,
+        "--name", queue,
+        "--query",
+        "{active:countDetails.activeMessageCount,dlq:countDetails.deadLetterMessageCount,size:sizeInBytes}",
+        "-o", "json",
+    ])?;
+    let v: serde_json::Value =
+        serde_json::from_str(&out).map_err(|e| AzError::Other(e.to_string()))?;
+    Ok(SbQueueStats {
+        active_message_count: v["active"].as_u64().unwrap_or(0),
+        dead_letter_count:    v["dlq"].as_u64().unwrap_or(0),
+        size_bytes:           v["size"].as_u64().unwrap_or(0),
+    })
+}
+
+/// Obtain an AAD Bearer token scoped to the Service Bus data-plane.
+pub fn sb_get_bearer_token() -> Result<String, AzError> {
+    run(&[
+        "account", "get-access-token",
+        "--resource", "https://servicebus.azure.net/",
+        "--query", "accessToken",
+        "-o", "tsv",
+    ])
+}
+
 /// Fetches the primary connection string for a Service Bus namespace.
 pub fn fetch_servicebus_connection_string(subscription: &str, rg: &str, namespace: &str) -> Result<String, AzError> {
     run(&[

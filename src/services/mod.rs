@@ -5,3 +5,5 @@ pub mod settings_file;
 pub mod azure_cli;
 pub mod payload;
 pub mod system_check;
+pub mod sql_check;
+pub mod sb_check;

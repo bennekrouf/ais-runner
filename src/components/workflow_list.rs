@@ -8,6 +8,7 @@ pub struct WorkflowListProps {
     pub selected:   Option<String>,
     pub traced:     HashSet<String>,
     pub running:    HashSet<String>,
+    pub sql_wfs:    HashSet<String>,
     pub on_select:  EventHandler<String>,
     pub on_run:     EventHandler<(String, String, String)>,
 }
@@ -84,6 +85,7 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
                         let is_sel    = props.selected.as_deref() == Some(&name);
                         let has_trace = props.traced.contains(&name);
                         let is_running = props.running.contains(&name);
+                        let has_sql    = props.sql_wfs.contains(&name);
                         let health_cls = if wf.healthy { "wf-dot healthy" } else { "wf-dot unhealthy" };
                         let icon      = trigger_icon(&wf.trigger_type);
                         let disabled  = wf.disabled;
@@ -101,6 +103,9 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
                                 span {
                                     class: if disabled { "workflow-name disabled" } else { "workflow-name" },
                                     "{name}"
+                                }
+                                if has_sql {
+                                    span { class: "wf-sql-icon", title: "Uses SQL connection" }
                                 }
                                 if is_running {
                                     span { class: "wf-spinner", title: "Running…" }

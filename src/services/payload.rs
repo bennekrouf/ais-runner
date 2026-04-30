@@ -52,15 +52,20 @@ fn find_trigger_body_schema(actions: &serde_json::Map<String, Value>) -> Option<
     for (_name, action) in actions {
         if action["type"].as_str() == Some("ParseJson") {
             let content = action["inputs"]["content"].as_str().unwrap_or("");
-            if content.contains("triggerBody") || content.contains("triggerOutputs") {
+            // triggerBody/triggerOutputs = HTTP/Recurrence trigger
+            // contentData = Service Bus message body (item()?['contentData'])
+            if content.contains("triggerBody")
+                || content.contains("triggerOutputs")
+                || content.contains("contentData")
+            {
                 let schema = &action["inputs"]["schema"];
                 if schema.is_object() && !schema.as_object()?.is_empty() {
                     return Some(schema.clone());
                 }
             }
         }
-        // recurse into nested scopes / foreach / conditions
-        for sub_key in &["actions", "else"] {
+        // recurse into nested scopes / foreach / switch / conditions
+        for sub_key in &["actions", "else", "cases", "default"] {
             if let Some(nested) = action[sub_key].as_object() {
                 if let Some(s) = find_trigger_body_schema(nested) {
                     return Some(s);
