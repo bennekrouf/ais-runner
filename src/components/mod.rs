@@ -3,3 +3,4 @@ pub mod workflow_list;
 pub mod run_detail;
 pub mod log_panel;
 pub mod settings_editor;
+pub mod run_dialog;

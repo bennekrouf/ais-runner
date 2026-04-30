@@ -8,13 +8,16 @@ use dioxus::desktop::LogicalSize;
 use components::{
     log_panel::{LogLevel, LogLine, LogPanel},
     run_detail::RunDetail,
+    run_dialog::RunDialog,
     toolbar::ServiceBlock,
     workflow_list::WorkflowList,
     settings_editor::SettingsEditor,
 };
 use services::{
     config,
+    payload,
     process::{ManagedProcess, ServiceState},
+    system_check,
     workflows::{self, ActionItem, RunItem, WorkflowItem, run_trigger_direct},
 };
 
@@ -182,11 +185,26 @@ fn MainScreen(props: MainScreenProps) -> Element {
     // ── Data ───────────────────────────────────────────────────────────────
     let workflows   = use_signal(|| Vec::<WorkflowItem>::new());
     let selected_wf = use_signal(|| Option::<String>::None);
-    let runs        = use_signal(|| Vec::<RunItem>::new());
-    let actions     = use_signal(|| Vec::<ActionItem>::new());
+    let mut source_text = use_signal(|| String::new());
+    let mut runs    = use_signal(|| Vec::<RunItem>::new());
+    let mut actions = use_signal(|| Vec::<ActionItem>::new());
     let is_live      = use_signal(|| false);
     let current_view = use_signal(|| "Workflows".to_string());
     let mut is_light = use_signal(|| false);
+    // (wf_name, trigger_name, trigger_type, suggested_payload)
+    let mut run_dialog = use_signal(|| Option::<(String, String, String, String)>::None);
+
+    // ── Tool check ─────────────────────────────────────────────────────────
+    let mut tool_statuses = use_signal(|| Vec::<system_check::ToolStatus>::new());
+    let mut tools_dismissed = use_signal(|| false);
+    use_effect(move || {
+        spawn(async move {
+            let statuses = tokio::task::spawn_blocking(system_check::check_tools)
+                .await
+                .unwrap_or_default();
+            tool_statuses.set(statuses);
+        });
+    });
 
     // ── Log ────────────────────────────────────────────────────────────────
     let log_lines = use_signal(|| Vec::<LogLine>::new());
@@ -290,10 +308,17 @@ fn MainScreen(props: MainScreenProps) -> Element {
         let runs     = runs.clone();
         let mut actions  = actions.clone();
         let push     = push_log.clone();
+        let dir_src  = dir.clone();
         move |name: String| {
             let wf = name.clone();
-            selected.set(Some(name));
+            selected.set(Some(name.clone()));
             actions.set(vec![]);
+            // load source file synchronously — it's local disk, negligible latency
+            let src_path = std::path::Path::new(&dir_src).join(&name).join("workflow.json");
+            source_text.set(match std::fs::read_to_string(&src_path) {
+                Ok(txt) => txt,
+                Err(e)  => format!("// could not read {}: {}", src_path.display(), e),
+            });
             let mut runs    = runs.clone();
             let mut actions = actions.clone();
             let mut push    = push.clone();
@@ -313,13 +338,23 @@ fn MainScreen(props: MainScreenProps) -> Element {
         }
     };
 
+    // ── Open run dialog ────────────────────────────────────────────────────
+    let on_open_dialog = {
+        let dir = dir.clone();
+        move |(name, trigger_name, trigger_type): (String, String, String)| {
+            let suggested = payload::suggest_payload(&dir, &name);
+            run_dialog.set(Some((name, trigger_name, trigger_type, suggested)));
+        }
+    };
+
     // ── Run workflow ───────────────────────────────────────────────────────
-    let on_run_wf = {
+    let mut on_run_wf = {
         let runs    = runs.clone();
         let actions = actions.clone();
         let push    = push_log.clone();
         let mut live = is_live.clone();
-        move |(name, trigger_name, trigger_type): (String, String, String)| {
+        move |(name, trigger_name, trigger_type, body): (String, String, String, String)| {
+            run_dialog.set(None);
             let wf = name.clone();
             let mut runs    = runs.clone();
             let mut actions = actions.clone();
@@ -331,15 +366,15 @@ fn MainScreen(props: MainScreenProps) -> Element {
             spawn(async move {
                 // ── Fire the trigger ──────────────────────────────────────
                 if is_recurrence {
-                    match run_trigger_direct(&wf, &trigger_name).await {
+                    match run_trigger_direct(&wf, &trigger_name, &body).await {
                         Ok(_) => push(format!("Run triggered ({})", trigger_type), LogLevel::Ok),
                         Err(e) => { push(format!("Trigger error: {}", e), LogLevel::Error); live.set(false); return; }
                     }
                 } else {
                     match workflows::get_callback_url(&wf, &trigger_name).await {
                         Ok(url) => {
-                            push(format!("$ curl -X GET \"{}\"", url), LogLevel::Info);
-                            match workflows::trigger_workflow(&url).await {
+                            push(format!("$ curl -X POST \"{}\"", url), LogLevel::Info);
+                            match workflows::trigger_workflow(&url, &body).await {
                                 Ok(run_id) => push(format!("Run started: {}", run_id), LogLevel::Ok),
                                 Err(e) => { push(format!("Trigger error: {}", e), LogLevel::Error); live.set(false); return; }
                             }
@@ -573,6 +608,37 @@ fn MainScreen(props: MainScreenProps) -> Element {
                 }
             }
 
+            // TOOL CHECK BANNER
+            {
+                let missing: Vec<system_check::ToolStatus> = tool_statuses.read().iter()
+                    .filter(|t| !t.available)
+                    .cloned()
+                    .collect();
+                if !missing.is_empty() && !*tools_dismissed.read() {
+                    rsx! {
+                        div { id: "tool-banner",
+                            span { id: "tool-banner-icon", "⚠" }
+                            div { id: "tool-banner-items",
+                                for t in missing {
+                                    span { class: "tool-banner-item",
+                                        strong { "{t.name}" }
+                                        " not found — install: "
+                                        code { "{t.install_hint}" }
+                                    }
+                                }
+                            }
+                            button {
+                                class: "btn-icon",
+                                onclick: move |_| tools_dismissed.set(true),
+                                "×"
+                            }
+                        }
+                    }
+                } else {
+                    rsx! {}
+                }
+            }
+
             // MIDDLE
             div { id: "main",
                 if *current_view.read() == "Settings" {
@@ -582,16 +648,17 @@ fn MainScreen(props: MainScreenProps) -> Element {
                         workflows: workflows.read().clone(),
                         selected: selected_wf.read().clone(),
                         on_select: on_select_wf,
-                        on_run: on_run_wf,
+                        on_run: on_open_dialog,
                     }
                     div { id: "wf-resize-handle" }
                     RunDetail {
                         workflow: selected_wf.read().clone(),
-                        logic_apps_dir: dir.clone(),
+                        source_text: source_text.read().clone(),
                         runs: runs.read().clone(),
                         actions: actions.read().clone(),
                         is_live: *is_live.read(),
                         on_refresh: on_refresh,
+                        on_clear_runs: move |_| { runs.write().clear(); actions.write().clear(); },
                         on_select_run: on_select_run,
                     }
                 }
@@ -604,6 +671,19 @@ fn MainScreen(props: MainScreenProps) -> Element {
             LogPanel {
                 lines: log_lines.read().clone(),
                 on_clear: move |_| { let mut ll = log_lines.clone(); ll.write().clear(); },
+            }
+
+            // RUN DIALOG
+            if let Some((wf_name, trigger_name, trigger_type, suggested)) = run_dialog.read().clone() {
+                RunDialog {
+                    workflow:     wf_name.clone(),
+                    trigger_type: trigger_type.clone(),
+                    payload:      suggested,
+                    on_cancel:    move |_| run_dialog.set(None),
+                    on_run:       move |body: String| {
+                        on_run_wf((wf_name.clone(), trigger_name.clone(), trigger_type.clone(), body));
+                    },
+                }
             }
         }
     }

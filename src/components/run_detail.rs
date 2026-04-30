@@ -3,40 +3,20 @@ use crate::services::workflows::{ActionItem, RunItem, duration_ms};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct RunDetailProps {
-    pub workflow: Option<String>,
-    pub logic_apps_dir: String,
-    pub runs: Vec<RunItem>,
-    pub actions: Vec<ActionItem>,
-    pub is_live: bool,
-    pub on_refresh: EventHandler<()>,
+    pub workflow:    Option<String>,
+    pub source_text: String,       // loaded by parent when workflow is selected
+    pub runs:        Vec<RunItem>,
+    pub actions:     Vec<ActionItem>,
+    pub is_live:     bool,
+    pub on_refresh:   EventHandler<()>,
+    pub on_clear_runs: EventHandler<()>,
     pub on_select_run: EventHandler<String>,
 }
 
 #[component]
 pub fn RunDetail(props: RunDetailProps) -> Element {
     let title = props.workflow.clone().unwrap_or_else(|| "Select a workflow".to_string());
-    let mut active_tab  = use_signal(|| "Source".to_string());
-    let mut source_text = use_signal(|| String::new());
-    // tracks which workflow the source was last loaded for
-    let mut loaded_for  = use_signal(|| Option::<String>::None);
-
-    // Reload source when the workflow prop changes.
-    // We compare against `loaded_for` to avoid re-running on every render
-    // (use_effect fires after every render in Dioxus 0.6).
-    if *loaded_for.read() != props.workflow {
-        loaded_for.set(props.workflow.clone());
-        // keep whatever tab the user was on; just reload the source content
-        match &props.workflow {
-            Some(name) => {
-                let path = std::path::Path::new(&props.logic_apps_dir).join(name).join("workflow.json");
-                match std::fs::read_to_string(&path) {
-                    Ok(txt) => source_text.set(txt),
-                    Err(e)  => source_text.set(format!("// could not read {}: {}", path.display(), e)),
-                }
-            }
-            None => source_text.set(String::new()),
-        }
-    }
+    let mut active_tab = use_signal(|| "Source".to_string());
 
     let max_ms = props.actions.iter()
         .filter_map(|a| duration_ms(&a.properties.start_time, &a.properties.end_time))
@@ -73,6 +53,14 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                         onclick: move |_| props.on_refresh.call(()),
                         "⟳ Refresh"
                     }
+                    if !props.runs.is_empty() {
+                        button {
+                            class: "btn btn-small btn-clear",
+                            title: "Clear run history",
+                            onclick: move |_| props.on_clear_runs.call(()),
+                            "✕ Clear"
+                        }
+                    }
                 }
             }
 
@@ -97,7 +85,7 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                     if props.workflow.is_none() {
                         div { class: "empty-state", "Select a workflow to view its source." }
                     } else {
-                        pre { id: "source-pre", "{source_text}" }
+                        pre { id: "source-pre", "{props.source_text}" }
                     }
                 }
             }

@@ -89,10 +89,13 @@ pub async fn get_callback_url(workflow: &str, trigger: &str) -> Result<String, S
 }
 
 /// For Recurrence / push triggers that have no callback URL — call /run directly.
-pub async fn run_trigger_direct(workflow: &str, trigger: &str) -> Result<(), String> {
+pub async fn run_trigger_direct(workflow: &str, trigger: &str, body: &str) -> Result<(), String> {
     let url = format!("{}/workflows/{}/triggers/{}/run", BASE, workflow, trigger);
+    let body_val: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
     let resp = reqwest::Client::new()
         .post(&url)
+        .header("Content-Type", "application/json")
+        .json(&body_val)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -100,15 +103,17 @@ pub async fn run_trigger_direct(workflow: &str, trigger: &str) -> Result<(), Str
     if status.is_success() || status.as_u16() == 202 {
         Ok(())
     } else {
-        let body: serde_json::Value = resp.json().await.unwrap_or_default();
-        Err(extract_api_error(&body).unwrap_or_else(|| format!("HTTP {}", status)))
+        let b: serde_json::Value = resp.json().await.unwrap_or_default();
+        Err(extract_api_error(&b).unwrap_or_else(|| format!("HTTP {}", status)))
     }
 }
 
-pub async fn trigger_workflow(callback_url: &str) -> Result<String, String> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(callback_url)
+pub async fn trigger_workflow(callback_url: &str, body: &str) -> Result<String, String> {
+    let body_val: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+    let resp = reqwest::Client::new()
+        .post(callback_url)
+        .header("Content-Type", "application/json")
+        .json(&body_val)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -125,11 +130,6 @@ pub async fn trigger_workflow(callback_url: &str) -> Result<String, String> {
 
 // ── Run history ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct RunListResponse {
-    pub value: Vec<RunItem>,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct RunItem {
     pub name: String,
@@ -144,21 +144,25 @@ pub struct RunProperties {
     pub end_time: Option<String>,
 }
 
+fn parse_value_array<T: for<'de> Deserialize<'de>>(body: serde_json::Value) -> Result<Vec<T>, String> {
+    let arr = body.as_array().cloned()
+        .or_else(|| body["value"].as_array().cloned())
+        .ok_or_else(|| {
+            let s = body.to_string();
+            format!("Unexpected response shape: {}", &s[..s.len().min(300)])
+        })?;
+    Ok(arr.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
+}
+
 pub async fn list_runs(workflow: &str) -> Result<Vec<RunItem>, String> {
     let url = format!("{}/workflows/{}/runs", BASE, workflow);
-    let resp = reqwest::get(&url)
-        .await
-        .map_err(|e| e.to_string())?;
-    let body: RunListResponse = resp.json().await.map_err(|e| e.to_string())?;
-    Ok(body.value)
+    let body: serde_json::Value = reqwest::get(&url)
+        .await.map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+    parse_value_array(body)
 }
 
 // ── Action details ─────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ActionListResponse {
-    pub value: Vec<ActionItem>,
-}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ActionItem {
@@ -173,6 +177,7 @@ pub struct ActionProperties {
     pub start_time: Option<String>,
     pub end_time: Option<String>,
     pub error: Option<ActionError>,
+    pub code: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -182,12 +187,12 @@ pub struct ActionError {
 }
 
 pub async fn list_actions(workflow: &str, run_id: &str) -> Result<Vec<ActionItem>, String> {
-    let url = format!("{}/workflows/{}/runs/{}/actions", BASE, workflow, run_id);
-    let resp = reqwest::get(&url)
-        .await
-        .map_err(|e| e.to_string())?;
-    let body: ActionListResponse = resp.json().await.map_err(|e| e.to_string())?;
-    Ok(body.value)
+    // $expand=outputLinks makes the runtime include child actions of scopes
+    let url = format!("{}/workflows/{}/runs/{}/actions?$expand=outputLinks", BASE, workflow, run_id);
+    let body: serde_json::Value = reqwest::get(&url)
+        .await.map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+    parse_value_array(body)
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────

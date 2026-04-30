@@ -23,14 +23,31 @@ fn trigger_icon(trigger: &str) -> &'static str {
 
 #[component]
 pub fn WorkflowList(props: WorkflowListProps) -> Element {
+    let mut filter = use_signal(|| String::new());
+
+    let query = filter.read().to_lowercase();
+    let visible: Vec<_> = props.workflows.iter()
+        .filter(|wf| query.is_empty() || wf.name.to_lowercase().contains(&query))
+        .collect();
+
     rsx! {
         div { id: "workflows",
-            h2 { "Workflows ({props.workflows.len()})" }
+            div { id: "wf-header",
+                h2 { "Workflows ({props.workflows.len()})" }
+                input {
+                    id: "wf-filter",
+                    placeholder: "Filter…",
+                    value: "{filter}",
+                    oninput: move |e| filter.set(e.value()),
+                }
+            }
             div { id: "workflow-list",
                 if props.workflows.is_empty() {
                     div { class: "empty-state", "No workflows found.\nIs func start running?" }
+                } else if visible.is_empty() {
+                    div { class: "empty-state", "No match for "{query}"" }
                 }
-                for wf in props.workflows.iter() {
+                for wf in visible.iter() {
                     {
                         let name      = wf.name.clone();
                         let name_run  = name.clone();

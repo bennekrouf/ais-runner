@@ -6,14 +6,6 @@ pub enum AzError {
     Other(String),
 }
 
-impl AzError {
-    pub fn message(&self) -> &str {
-        match self {
-            AzError::NotLoggedIn => "Azure session expired — click 'az login' to re-authenticate",
-            AzError::Other(s) => s,
-        }
-    }
-}
 
 fn run(args: &[&str]) -> Result<String, AzError> {
     let out = Command::new("az")
@@ -84,18 +76,6 @@ pub fn list_all_servicebus_namespaces(subscription: &str) -> Result<Vec<String>,
     Ok(out.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
 }
 
-/// Lists Service Bus namespaces in a resource group.
-pub fn list_servicebus_namespaces(subscription: &str, rg: &str) -> Result<Vec<String>, AzError> {
-    let out = run(&[
-        "servicebus", "namespace", "list",
-        "--subscription", subscription,
-        "--resource-group", rg,
-        "--query", "[].name",
-        "-o", "tsv",
-    ])?;
-    Ok(out.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
-}
-
 /// Fetches the primary connection string for a Service Bus namespace.
 pub fn fetch_servicebus_connection_string(subscription: &str, rg: &str, namespace: &str) -> Result<String, AzError> {
     run(&[
@@ -109,14 +89,3 @@ pub fn fetch_servicebus_connection_string(subscription: &str, rg: &str, namespac
     ])
 }
 
-/// Fetches storage account connection string.
-pub fn fetch_storage_connection_string(subscription: &str, rg: &str, account: &str) -> Result<String, AzError> {
-    run(&[
-        "storage", "account", "show-connection-string",
-        "--subscription", subscription,
-        "--resource-group", rg,
-        "--name", account,
-        "--query", "connectionString",
-        "-o", "tsv",
-    ])
-}

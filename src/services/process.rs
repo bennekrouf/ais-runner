@@ -20,15 +20,7 @@ impl ManagedProcess {
         }
     }
 
-    pub fn is_running(&self) -> bool {
-        if let Ok(mut guard) = self.child.lock() {
-            if let Some(child) = guard.as_mut() {
-                // try_wait returns Ok(None) if still running
-                return child.try_wait().ok().flatten().is_none();
-            }
-        }
-        false
-    }
+
 
     pub fn start(&self, program: &str, args: &[&str], workdir: Option<&str>) -> Result<(), String> {
         let mut guard = self.child.lock().map_err(|e| e.to_string())?;
