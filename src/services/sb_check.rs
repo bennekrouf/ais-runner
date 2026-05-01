@@ -168,7 +168,12 @@ pub fn detect_sb_queues(logic_apps_dir: &str) -> (String, Vec<SbQueueInfo>) {
         // Trigger check
         if let Some(triggers) = defn["triggers"].as_object() {
             for (_tname, trigger) in triggers {
-                if trigger["kind"].as_str() == Some("ServiceBusTrigger") {
+                let is_sb_trigger =
+                    trigger["kind"].as_str() == Some("ServiceBusTrigger")
+                    || (trigger["type"].as_str() == Some("ServiceProvider")
+                        && trigger["inputs"]["serviceProviderConfiguration"]["serviceProviderId"]
+                            .as_str() == Some("/serviceProviders/serviceBus"));
+                if is_sb_trigger {
                     if let Some(queue) = resolve_queue_name(trigger, &settings) {
                         let entry = queue_map.entry(queue.clone()).or_insert_with(|| SbQueueInfo {
                             queue: queue.clone(),
@@ -242,8 +247,12 @@ fn scan_sb_actions(
 }
 
 /// Extract the queue/topic name from an action or trigger node, resolving @appsetting refs.
+/// Checks all field name variants used across Logic Apps Standard versions.
 fn resolve_queue_name(node: &serde_json::Value, settings: &HashMap<String, String>) -> Option<String> {
-    let raw = node["inputs"]["parameters"]["queueOrTopicName"].as_str()?;
+    let params = &node["inputs"]["parameters"];
+    let raw = params["queueName"].as_str()
+        .or_else(|| params["entityName"].as_str())
+        .or_else(|| params["queueOrTopicName"].as_str())?;
     let resolved = resolve_appsetting(raw, settings);
     if resolved.is_empty() { None } else { Some(resolved) }
 }
