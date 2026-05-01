@@ -34,11 +34,16 @@ pub struct LogPanelProps {
 
 #[component]
 pub fn LogPanel(props: LogPanelProps) -> Element {
-    let count = props.lines.len();
+    // Register a MutationObserver once on mount — it auto-scrolls on every DOM change.
     use_effect(move || {
-        let _ = count; // track dependency so effect re-runs on every new line
         document::eval(
-            "var el = document.getElementById('log-scroll'); if(el) el.scrollTop = el.scrollHeight;"
+            "(function(){\
+                var el = document.getElementById('log-scroll');\
+                if (!el || el._aisObs) return;\
+                el._aisObs = new MutationObserver(function(){ el.scrollTop = el.scrollHeight; });\
+                el._aisObs.observe(el, { childList: true, subtree: true });\
+                el.scrollTop = el.scrollHeight;\
+            })()"
         );
     });
 

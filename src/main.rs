@@ -14,6 +14,7 @@ use components::{
     workflow_list::WorkflowList,
     settings_editor::SettingsEditor,
     db_panel::DbPanel,
+    azure_panel::AzurePanel,
 };
 use services::{
     config,
@@ -242,7 +243,8 @@ fn MainScreen(props: MainScreenProps) -> Element {
     // SQL-dependent workflows and DB panel state
     let mut sql_wfs      = use_signal(|| HashSet::<String>::new());
     let mut sql_conns    = use_signal(|| Vec::<sql_check::SqlConnection>::new());
-    let mut db_panel_open = use_signal(|| false);
+    let mut db_panel_open    = use_signal(|| false);
+    let mut azure_panel_open = use_signal(|| false);
 
     // Service Bus panel state
     let mut sb_namespace      = use_signal(|| String::new());
@@ -825,17 +827,21 @@ fn MainScreen(props: MainScreenProps) -> Element {
                     on_stop: on_java_stop,
                 }
                 // ── Azure login indicator ──────────────────────────────
-                div { class: "az-status-wrap", style: "margin-left:auto",
+                div { class: "az-status-wrap",
                     match az_status.read().clone() {
                         None => rsx! {
-                            span { class: "az-status az-checking", "az …" }
+                            div { class: "az-block az-block-checking",
+                                span { class: "dot starting" }
+                                span { class: "az-account", "Checking…" }
+                            }
                         },
                         Some(Ok(name)) => rsx! {
-                            span { class: "az-status az-ok",
-                                span { class: "az-dot" }
+                            div { class: "az-block az-block-ok",
+                                span { class: "dot running" }
+                                span { class: "az-account", title: "{name}", "{name}" }
                                 button {
-                                    class: "btn-icon az-name",
-                                    title: "Re-check az login",
+                                    class: "az-action-btn",
+                                    title: "Re-check login status",
                                     onclick: move |_| {
                                         az_status.set(None);
                                         spawn(async move {
@@ -845,31 +851,47 @@ fn MainScreen(props: MainScreenProps) -> Element {
                                             az_status.set(Some(result));
                                         });
                                     },
-                                    "{name}"
+                                    "⟳"
+                                }
+                                button {
+                                    class: "az-action-btn az-logout-btn",
+                                    title: "Sign out",
+                                    onclick: move |_| {
+                                        services::azure_cli::logout();
+                                        az_status.set(None);
+                                        spawn(async move {
+                                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                            az_status.set(Some(Err(services::azure_cli::AzError::NotLoggedIn)));
+                                        });
+                                    },
+                                    "↪ out"
                                 }
                             }
                         },
                         Some(Err(_)) => rsx! {
-                            button {
-                                class: "btn btn-warn btn-small az-login-btn",
-                                title: "Not logged in — click to open az login",
-                                onclick: move |_| {
-                                    services::azure_cli::open_login("68fac18b-9e76-4cef-b2b7-2c51b521cb94");
-                                    az_status.set(None);
-                                    spawn(async move {
-                                        // poll every 5 s for up to 2 min until login completes
-                                        for _ in 0..24 {
-                                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                                            let result = tokio::task::spawn_blocking(services::azure_cli::check_login)
-                                                .await
-                                                .unwrap_or(Err(services::azure_cli::AzError::Other("check failed".into())));
-                                            let done = result.is_ok();
-                                            az_status.set(Some(result));
-                                            if done { break; }
-                                        }
-                                    });
-                                },
-                                "⚠ az login"
+                            div { class: "az-block az-block-out",
+                                span { class: "dot stopped" }
+                                span { class: "az-account az-account-out", "Not signed in" }
+                                button {
+                                    class: "az-login-btn",
+                                    title: "Sign in with az login",
+                                    onclick: move |_| {
+                                        services::azure_cli::open_login("68fac18b-9e76-4cef-b2b7-2c51b521cb94");
+                                        az_status.set(None);
+                                        spawn(async move {
+                                            for _ in 0..24 {
+                                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                                let result = tokio::task::spawn_blocking(services::azure_cli::check_login)
+                                                    .await
+                                                    .unwrap_or(Err(services::azure_cli::AzError::Other("check failed".into())));
+                                                let done = result.is_ok();
+                                                az_status.set(Some(result));
+                                                if done { break; }
+                                            }
+                                        });
+                                    },
+                                    "Sign in"
+                                }
                             }
                         },
                     }
@@ -927,6 +949,12 @@ fn MainScreen(props: MainScreenProps) -> Element {
                         }
                     },
                     if *current_view.read() == "Settings" { "Workflows" } else { "⚙️ Settings" }
+                }
+                button {
+                    class: "btn btn-run btn-small",
+                    title: "Compare local workflows with Azure",
+                    onclick: move |_| azure_panel_open.set(true),
+                    "☁ Azure"
                 }
                 button {
                     class: "btn-theme",
@@ -1034,6 +1062,22 @@ fn MainScreen(props: MainScreenProps) -> Element {
             }
 
             // CONNECTIONS PANEL
+            if *azure_panel_open.read() {
+                {
+                    let mut push2 = push_log.clone();
+                    rsx! {
+                        AzurePanel {
+                            logic_apps_dir:  dir.clone(),
+                            local_workflows: workflows.read().iter().map(|w| w.name.clone()).collect(),
+                            on_close:  move |_| azure_panel_open.set(false),
+                            on_pulled: move |name: String| {
+                                azure_panel_open.set(false);
+                                push2(format!("⬇ {} pulled from Azure — reload workflows to see it", name), LogLevel::Ok);
+                            },
+                        }
+                    }
+                }
+            }
             if *db_panel_open.read() {
                 DbPanel {
                     logic_apps_dir:    dir.clone(),

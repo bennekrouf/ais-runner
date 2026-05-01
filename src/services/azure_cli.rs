@@ -7,7 +7,7 @@ pub enum AzError {
 }
 
 
-fn az_command(args: &[&str]) -> Command {
+pub fn az_command(args: &[&str]) -> Command {
     if cfg!(target_os = "windows") {
         let mut cmd = Command::new("cmd");
         cmd.args(["/c", "az"]).args(args);
@@ -47,6 +47,11 @@ pub fn check_login() -> Result<String, AzError> {
 pub fn open_login(tenant: &str) {
     let _ = az_command(&["login", "--tenant", tenant, "--scope", "https://management.core.windows.net//.default"])
         .spawn();
+}
+
+/// Signs out of the current az session.
+pub fn logout() {
+    let _ = az_command(&["logout"]).spawn();
 }
 
 /// Finds the resource group of a Service Bus namespace by name (searches across the subscription).
