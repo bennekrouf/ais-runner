@@ -19,10 +19,24 @@ pub async fn list_workflows() -> Result<Vec<WorkflowItem>, String> {
         .await
         .map_err(|e| format!("Cannot reach func start: {}", e))?;
 
-    let body: serde_json::Value = resp
-        .json()
+    let raw = resp
+        .text()
         .await
-        .map_err(|e| format!("Parse error: {}", e))?;
+        .map_err(|e| format!("Cannot read response: {}", e))?;
+
+    // Known transient startup phrase — not a parse error, just not ready yet
+    if raw.contains("Function host is not running") {
+        return Err("host-not-ready".to_string());
+    }
+
+    // Strip ASCII control characters that the func host sometimes embeds in error payloads
+    let sanitized: String = raw.chars().filter(|c| !c.is_control() || *c == '\n' || *c == '\r' || *c == '\t').collect();
+
+    let body: serde_json::Value = serde_json::from_str(&sanitized)
+        .map_err(|e| {
+            let snippet = sanitized.chars().take(400).collect::<String>();
+            format!("Parse error: {} — host returned: {}", e, snippet)
+        })?;
 
     // local func runtime returns a bare array; Azure mgmt API returns {"value":[...]}
     let arr = body
@@ -55,6 +69,45 @@ pub async fn list_workflows() -> Result<Vec<WorkflowItem>, String> {
 
     items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(items)
+}
+
+/// Polls `list_workflows` every 5 s until the host responds or `timeout_secs` expires.
+/// Returns Ok on first success, Err with the last error message if the host never responds.
+pub async fn wait_for_workflows(timeout_secs: u64) -> Result<Vec<WorkflowItem>, String> {
+    let attempts = (timeout_secs / 5).max(1);
+    let mut last_err = String::from("timeout");
+    for _ in 0..attempts {
+        match list_workflows().await {
+            Ok(list) => return Ok(list),
+            Err(e)   => { last_err = e; }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+    Err(last_err)
+}
+
+/// Scans every workflow.json under `logic_apps_dir` and returns names of files with JSON errors.
+pub fn scan_broken_workflows(logic_apps_dir: &str) -> Vec<(String, String)> {
+    let dir = std::path::Path::new(logic_apps_dir);
+    let mut broken = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return broken,
+    };
+    for entry in entries.flatten() {
+        let wf_path = entry.path().join("workflow.json");
+        if !wf_path.exists() { continue; }
+        match std::fs::read_to_string(&wf_path) {
+            Err(e) => broken.push((entry.file_name().to_string_lossy().into_owned(), format!("cannot read: {}", e))),
+            Ok(text) => {
+                if let Err(e) = serde_json::from_str::<serde_json::Value>(&text) {
+                    broken.push((entry.file_name().to_string_lossy().into_owned(), format!("JSON error at line {}: {}", e.line(), e)));
+                }
+            }
+        }
+    }
+    broken.sort_by(|a, b| a.0.cmp(&b.0));
+    broken
 }
 
 // ── Trigger ────────────────────────────────────────────────────────────────

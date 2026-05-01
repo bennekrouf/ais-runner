@@ -354,23 +354,47 @@ fn MainScreen(props: MainScreenProps) -> Element {
             state.set(ServiceState::Starting);
             push(format!("$ cd {} && func start", dir2), LogLevel::Info);
             match proc.read().start("func", &["start"], Some(&dir2)) {
-                Ok(_) => {
+                Ok((stdout, stderr)) => {
                     state.set(ServiceState::Running);
                     push("func start launched — waiting for workflows…".to_string(), LogLevel::Ok);
                     let mut wfs    = wfs.clone();
                     let mut push2  = push.clone();
+                    let mut push3  = push.clone();
                     let mut traced = traced_wfs.clone();
                     let cleared    = cleared_wfs.clone();
+                    let la_dir     = dir2.clone();
+
+                    // Stream func start output into the log
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
+                    services::process::stream_output(stdout, stderr, tx, true);
                     spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                        match workflows::list_workflows().await {
+                        while let Some((line, is_err)) = rx.recv().await {
+                            let level = if is_err { LogLevel::Error } else { LogLevel::Info };
+                            push3(line, level);
+                        }
+                    });
+
+                    spawn(async move {
+                        match workflows::wait_for_workflows(120).await {
                             Ok(list) => {
                                 push2(format!("Loaded {} workflow(s)", list.len()), LogLevel::Ok);
                                 let names: Vec<String> = list.iter().map(|w| w.name.clone()).collect();
                                 wfs.set(list);
                                 sweep_run_history(names, &mut traced, &cleared).await;
                             }
-                            Err(e) => push2(format!("Workflow list error: {}", e), LogLevel::Warn),
+                            Err(_) => {
+                                push2("Host did not become ready — scanning for broken workflow.json files…".to_string(), LogLevel::Warn);
+                                let broken = tokio::task::spawn_blocking(move || {
+                                    workflows::scan_broken_workflows(&la_dir)
+                                }).await.unwrap_or_default();
+                                if broken.is_empty() {
+                                    push2("No JSON errors found in workflow files. Check func start output above for errors.".to_string(), LogLevel::Warn);
+                                } else {
+                                    for (name, err) in broken {
+                                        push2(format!("❌ {}/workflow.json — {}", name, err), LogLevel::Error);
+                                    }
+                                }
+                            }
                         }
                     });
                 }
@@ -401,9 +425,18 @@ fn MainScreen(props: MainScreenProps) -> Element {
             state.set(ServiceState::Starting);
             push(format!("$ cd {} && mvn azure-functions:run", dir2), LogLevel::Info);
             match proc.read().start("mvn", &["azure-functions:run"], Some(&dir2)) {
-                Ok(_) => {
+                Ok((stdout, stderr)) => {
                     state.set(ServiceState::Running);
                     push("Java Function App starting on port 7072…".to_string(), LogLevel::Ok);
+                    let mut push2 = push.clone();
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
+                    services::process::stream_output(stdout, stderr, tx, true);
+                    spawn(async move {
+                        while let Some((line, is_err)) = rx.recv().await {
+                            let level = if is_err { LogLevel::Error } else { LogLevel::Info };
+                            push2(line, level);
+                        }
+                    });
                 }
                 Err(e) => {
                     state.set(ServiceState::Stopped);
@@ -444,6 +477,9 @@ fn MainScreen(props: MainScreenProps) -> Element {
                         let names: Vec<String> = list.iter().map(|w| w.name.clone()).collect();
                         wfs.set(list);
                         sweep_run_history(names, &mut traced, &cleared).await;
+                    }
+                    Err(e) if e == "host-not-ready" => {
+                        push("func start is still initializing — try again in a few seconds.".to_string(), LogLevel::Warn);
                     }
                     Err(e) => push(format!("Cannot reach func start: {}", e), LogLevel::Error),
                 }
@@ -797,9 +833,8 @@ fn MainScreen(props: MainScreenProps) -> Element {
                         Some(Ok(name)) => rsx! {
                             span { class: "az-status az-ok",
                                 span { class: "az-dot" }
-                                span { class: "az-name", title: "{name}", "{name}" }
                                 button {
-                                    class: "btn-icon az-recheck",
+                                    class: "btn-icon az-name",
                                     title: "Re-check az login",
                                     onclick: move |_| {
                                         az_status.set(None);
@@ -810,7 +845,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
                                             az_status.set(Some(result));
                                         });
                                     },
-                                    "⟳"
+                                    "{name}"
                                 }
                             }
                         },
@@ -822,12 +857,16 @@ fn MainScreen(props: MainScreenProps) -> Element {
                                     services::azure_cli::open_login("68fac18b-9e76-4cef-b2b7-2c51b521cb94");
                                     az_status.set(None);
                                     spawn(async move {
-                                        // give the user ~15 s to log in before re-checking
-                                        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                                        let result = tokio::task::spawn_blocking(services::azure_cli::check_login)
-                                            .await
-                                            .unwrap_or(Err(services::azure_cli::AzError::Other("check failed".into())));
-                                        az_status.set(Some(result));
+                                        // poll every 5 s for up to 2 min until login completes
+                                        for _ in 0..24 {
+                                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                            let result = tokio::task::spawn_blocking(services::azure_cli::check_login)
+                                                .await
+                                                .unwrap_or(Err(services::azure_cli::AzError::Other("check failed".into())));
+                                            let done = result.is_ok();
+                                            az_status.set(Some(result));
+                                            if done { break; }
+                                        }
                                     });
                                 },
                                 "⚠ az login"

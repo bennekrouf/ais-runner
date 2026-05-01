@@ -7,9 +7,20 @@ pub enum AzError {
 }
 
 
+fn az_command(args: &[&str]) -> Command {
+    if cfg!(target_os = "windows") {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", "az"]).args(args);
+        cmd
+    } else {
+        let mut cmd = Command::new("az");
+        cmd.args(args);
+        cmd
+    }
+}
+
 fn run(args: &[&str]) -> Result<String, AzError> {
-    let out = Command::new("az")
-        .args(args)
+    let out = az_command(args)
         .output()
         .map_err(|e| AzError::Other(format!("az not found: {}", e)))?;
 
@@ -32,13 +43,10 @@ pub fn check_login() -> Result<String, AzError> {
     run(&["account", "show", "--query", "user.name", "-o", "tsv"])
 }
 
-/// Opens an interactive az login in a new terminal window (macOS).
+/// Spawns `az login` which opens a browser tab for OAuth — no terminal needed.
 pub fn open_login(tenant: &str) {
-    let script = format!(
-        "tell application \"Terminal\" to do script \"az login --tenant {} --scope 'https://management.core.windows.net//.default'\"",
-        tenant
-    );
-    let _ = Command::new("osascript").args(["-e", &script]).spawn();
+    let _ = az_command(&["login", "--tenant", tenant, "--scope", "https://management.core.windows.net//.default"])
+        .spawn();
 }
 
 /// Finds the resource group of a Service Bus namespace by name (searches across the subscription).
