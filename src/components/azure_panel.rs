@@ -46,6 +46,9 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                             sites_open.set(true);
                         }
                     }
+                    Err(crate::services::azure_cli::AzError::NotLoggedIn) => {
+                        status.set(Some("⚠ az login required — your token has expired. Run: az login --tenant 68fac18b-9e76-4cef-b2b7-2c51b521cb94".into()));
+                    }
                     Err(e) => status.set(Some(format!("Error: {:?}", e))),
                 }
             });

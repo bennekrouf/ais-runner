@@ -36,19 +36,6 @@ pub struct SqlConnection {
 }
 
 impl SqlConnection {
-    /// Returns the effective hostname for a TCP test.
-    pub fn effective_host(&self) -> Option<String> {
-        match self.auth_type {
-            SqlAuthType::ManagedIdentity => {
-                let s = self.resolved_server.trim().to_string();
-                if s.is_empty() { None } else { Some(s) }
-            }
-            SqlAuthType::ConnectionString => {
-                parse_server_from_conn_str(&self.resolved_conn_str)
-            }
-            SqlAuthType::Unknown => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -92,8 +92,8 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     let initial_conn_str = props.sb_conn_str.as_ref()
         .map(|(_, v)| v.clone())
         .unwrap_or_default();
-    let mut sb_cs_edit:    Signal<String> = use_signal(|| initial_conn_str);
-    let mut sb_cs_fetching: Signal<bool>  = use_signal(|| false);
+    let sb_cs_edit:    Signal<String> = use_signal(|| initial_conn_str);
+    let sb_cs_fetching: Signal<bool>  = use_signal(|| false);
 
     // ── Shared status bar ────────────────────────────────────────────────────
     let mut status: Signal<Option<(String, bool)>> = use_signal(|| None);

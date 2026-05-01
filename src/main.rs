@@ -355,6 +355,10 @@ fn MainScreen(props: MainScreenProps) -> Element {
         move |_| {
             state.set(ServiceState::Starting);
             push(format!("$ cd {} && func start", dir2), LogLevel::Info);
+            // Kill any stale process on port 7071 before starting
+            let _ = std::process::Command::new("sh")
+                .args(["-c", "lsof -ti :7071 | xargs kill -9 2>/dev/null; true"])
+                .output();
             match proc.read().start("func", &["start"], Some(&dir2)) {
                 Ok((stdout, stderr)) => {
                     state.set(ServiceState::Running);
