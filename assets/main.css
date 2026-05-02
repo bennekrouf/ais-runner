@@ -486,8 +486,8 @@ body.light .az-block-out { border-color: #cf3030; }
 #wf-header {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 9px 13px 8px;
+    gap: 8px;
+    padding: 12px 14px 10px;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
 }
@@ -495,7 +495,37 @@ body.light .az-block-out { border-color: #cf3030; }
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 6px;
+    gap: 10px;
+}
+.wf-filter-group {
+    display: flex;
+    background: var(--bg2);
+    padding: 2px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+}
+.btn-filter {
+    background: transparent;
+    border: none;
+    color: var(--text3);
+    padding: 4px 6px;
+    font-size: 13px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+.btn-filter:hover {
+    background: rgba(255,255,255,0.05);
+    color: var(--text1);
+}
+.btn-filter.active {
+    background: var(--bg3);
+    color: var(--text1);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
 }
 #wf-header h2 {
     font-size: 11px;
@@ -505,9 +535,6 @@ body.light .az-block-out { border-color: #cf3030; }
     letter-spacing: 0.08em;
     flex: 1;
 }
-#wf-local-toggle { font-size: 11px; padding: 2px 7px; flex-shrink: 0; }
-.toggle-on  { background: var(--blue) !important; color: #fff !important; border-color: var(--blue) !important; }
-.toggle-off { opacity: 0.6; }
 
 .wf-cloud-badge {
     font-size: 10px;
@@ -1273,6 +1300,35 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
     color: var(--red);
 }
 
+/* ── Azure queue sync badges ────────────────────────────────────────────── */
+.db-az-ok {
+    font-size: 11px;
+    color: var(--green);
+    white-space: nowrap;
+}
+.db-az-missing {
+    font-size: 11px;
+    color: var(--red);
+    white-space: nowrap;
+}
+.db-az-summary {
+    font-size: 11px;
+    color: var(--text3);
+}
+.db-section-sub {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text3);
+    letter-spacing: 0.04em;
+    padding: 10px 0 4px 0;
+    border-bottom: 1px dashed var(--border);
+    margin-bottom: 8px;
+}
+.db-card-azure-only {
+    opacity: 0.7;
+    border-style: dashed;
+}
+
 /* ── Service Bus send form ──────────────────────────────────────────────── */
 .db-send-form {
     margin-top: 8px;
@@ -1346,3 +1402,156 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
 .db-cs-status      { font-size: 12px; flex: 1; }
 .db-cs-status.ok   { color: var(--green); }
 .db-cs-status.warn { color: var(--yellow); }
+
+/* ── STATUS VIEW ── */
+#status-view {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg0);
+}
+.status-container {
+    max-width: 800px;
+    margin: 16px auto;
+    padding: 0 16px;
+}
+.status-container h3 {
+    font-size: 14px;
+    color: var(--text2);
+    margin: 0 0 16px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.status-card {
+    display: flex;
+    gap: 16px;
+    padding: 20px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg1);
+}
+.status-card.healthy { border-left: 4px solid #10b981; }
+.status-card.unhealthy { border-left: 4px solid #ef4444; }
+
+.status-icon {
+    font-size: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+}
+.status-info { flex: 1; }
+.status-label {
+    display: block;
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: var(--text1);
+}
+.status-message {
+    font-size: 13px;
+    color: var(--text2);
+    margin: 0;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* ── STATUS LOGS ── */
+.status-logs-full {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+.status-logs-scroll {
+    flex: 1;
+    background: #0d1117;
+    border-top: 1px solid var(--border);
+    padding: 16px;
+    overflow-y: auto;
+    font-family: var(--font-mono);
+}
+.status-logs-scroll .log-line {
+    padding: 2px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.status-logs-scroll .log-line:last-child {
+    border-bottom: none;
+}
+
+/* ── TOOLTIP ── */
+.tooltip-container {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+.tooltip-text {
+    visibility: hidden;
+    background: var(--bg2);
+    color: var(--text1);
+    padding: 7px 12px;
+    border-radius: 6px;
+    position: absolute;
+    z-index: 1000;
+    bottom: 140%;
+    left: 50%;
+    transform: translateX(-50%);
+    opacity: 0;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    box-shadow: 0 6px 16px rgba(0,0,0,0.4);
+    pointer-events: none;
+    line-height: 1.4;
+}
+.tooltip-text::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    margin-left: -6px;
+    border-width: 6px;
+    border-style: solid;
+    border-color: var(--border) transparent transparent transparent;
+}
+/* Triangle inner color (optional but nice for thick borders) */
+.tooltip-text::before {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    margin-left: -5px;
+    border-width: 5px;
+    border-style: solid;
+    border-color: var(--bg2) transparent transparent transparent;
+    z-index: 1;
+}
+.tooltip-container:hover .tooltip-text {
+    visibility: visible;
+    opacity: 1;
+    bottom: 125%;
+}
+
+/* ── TOOLTIP BOTTOM ── */
+.tooltip-text.bottom {
+    top: 140%;
+    bottom: auto;
+}
+.tooltip-text.bottom::after {
+    top: auto;
+    bottom: 100%;
+    border-color: transparent transparent var(--border) transparent;
+}
+.tooltip-text.bottom::before {
+    top: auto;
+    bottom: 100%;
+    border-color: transparent transparent var(--bg2) transparent;
+}
+.tooltip-container:hover .tooltip-text.bottom {
+    top: 125%;
+}

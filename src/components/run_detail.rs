@@ -1,5 +1,7 @@
 use dioxus::prelude::*;
 use crate::services::workflows::{self, ActionItem, RunItem, duration_ms};
+use crate::components::log_panel::LogLine;
+use crate::components::tooltip::Tooltip;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct RunDetailProps {
@@ -9,6 +11,8 @@ pub struct RunDetailProps {
     pub actions:       Vec<ActionItem>,
     pub is_live:       bool,
     pub active_tab:    Signal<String>,
+    pub health_error:  Option<String>,
+    pub logs:          Vec<LogLine>,
     pub on_run:        EventHandler<()>,
     pub on_refresh:    EventHandler<()>,
     pub on_clear_runs: EventHandler<()>,
@@ -48,30 +52,38 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                             onclick: move |_| active_tab.set("Run".to_string()),
                             "▶ Run"
                         }
+                        button {
+                            class: if *active_tab.read() == "Logs" { "detail-tab active" } else { "detail-tab" },
+                            onclick: move |_| active_tab.set("Logs".to_string()),
+                            "📜 Logs"
+                        }
                     }
                 }
 
                 // right: action buttons + live badge (fixed positions)
                 div { class: "detail-header-right",
-                    button {
-                        class: "btn btn-run btn-small",
-                        disabled: props.workflow.is_none() || props.is_live,
-                        title: "Trigger workflow",
-                        onclick: move |_| props.on_run.call(()),
-                        "▶ Trigger"
+                    Tooltip { text: "Trigger workflow", direction: "bottom",
+                        button {
+                            class: "btn btn-run btn-small",
+                            disabled: props.workflow.is_none() || props.is_live,
+                            onclick: move |_| props.on_run.call(()),
+                            "▶ Trigger"
+                        }
                     }
-                    button {
-                        class: "btn btn-run btn-small",
-                        disabled: props.is_live,
-                        title: "Refresh run history",
-                        onclick: move |_| props.on_refresh.call(()),
-                        "⟳ Refresh"
+                    Tooltip { text: "Refresh run history", direction: "bottom",
+                        button {
+                            class: "btn btn-run btn-small",
+                            disabled: props.is_live,
+                            onclick: move |_| props.on_refresh.call(()),
+                            "⟳ Refresh"
+                        }
                     }
-                    button {
-                        class: "btn btn-small btn-clear",
-                        title: "Clear run history",
-                        onclick: move |_| props.on_clear_runs.call(()),
-                        "✕ Clear"
+                    Tooltip { text: "Clear run history", direction: "bottom",
+                        button {
+                            class: "btn btn-small btn-clear",
+                            onclick: move |_| props.on_clear_runs.call(()),
+                            "✕ Clear"
+                        }
                     }
                     if props.is_live {
                         span { class: "live-badge", "● LIVE" }
@@ -93,6 +105,40 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                             is_live: props.is_live,
                             workflow: workflow_name.clone(),
                             on_select_run: props.on_select_run.clone(),
+                        }
+                    }
+                }
+            } else if *active_tab.read() == "Logs" {
+                div { id: "status-view",
+                    if props.workflow.is_none() {
+                        div { class: "empty-state", "Select a workflow to view its logs." }
+                    } else {
+                        if let Some(err) = props.health_error.clone() {
+                            div { class: "status-container",
+                                h3 { "Workflow Status" }
+                                div { class: "status-card unhealthy",
+                                    span { class: "status-icon", "🔴" }
+                                    div { class: "status-info",
+                                        span { class: "status-label", "Unhealthy" }
+                                        p { class: "status-message", "{err}" }
+                                    }
+                                }
+                            }
+                        }
+
+                        div { class: "status-logs-full",
+                            div { class: "status-logs-scroll",
+                                if props.logs.is_empty() {
+                                    div { class: "empty-state", "No related logs found in current session." }
+                                } else {
+                                    for line in props.logs.iter() {
+                                        div { class: "log-line",
+                                            span { class: "log-time", "{line.time}" }
+                                            span { class: line.level.css_class(), "{line.msg}" }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

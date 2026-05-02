@@ -1,6 +1,10 @@
 use dioxus::prelude::*;
 use std::collections::HashSet;
-use crate::services::azure_sync::{self, AzureWorkflow, LogicAppSite};
+use crate::services::{
+    azure_sync::{self, AzureWorkflow, LogicAppSite},
+    azure_cli,
+    settings_file,
+};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct AzurePanelProps {
@@ -158,10 +162,24 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                         }
                     }
                 }
-                button {
-                    class: "btn-icon",
-                    onclick: move |_| props.on_close.call(()),
-                    "×"
+                div { style: "display:flex;gap:8px;align-items:center",
+                    button {
+                        class: "btn btn-small btn-fetch",
+                        title: "Open a new terminal and run az login",
+                        onclick: {
+                            let dir = props.logic_apps_dir.clone();
+                            move |_| {
+                                let sub = settings_file::read_subscription_id(&dir);
+                                azure_cli::launch_az_login(sub);
+                            }
+                        },
+                        "🔐 Re-login"
+                    }
+                    button {
+                        class: "btn-icon",
+                        onclick: move |_| props.on_close.call(()),
+                        "×"
+                    }
                 }
             }
 
@@ -202,7 +220,23 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
 
             // status
             if let Some(msg) = status.read().as_ref() {
-                div { class: "az-panel-status", "{msg}" }
+                div { class: "az-panel-status",
+                    "{msg}"
+                    if msg.contains("az login required") {
+                        button {
+                            class: "btn btn-small btn-fetch",
+                            style: "margin-left:10px",
+                            onclick: {
+                                let dir = props.logic_apps_dir.clone();
+                                move |_| {
+                                    let sub = settings_file::read_subscription_id(&dir);
+                                    azure_cli::launch_az_login(sub);
+                                }
+                            },
+                            "🔐 Open login"
+                        }
+                    }
+                }
             }
 
             // workflow table

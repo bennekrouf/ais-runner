@@ -16,3 +16,7 @@ rfd = "0.15"
 dirs = "5"
 indexmap = "2"
 regex = { version = "1.12.3", features = ["std"] }
+
+[features]
+default = []
+bundle-azurite = []

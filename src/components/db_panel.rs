@@ -95,6 +95,12 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     let sb_cs_edit:    Signal<String> = use_signal(|| initial_conn_str);
     let sb_cs_fetching: Signal<bool>  = use_signal(|| false);
 
+    // ── Azure queue sync ─────────────────────────────────────────────────────
+    // None = not fetched yet, Some(vec) = queue names that exist in Azure
+    let mut az_queues:         Signal<Option<Vec<String>>> = use_signal(|| None);
+    let mut az_queues_loading: Signal<bool>                = use_signal(|| false);
+    let mut az_creating:       Signal<HashSet<String>>     = use_signal(HashSet::new);
+
     // ── Shared status bar ────────────────────────────────────────────────────
     let mut status: Signal<Option<(String, bool)>> = use_signal(|| None);
 
@@ -313,7 +319,57 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                 // ════════════════════════════════════════════════════════════
                 // SERVICE BUS SECTION
                 // ════════════════════════════════════════════════════════════
-                div { class: "db-section-title", style: "margin-top:20px", "📨 Service Bus" }
+                div { class: "db-section-title", style: "margin-top:20px; display:flex; align-items:center; gap:10px;",
+                    span { "📨 Service Bus" }
+                    {
+                        let is_loading = *az_queues_loading.read();
+                        let ns = sb_ns_edit.read().clone();
+                        let already = az_queues.read().is_some();
+                        rsx! {
+                            button {
+                                class: "btn btn-small btn-fetch",
+                                disabled: is_loading || ns.is_empty(),
+                                title: "List all queues in Azure and compare with local workflows",
+                                onclick: move |_| {
+                                    let ns2 = sb_ns_edit.read().clone();
+                                    let rg_cached = sb_rg.read().clone();
+                                    az_queues.set(None);
+                                    az_queues_loading.set(true);
+                                    spawn(async move {
+                                        let rg = if let Some(r) = rg_cached {
+                                            Ok(r)
+                                        } else {
+                                            let ns3 = ns2.clone();
+                                            tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns3))
+                                                .await
+                                                .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
+                                        };
+                                        match rg {
+                                            Ok(r) => {
+                                                sb_rg.set(Some(r.clone()));
+                                                match tokio::task::spawn_blocking(move || {
+                                                    azure_cli::sb_list_queues(&r, &ns2)
+                                                }).await {
+                                                    Ok(Ok(list)) => az_queues.set(Some(list)),
+                                                    Ok(Err(e))   => status.set(Some((format!("Queue list error: {:?}", e), true))),
+                                                    Err(_)       => status.set(Some(("Task failed".into(), true))),
+                                                }
+                                            }
+                                            Err(e) => status.set(Some((format!("RG lookup failed: {:?}", e), true))),
+                                        }
+                                        az_queues_loading.set(false);
+                                    });
+                                },
+                                if is_loading { "☁ Loading…" } else if already { "☁ Refresh" } else { "☁ Check Queues" }
+                            }
+                            if let Some(ref list) = *az_queues.read() {
+                                span { class: "db-az-summary",
+                                    "{list.len()} queues in Azure"
+                                }
+                            }
+                        }
+                    }
+                }
 
                 if props.sb_namespace.is_empty() {
                     div { class: "empty-state", "No Service Bus connection found in connections.json" }
@@ -511,19 +567,23 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                         }
                     }
 
-                    // Queue cards
+                    // Queue cards (local workflows)
                     for q in props.sb_queues.clone() {
                         {
                             let queue_name  = q.queue.clone();
                             let queue_name2 = queue_name.clone();
                             let queue_name3 = queue_name.clone();
                             let queue_name4 = queue_name.clone();
-                            let ns = props.sb_namespace.clone();
+                            let queue_name5 = queue_name.clone();
+                            let ns  = props.sb_namespace.clone();
                             let ns2 = ns.clone();
-                            let is_fetching = sb_fetching.read().contains(&queue_name);
-                            let stats_opt   = sb_stats.read().get(&queue_name).cloned();
-                            let is_send_open = sb_send_open.read().contains(&queue_name);
-                            let send_body   = sb_send_bodies.read().get(&queue_name).cloned().unwrap_or_default();
+                            let ns3 = ns.clone();
+                            let is_fetching    = sb_fetching.read().contains(&queue_name);
+                            let stats_opt      = sb_stats.read().get(&queue_name).cloned();
+                            let is_send_open   = sb_send_open.read().contains(&queue_name);
+                            let send_body      = sb_send_bodies.read().get(&queue_name).cloned().unwrap_or_default();
+                            let az_status: Option<bool> = az_queues.read().as_ref().map(|list| list.contains(&queue_name));
+                            let is_creating    = az_creating.read().contains(&queue_name);
 
                             rsx! {
                                 div { class: "db-card",
@@ -543,6 +603,55 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                     title: "{q.action_workflows.join(\", \")}",
                                                     "A:{q.action_workflows.len()}"
                                                 }
+                                            }
+                                            // Azure existence badge
+                                            match az_status {
+                                                Some(true)  => rsx! { span { class: "db-az-ok",      title: "Queue exists in Azure", "☁✅" } },
+                                                Some(false) => rsx! {
+                                                    span { class: "db-az-missing", title: "Queue not found in Azure", "☁❌" }
+                                                    button {
+                                                        class: "btn btn-small btn-warn",
+                                                        disabled: is_creating,
+                                                        title: "Create this queue in Azure",
+                                                        onclick: move |_| {
+                                                            let qn  = queue_name5.clone();
+                                                            let qn2 = queue_name5.clone();
+                                                            let ns4 = ns3.clone();
+                                                            let rg_now = sb_rg.read().clone();
+                                                            az_creating.write().insert(qn.clone());
+                                                            spawn(async move {
+                                                                let rg = if let Some(r) = rg_now { Ok(r) } else {
+                                                                    let ns5 = ns4.clone();
+                                                                    tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns5))
+                                                                        .await
+                                                                        .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
+                                                                };
+                                                                match rg {
+                                                                    Ok(r) => {
+                                                                        sb_rg.set(Some(r.clone()));
+                                                                        match tokio::task::spawn_blocking(move || {
+                                                                            azure_cli::sb_create_queue(&r, &ns4, &qn)
+                                                                        }).await {
+                                                                            Ok(Ok(_)) => {
+                                                                                status.set(Some((format!("✅ Created queue '{}'", qn2), false)));
+                                                                                // Add to local az_queues list so badge flips to ✅
+                                                                                if let Some(ref mut list) = *az_queues.write() {
+                                                                                    list.push(qn2.clone());
+                                                                                }
+                                                                            }
+                                                                            Ok(Err(e)) => status.set(Some((format!("Create failed: {:?}", e), true))),
+                                                                            Err(_)     => status.set(Some(("Task failed".into(), true))),
+                                                                        }
+                                                                    }
+                                                                    Err(e) => status.set(Some((format!("RG lookup failed: {:?}", e), true))),
+                                                                }
+                                                                az_creating.write().remove(&qn2);
+                                                            });
+                                                        },
+                                                        if is_creating { "Creating…" } else { "Create" }
+                                                    }
+                                                },
+                                                None => rsx! {},
                                             }
                                         }
                                         div { style: "margin-left:auto;display:flex;gap:6px;align-items:center",
@@ -707,6 +816,36 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    // Azure-only queues (exist in Azure but not referenced by any local workflow)
+                    {
+                        let local_names: HashSet<String> = props.sb_queues.iter()
+                            .map(|q| q.queue.clone())
+                            .collect();
+                        let azure_only: Vec<String> = az_queues.read()
+                            .as_ref()
+                            .map(|list| list.iter()
+                                .filter(|q| !local_names.contains(*q))
+                                .cloned()
+                                .collect())
+                            .unwrap_or_default();
+
+                        if !azure_only.is_empty() {
+                            rsx! {
+                                div { class: "db-section-sub", "☁ Azure-only queues (not used by local workflows)" }
+                                for qname in azure_only {
+                                    div { class: "db-card db-card-azure-only",
+                                        div { class: "db-card-header",
+                                            span { class: "db-card-name", "{qname}" }
+                                            span { class: "db-az-ok", "☁ Azure only" }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            rsx! {}
                         }
                     }
                 }

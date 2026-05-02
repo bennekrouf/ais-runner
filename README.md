@@ -19,18 +19,35 @@ A desktop tool for running and testing **Azure Logic Apps Standard** workflows l
 
 ## Prerequisites
 
-These must be installed and on PATH on any machine running the app:
+| Tool | Purpose | Install | Note |
+|------|---------|---------|------|
+| **Azure Functions Core Tools** (`func`) | Runs workflows locally | `npm install -g azure-functions-core-tools@4` | Required |
+| **Azure CLI** (`az`) | Fetches connection strings | https://aka.ms/installazurecli | Optional |
+| **Node.js** | Runtime for tools | https://nodejs.org | **Optional** (if bundled) |
+| **Azurite** | Storage emulator | `npm install -g azurite` | **Optional** (if bundled) |
 
-| Tool | Purpose | Install |
-|------|---------|---------|
-| **Node.js** | Runtime for func and azurite | https://nodejs.org |
-| **Azure Functions Core Tools** (`func`) | Runs workflows locally via `func start` | `npm install -g azure-functions-core-tools@4` |
-| **Azurite** | Local Azure Storage emulator | `npm install -g azurite` |
-| **Azure CLI** (`az`) | Fetches Service Bus connection strings, lists subscriptions | https://aka.ms/installazurecli |
+> **Zero-Dependency Mode:** You can bundle Node.js and Azurite directly with the app so that your colleagues don't need to install them. See the [Packaging](#packaging) section below.
 
-The app shows a warning banner on startup for any tool that is not found.
+---
 
-> **Windows only:** WebView2 Runtime is required (pre-installed on Windows 10 21H1+ and Windows 11 via Edge). On older machines download it from https://developer.microsoft.com/microsoft-edge/webview2/
+## Packaging
+
+To create a "zero-dependency" version of the app that works on machines without Node.js or Azurite installed:
+
+### 1. Bundle Azurite
+Run the provided packaging script. This uses `pkg` to compile Azurite into a standalone binary in your `bin/` folder.
+```bash
+./scripts/package_azurite.sh
+```
+
+### 2. Distribute
+When sharing the app, include the `bin/` folder next to your executable:
+- `ais-runner` (the app)
+- `bin/azurite` (the bundled emulator)
+
+The app will automatically detect the bundled binary and use it, bypassing the need for a global `node` or `azurite` installation.
+
+---
 
 ---
 

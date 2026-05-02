@@ -8,3 +8,4 @@ pub mod system_check;
 pub mod sql_check;
 pub mod sb_check;
 pub mod azure_sync;
+pub mod runtime_manager;

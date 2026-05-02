@@ -26,7 +26,7 @@ use services::{
     workflows::{self, ActionItem, RunItem, WorkflowItem, run_trigger_direct},
 };
 
-const MAIN_CSS: Asset = asset!("/assets/main.css");
+const MAIN_CSS: &str = include_str!("../assets/main.css");
 
 fn now() -> String {
     Local::now().format("%H:%M:%S").to_string()
@@ -81,7 +81,7 @@ fn App() -> Element {
     };
 
     rsx! {
-        document::Link { rel: "stylesheet", href: MAIN_CSS }
+        document::Style { "{MAIN_CSS}" }
         match screen.read().clone() {
             Screen::Welcome => rsx! {
                 WelcomeScreen {
@@ -324,8 +324,9 @@ fn MainScreen(props: MainScreenProps) -> Element {
         let mut push = push_log.clone();
         move |_| {
             state.set(ServiceState::Starting);
-            push("$ azurite --location /tmp/azurite --debug /tmp/azurite/debug.log".to_string(), LogLevel::Info);
-            match proc.read().start("azurite",
+            let az_bin = services::runtime_manager::resolve_tool("azurite");
+            push(format!("$ {} --location /tmp/azurite --debug /tmp/azurite/debug.log", az_bin), LogLevel::Info);
+            match proc.read().start(&az_bin,
                 &["--location", "/tmp/azurite", "--debug", "/tmp/azurite/debug.log"], None) {
                 Ok(_) => { state.set(ServiceState::Running); push("Azurite started on ports 10000/10001/10002".to_string(), LogLevel::Ok); }
                 Err(e) => { state.set(ServiceState::Stopped); push(format!("Azurite error: {}", e), LogLevel::Error); }
@@ -353,13 +354,34 @@ fn MainScreen(props: MainScreenProps) -> Element {
         let mut push  = push_log.clone();
         let dir2      = dir.clone();
         move |_| {
+            // Azurite must be running first — Logic Apps Standard uses it for the
+            // blob-based secret repository (AzureWebJobsStorage=UseDevelopmentStorage=true).
+            if !matches!(*azurite_state.read(), ServiceState::Running) {
+                push(
+                    "⚠ Start Azurite first — func start needs blob storage for its secret repository.".to_string(),
+                    LogLevel::Warn,
+                );
+                return;
+            }
             state.set(ServiceState::Starting);
-            push(format!("$ cd {} && func start", dir2), LogLevel::Info);
+
+            // Detect correct working directory for func (it needs host.json)
+            let mut func_cwd = dir2.clone();
+            let p = std::path::Path::new(&dir2);
+            if !p.join("host.json").exists() {
+                if p.join("logic_apps").join("host.json").exists() {
+                    func_cwd = p.join("logic_apps").to_str().unwrap_or(&dir2).to_string();
+                } else if p.join("logic-apps").join("host.json").exists() {
+                    func_cwd = p.join("logic-apps").to_str().unwrap_or(&dir2).to_string();
+                }
+            }
+
+            push(format!("$ cd {} && func start", func_cwd), LogLevel::Info);
             // Kill any stale process on port 7071 before starting
             let _ = std::process::Command::new("sh")
                 .args(["-c", "lsof -ti :7071 | xargs kill -9 2>/dev/null; true"])
                 .output();
-            match proc.read().start("func", &["start"], Some(&dir2)) {
+            match proc.read().start("func", &["start"], Some(&func_cwd)) {
                 Ok((stdout, stderr)) => {
                     state.set(ServiceState::Running);
                     push("func start launched — waiting for workflows…".to_string(), LogLevel::Ok);
@@ -879,9 +901,12 @@ fn MainScreen(props: MainScreenProps) -> Element {
                                 button {
                                     class: "az-login-btn",
                                     title: "Sign in with az login",
-                                    onclick: move |_| {
+                                    onclick: {
+                                        let dir = dir.clone();
+                                        move |_| {
                                         services::azure_cli::open_login("68fac18b-9e76-4cef-b2b7-2c51b521cb94");
                                         az_status.set(None);
+                                        let login_dir = dir.clone();
                                         spawn(async move {
                                             for _ in 0..24 {
                                                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -890,14 +915,25 @@ fn MainScreen(props: MainScreenProps) -> Element {
                                                     .unwrap_or(Err(services::azure_cli::AzError::Other("check failed".into())));
                                                 let done = result.is_ok();
                                                 az_status.set(Some(result));
-                                                if done { break; }
+                                                if done {
+                                                    // Auto-select the project subscription so the
+                                                    // interactive prompt never blocks us.
+                                                    let d = login_dir.clone();
+                                                    let _ = tokio::task::spawn_blocking(move || {
+                                                        if let Some(sub) = services::azure_sync::detect_subscription(&d) {
+                                                            let _ = services::azure_cli::set_subscription(&sub);
+                                                        }
+                                                    }).await;
+                                                    break;
+                                                }
                                             }
                                         });
-                                    },
-                                    "Sign in"
-                                }
+                                    }
+                                },
+                                "Sign in"
                             }
-                        },
+                        }
+                    },
                     }
                 }
                 button {
@@ -1027,6 +1063,21 @@ fn MainScreen(props: MainScreenProps) -> Element {
                         is_live: selected_wf.read().as_deref()
                             .map(|n| running_wfs.read().contains(n))
                             .unwrap_or(false),
+                        health_error: selected_wf.read().as_ref().and_then(|name| {
+                            workflows.read().iter().find(|w| &w.name == name).and_then(|w| w.health_error.clone())
+                        }),
+                        logs: {
+                            let wf_name = selected_wf.read().clone();
+                            let logs = log_lines.read();
+                            if let Some(name) = wf_name {
+                                logs.iter()
+                                    .filter(|line| line.msg.contains(&name))
+                                    .cloned()
+                                    .collect()
+                            } else {
+                                vec![]
+                            }
+                        },
                         active_tab: active_tab,
                         on_run: on_trigger_from_detail,
                         on_refresh: on_refresh,

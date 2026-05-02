@@ -11,6 +11,7 @@ pub struct WorkflowItem {
     pub disabled: bool,
     pub trigger_name: String, // JSON key — used in listCallbackUrl
     pub trigger_type: String, // type field — used for display icon
+    pub health_error: Option<String>,
 }
 
 pub async fn list_workflows() -> Result<Vec<WorkflowItem>, String> {
@@ -63,7 +64,11 @@ pub async fn list_workflows() -> Result<Vec<WorkflowItem>, String> {
                 .and_then(|t| t["type"].as_str())
                 .unwrap_or("Unknown")
                 .to_string();
-            Some(WorkflowItem { name, healthy, disabled, trigger_name, trigger_type })
+            let health_error = v["health"]["error"]["message"].as_str()
+                .or_else(|| v["health"]["error"].as_str())
+                .map(|s| s.to_string());
+
+            Some(WorkflowItem { name, healthy, disabled, trigger_name, trigger_type, health_error })
         })
         .collect();
 

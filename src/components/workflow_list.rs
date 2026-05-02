@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 use std::collections::HashSet;
 use crate::services::workflows::WorkflowItem;
+use crate::components::tooltip::Tooltip;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct WorkflowListProps {
@@ -25,41 +26,89 @@ fn trigger_icon(trigger: &str) -> &'static str {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum FilterMode {
+    Healthy,   // 💻 (Runnable locally)
+    Unhealthy, // 🔴 (Connection issues)
+    Azure,     // ☁️ (Passive triggers like Event Grid)
+    All,       // 🌐 (Show everything)
+}
+
 #[component]
 pub fn WorkflowList(props: WorkflowListProps) -> Element {
-    let mut filter     = use_signal(|| String::new());
-    let mut local_only = use_signal(|| true);
+    let mut filter      = use_signal(|| String::new());
+    let mut filter_mode = use_signal(|| FilterMode::Healthy);
 
     let query = filter.read().to_lowercase();
-    let healthy_count = props.workflows.iter().filter(|wf| wf.healthy).count();
     let total = props.workflows.len();
+
+    let is_azure_type = |ttype: &str| -> bool {
+        let t = ttype.to_lowercase();
+        t.contains("eventgrid") || t.contains("servicebus") || t.contains("blob") || t.contains("serviceprovider") || t.contains("apiconnection")
+    };
 
     let visible: Vec<_> = props.workflows.iter()
         .filter(|wf| {
-            if *local_only.read() && !wf.healthy {
+            if !query.is_empty() && !wf.name.to_lowercase().contains(&query) {
                 return false;
             }
-            query.is_empty() || wf.name.to_lowercase().contains(&query)
+            match *filter_mode.read() {
+                FilterMode::Healthy => wf.healthy && !wf.disabled && !is_azure_type(&wf.trigger_type),
+                FilterMode::Unhealthy => !wf.healthy,
+                FilterMode::Azure => wf.healthy && is_azure_type(&wf.trigger_type),
+                FilterMode::All => true,
+            }
         })
         .collect();
+
+    let count_healthy = props.workflows.iter().filter(|wf| wf.healthy && !wf.disabled && !is_azure_type(&wf.trigger_type)).count();
+    let count_unhealthy = props.workflows.iter().filter(|wf| !wf.healthy).count();
+    let count_azure = props.workflows.iter().filter(|wf| wf.healthy && is_azure_type(&wf.trigger_type)).count();
+
+    let (current_count, show_total) = match *filter_mode.read() {
+        FilterMode::Healthy   => (count_healthy, true),
+        FilterMode::Unhealthy => (count_unhealthy, true),
+        FilterMode::Azure     => (count_azure, true),
+        FilterMode::All       => (total, false),
+    };
 
     rsx! {
         div { id: "workflows",
             div { id: "wf-header",
                 div { id: "wf-title-row",
-                    if total == 0 {
-                        h2 { "Workflows" }
-                    } else if *local_only.read() {
-                        h2 { "Workflows ({healthy_count}/{total})" }
-                    } else {
-                        h2 { "Workflows ({total})" }
+                    h2 {
+                        if show_total { "Workflows ({current_count}/{total})" }
+                        else { "Workflows ({total})" }
                     }
-                    button {
-                        id: "wf-local-toggle",
-                        class: if *local_only.read() { "btn btn-small toggle-on" } else { "btn btn-small toggle-off" },
-                        title: if *local_only.read() { "Showing locally runnable only — click to show all" } else { "Showing all workflows — click to hide non-local" },
-                        onclick: move |_| { let v = *local_only.read(); local_only.set(!v); },
-                        if *local_only.read() { "💻 Local" } else { "🌐 All" }
+                    div { class: "wf-filter-group",
+                        Tooltip { text: "Local / Healthy ({count_healthy})", direction: "bottom",
+                            button {
+                                class: if *filter_mode.read() == FilterMode::Healthy { "btn-filter active" } else { "btn-filter" },
+                                onclick: move |_| filter_mode.set(FilterMode::Healthy),
+                                "💻"
+                            }
+                        }
+                        Tooltip { text: "Unhealthy / Errors ({count_unhealthy})", direction: "bottom",
+                            button {
+                                class: if *filter_mode.read() == FilterMode::Unhealthy { "btn-filter active" } else { "btn-filter" },
+                                onclick: move |_| filter_mode.set(FilterMode::Unhealthy),
+                                "🔴"
+                            }
+                        }
+                        Tooltip { text: "Azure Only / Passive ({count_azure})", direction: "bottom",
+                            button {
+                                class: if *filter_mode.read() == FilterMode::Azure { "btn-filter active" } else { "btn-filter" },
+                                onclick: move |_| filter_mode.set(FilterMode::Azure),
+                                "☁️"
+                            }
+                        }
+                        Tooltip { text: "Show All ({total})", direction: "bottom",
+                            button {
+                                class: if *filter_mode.read() == FilterMode::All { "btn-filter active" } else { "btn-filter" },
+                                onclick: move |_| filter_mode.set(FilterMode::All),
+                                "🌐"
+                            }
+                        }
                     }
                 }
                 input {

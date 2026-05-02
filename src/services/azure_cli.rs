@@ -43,6 +43,27 @@ pub fn check_login() -> Result<String, AzError> {
     run(&["account", "show", "--query", "user.name", "-o", "tsv"])
 }
 
+/// Opens a new Terminal window on macOS and runs `az login`, so the interactive
+/// login flow is visible without blocking the runner's terminal.
+pub fn launch_az_login(subscription_id: Option<String>) {
+    let sub_cmd = match subscription_id {
+        Some(id) if !id.is_empty() =>
+            format!(" && az account set --subscription {}", id),
+        _ => String::new(),
+    };
+    let inner = format!(
+        "az login --tenant 68fac18b-9e76-4cef-b2b7-2c51b521cb94{}; echo ''; echo '✅ Done — close this window and retry in the runner.'",
+        sub_cmd
+    );
+    let script = format!(
+        "tell application \"Terminal\"\n    activate\n    do script \"{}\"\nend tell",
+        inner.replace('"', "\\\"")
+    );
+    let _ = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .spawn();
+}
+
 /// Spawns `az login` which opens a browser tab for OAuth — no terminal needed.
 pub fn open_login(tenant: &str) {
     let _ = az_command(&["login", "--tenant", tenant, "--scope", "https://management.core.windows.net//.default"])
@@ -195,6 +216,35 @@ pub fn sb_get_bearer_token() -> Result<String, AzError> {
         "--query", "accessToken",
         "-o", "tsv",
     ])
+}
+
+/// Sets the active subscription for subsequent az commands.
+pub fn set_subscription(subscription_id: &str) -> Result<(), AzError> {
+    run(&["account", "set", "--subscription", subscription_id]).map(|_| ())
+}
+
+/// List all queue names in a Service Bus namespace.
+pub fn sb_list_queues(rg: &str, namespace_fqdn: &str) -> Result<Vec<String>, AzError> {
+    let short_name = namespace_fqdn.split('.').next().unwrap_or(namespace_fqdn);
+    let out = run(&[
+        "servicebus", "queue", "list",
+        "--resource-group", rg,
+        "--namespace-name", short_name,
+        "--query", "[].name",
+        "-o", "tsv",
+    ])?;
+    Ok(out.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+}
+
+/// Create a queue in a Service Bus namespace.
+pub fn sb_create_queue(rg: &str, namespace_fqdn: &str, queue: &str) -> Result<(), AzError> {
+    let short_name = namespace_fqdn.split('.').next().unwrap_or(namespace_fqdn);
+    run(&[
+        "servicebus", "queue", "create",
+        "--resource-group", rg,
+        "--namespace-name", short_name,
+        "--name", queue,
+    ]).map(|_| ())
 }
 
 /// Fetches the primary connection string for a Service Bus namespace.

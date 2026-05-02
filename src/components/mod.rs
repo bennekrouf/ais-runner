@@ -6,3 +6,4 @@ pub mod settings_editor;
 pub mod run_dialog;
 pub mod db_panel;
 pub mod azure_panel;
+pub mod tooltip;

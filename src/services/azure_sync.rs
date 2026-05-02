@@ -138,4 +138,12 @@ pub fn download_workflow(subscription: &str, rg: &str, site: &str, workflow: &st
     Err(AzError::Other("Still throttled after retries — try again in a minute".into()))
 }
 
-
+/// Read the subscription ID from local.settings.json (WORKFLOWS_SUBSCRIPTION_ID).
+pub fn detect_subscription(logic_apps_dir: &str) -> Option<String> {
+    let text = std::fs::read_to_string(
+        std::path::Path::new(logic_apps_dir).join("local.settings.json")
+    ).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let sub = v["Values"]["WORKFLOWS_SUBSCRIPTION_ID"].as_str()?.to_string();
+    if sub.is_empty() { None } else { Some(sub) }
+}
