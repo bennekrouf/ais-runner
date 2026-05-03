@@ -159,10 +159,12 @@ pub fn sb_list_namespaces() -> Result<Vec<(String, String, String)>, AzError> {
 /// Pass `subscription` to target the correct subscription directly.
 pub fn sb_find_rg(namespace_fqdn: &str, subscription: Option<&str>) -> Result<String, AzError> {
     let short_name = namespace_fqdn.split('.').next().unwrap_or(namespace_fqdn);
+    // Use a more global search that doesn't require --resource-group itself to find the group
     let mut args = vec![
-        "servicebus", "namespace", "show",
+        "resource", "list",
         "--name", short_name,
-        "--query", "resourceGroup",
+        "--resource-type", "Microsoft.ServiceBus/namespaces",
+        "--query", "[0].resourceGroup",
         "-o", "tsv",
     ];
     if let Some(sub) = subscription {
@@ -170,13 +172,14 @@ pub fn sb_find_rg(namespace_fqdn: &str, subscription: Option<&str>) -> Result<St
         args.push(sub);
     }
     let rg = run(&args)?;
+    let rg = rg.trim();
     if rg.is_empty() || rg == "None" || rg == "null" {
         return Err(AzError::Other(format!(
-            "Namespace '{}' not found — check az login and subscription",
+            "Namespace '{}' not found in active subscription — check az login",
             short_name
         )));
     }
-    Ok(rg)
+    Ok(rg.to_string())
 }
 
 /// Fetch active + DLQ message counts and size for one queue.

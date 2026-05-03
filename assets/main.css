@@ -1995,3 +1995,11 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
     position: sticky;
     bottom: 0;
 }
+
+/* ── SERVICE BUS CREATE ROW ── */
+.db-create-row {
+    display: flex;
+    gap: 10px;
+    margin: 10px 0 15px;
+    padding: 0 4px;
+}

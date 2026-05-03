@@ -169,6 +169,10 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     // Inline confirmation: container name waiting for a second "Confirm" click
     let mut blob_clear_confirm: Signal<Option<String>>  = use_signal(|| None);
 
+    // Input for new queue name
+    let mut new_queue_name:     Signal<String>          = use_signal(String::new);
+    let mut new_queue_creating: Signal<bool>            = use_signal(|| false);
+
     // ── Active tab ───────────────────────────────────────────────────────────
     let mut active_tab: Signal<&'static str> = use_signal(|| "sql");
 
@@ -486,6 +490,56 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                 }
                             }
                         }
+                    }
+                }
+
+                div { class: "db-create-row",
+                    input {
+                        class: "db-field-input",
+                        style: "flex: 1",
+                        placeholder: "Create new queue (e.g. ais.workflow.error)...",
+                        value: "{new_queue_name}",
+                        oninput: move |e| new_queue_name.set(e.value()),
+                    }
+                    button {
+                        class: "btn btn-run btn-small",
+                        disabled: *new_queue_creating.read() || new_queue_name.read().is_empty() || sb_ns_edit.read().is_empty(),
+                        onclick: move |_| {
+                            let q = new_queue_name.read().clone();
+                            let ns = sb_ns_edit.read().clone();
+                            let rg_cached = sb_rg.read().clone();
+                            let sub = subscription.read().clone();
+                            new_queue_creating.set(true);
+                            spawn(async move {
+                                let rg = if let Some(r) = rg_cached { Ok(r) } else {
+                                    let ns2 = ns.clone();
+                                    tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns2, sub.as_deref()))
+                                        .await
+                                        .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
+                                };
+                                match rg {
+                                    Ok(r) => {
+                                        sb_rg.set(Some(r.clone()));
+                                        let q_task = q.clone();
+                                        match tokio::task::spawn_blocking(move || azure_cli::sb_create_queue(&r, &ns, &q_task)).await {
+                                            Ok(Ok(_)) => {
+                                                status.set(Some((format!("✅ Created queue '{}'", q), false)));
+                                                new_queue_name.set(String::new());
+                                                // Trigger a refresh of the queue list if it's already open
+                                                if let Some(ref mut list) = *az_queues.write() {
+                                                    list.push(q);
+                                                }
+                                            }
+                                            Ok(Err(e)) => status.set(Some((format!("Create failed: {:?}", e), true))),
+                                            Err(_)     => status.set(Some(("Task failed".into(), true))),
+                                        }
+                                    }
+                                    Err(e) => status.set(Some((format!("RG lookup failed: {:?}", e), true))),
+                                }
+                                new_queue_creating.set(false);
+                            });
+                        },
+                        if *new_queue_creating.read() { "Creating..." } else { "➕ Create Queue" }
                     }
                 }
 
