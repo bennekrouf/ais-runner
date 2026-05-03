@@ -1026,7 +1026,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
                                         env_switching.set(true);
                                         pending_keys.set(vec![]);
                                         storage_accounts.set(vec![]);
-                                        let going_local = !matches!(*current_env.read(), EnvMode::Azure);
+                                        let going_local = !matches!(*current_env.read(), EnvMode::Local);
                                         spawn(async move {
                                             if going_local {
                                                 let d3 = d.clone();
@@ -1288,8 +1288,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
                             local_workflows: workflows.read().iter().map(|w| w.name.clone()).collect(),
                             on_close:  move |_| azure_panel_open.set(false),
                             on_pulled: move |name: String| {
-                                azure_panel_open.set(false);
-                                push2(format!("⬇ {} pulled from Azure — reload workflows to see it", name), LogLevel::Ok);
+                                push2(format!("⬇ {} pulled from Azure", name), LogLevel::Ok);
                             },
                         }
                     }

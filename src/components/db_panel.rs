@@ -175,6 +175,25 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     // ── Shared status bar ────────────────────────────────────────────────────
     let mut status: Signal<Option<(String, bool)>> = use_signal(|| None);
 
+    // Auto-refresh blob list whenever the blob tab becomes active and Azurite is running.
+    // Use .peek() for blob_loading so it is NOT a reactive dependency — only active_tab
+    // switching drives re-runs, preventing the infinite loop that .read() would cause.
+    let azurite_up = props.azurite_running;
+    use_effect(move || {
+        if *active_tab.read() == "blob" && azurite_up && !*blob_loading.peek() {
+            blob_loading.set(true);
+            blob_clear_confirm.set(None);
+            spawn(async move {
+                match tokio::task::spawn_blocking(blob_fetch_all).await {
+                    Ok(Ok(list)) => { blob_containers.set(Some(list)); }
+                    Ok(Err(e))   => { status.set(Some((format!("Refresh failed: {}", e), true))); }
+                    Err(_)       => {}
+                }
+                blob_loading.set(false);
+            });
+        }
+    });
+
     let dir = props.logic_apps_dir.clone();
 
     // ── Save SQL + SB namespace + SB connection string ───────────────────────
@@ -965,35 +984,34 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     div { class: "db-section-header",
                         div { class: "db-section-title-row",
                             span { class: "db-section-title", "🗄 Local Blob Storage" }
-                            span { class: "db-az-badge local", "Azurite" }
-                            if props.azurite_running && !*blob_loading.read() {
-                                button {
-                                    class: "btn btn-small",
-                                    onclick: move |_| {
-                                        blob_loading.set(true);
-                                        blob_clear_confirm.set(None);
-                                        status.set(None);
-                                        spawn(async move {
-                                            match tokio::task::spawn_blocking(blob_fetch_all).await {
-                                                Ok(Ok(list)) => {
-                                                    blob_containers.set(Some(list));
+                            div { class: "db-section-title-right",
+                                span { class: "db-az-badge local", "via Azurite" }
+                                if *blob_loading.read() {
+                                    span { class: "db-fetching", "loading…" }
+                                } else if props.azurite_running {
+                                    button {
+                                        class: "btn btn-small",
+                                        onclick: move |_| {
+                                            blob_loading.set(true);
+                                            blob_clear_confirm.set(None);
+                                            status.set(None);
+                                            spawn(async move {
+                                                match tokio::task::spawn_blocking(blob_fetch_all).await {
+                                                    Ok(Ok(list)) => { blob_containers.set(Some(list)); }
+                                                    Ok(Err(e))   => {
+                                                        status.set(Some((format!("Refresh failed: {}", e), true)));
+                                                        blob_containers.set(Some(vec![]));
+                                                    }
+                                                    Err(e) => {
+                                                        status.set(Some((format!("Task panicked: {}", e), true)));
+                                                    }
                                                 }
-                                                Ok(Err(e)) => {
-                                                    status.set(Some((format!("Refresh failed: {}", e), true)));
-                                                    blob_containers.set(Some(vec![]));
-                                                }
-                                                Err(e) => {
-                                                    status.set(Some((format!("Task panicked: {}", e), true)));
-                                                }
-                                            }
-                                            blob_loading.set(false);
-                                        });
-                                    },
-                                    "⟳ Refresh"
+                                                blob_loading.set(false);
+                                            });
+                                        },
+                                        "⟳ Refresh"
+                                    }
                                 }
-                            }
-                            if *blob_loading.read() {
-                                span { class: "db-fetching", "loading…" }
                             }
                         }
                         span { class: "db-section-sub", "http://127.0.0.1:10000/devstoreaccount1" }

@@ -539,10 +539,68 @@ body.light .az-block-out { border-color: #cf3030; }
 .az-wf-row.azure-only { background: rgba(99,162,255,0.05); }
 .az-wf-row.azure-only .az-wf-name { color: var(--text1); font-weight: 500; }
 .az-wf-row.local .az-wf-name { color: var(--text2); }
-.az-wf-health, .az-wf-local { text-align: center; width: 52px; }
+.az-wf-health { text-align: center; width: 52px; }
+.az-wf-sync   { text-align: center; width: 100px; }
 .az-wf-action { width: 90px; text-align: right; }
-.az-pull-btn { font-size: 11px; padding: 3px 8px; }
-.az-pulling { font-size: 11px; color: var(--text3); font-style: italic; }
+.az-pull-btn  { font-size: 11px; padding: 3px 8px; }
+.az-pulling   { font-size: 11px; color: var(--text3); font-style: italic; }
+
+/* Sync-status badges */
+.az-sync-none     { color: var(--text3); }
+.az-sync-checking { color: var(--text3); font-style: italic; letter-spacing: .05em; }
+.az-sync-local    { color: var(--text2); }
+.az-sync-same     { color: #3dba6f; font-weight: 500; font-size: 12px; }
+.az-sync-differs  { color: #e07b39; font-weight: 600; font-size: 12px; }
+
+/* Highlight rows where remote differs from local */
+.az-wf-row.differs { background: rgba(224,123,57,0.07); }
+.az-wf-row.differs .az-wf-name { color: var(--text1); font-weight: 600; }
+
+/* ── Overwrite confirmation modal ── */
+.az-confirm-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0.35);
+    z-index: 10;
+    border-radius: 10px;
+}
+.az-confirm-modal {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 11;
+    background: var(--bg1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px 28px;
+    min-width: 360px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+.az-confirm-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #e07b39;
+    margin-bottom: 12px;
+}
+.az-confirm-body {
+    font-size: 13px;
+    color: var(--text2);
+    line-height: 1.5;
+    margin-bottom: 20px;
+}
+.az-confirm-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+}
+.az-confirm-overwrite {
+    background: #e07b39;
+    color: #fff;
+    border-color: #c4692e;
+    font-weight: 600;
+}
+.az-confirm-overwrite:hover { background: #c4692e; }
 
 /* ── MAIN AREA ── */
 #main {
@@ -1418,14 +1476,24 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
 .btn-fetch:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ── DB panel: section title ─────────────────────────────────────────────── */
+.db-section-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 8px;
+    padding: 6px 0 4px 0;
+}
 .db-section-title {
     font-size: 12px;
     font-weight: 600;
     color: var(--text2);
     letter-spacing: 0.05em;
-    padding: 6px 0 4px 0;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 8px;
+}
+.db-section-title-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
 /* ── Service Bus workflow count badges ──────────────────────────────────── */
@@ -1480,10 +1548,12 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
 /* ── Local blob storage section ─────────────────────────────────────────── */
 .db-az-badge {
     font-size: 10px;
-    font-weight: 600;
+    font-weight: 500;
     padding: 2px 7px;
     border-radius: 10px;
     letter-spacing: 0.03em;
+    pointer-events: none;   /* clearly not clickable */
+    user-select: none;
 }
 .db-az-badge.local {
     background: #1a3a2a;
