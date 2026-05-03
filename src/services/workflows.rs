@@ -257,6 +257,14 @@ pub struct ActionError {
     pub message: Option<String>,
 }
 
+/// Fetch the raw detail JSON for a single action (includes inputsLink / outputsLink body).
+pub async fn get_action_detail(workflow: &str, run_id: &str, action: &str) -> Result<serde_json::Value, String> {
+    let url = format!("{}/workflows/{}/runs/{}/actions/{}", BASE, workflow, run_id, action);
+    reqwest::get(&url)
+        .await.map_err(|e| e.to_string())?
+        .json::<serde_json::Value>().await.map_err(|e| e.to_string())
+}
+
 pub async fn list_actions(workflow: &str, run_id: &str) -> Result<Vec<ActionItem>, String> {
     // $expand=outputLinks makes the runtime include child actions of scopes
     let url = format!("{}/workflows/{}/runs/{}/actions?$expand=outputLinks", BASE, workflow, run_id);

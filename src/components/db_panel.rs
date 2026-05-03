@@ -1,15 +1,62 @@
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
 use crate::services::{
-    azure_cli::{self, SbQueueStats},
+    azure_cli::{self, BlobInfo, SbQueueStats},
+    azurite_client,
+    azure_sync,
     sb_check::{self, SbQueueInfo},
     sql_check::{self, SqlAuthType, SqlConnection, TestResult},
     settings_file,
 };
 
+/// Fetch the full container+blob list directly from Azurite over HTTP.
+/// Uses the Azurite REST API with Shared Key auth — no az CLI required.
+/// Parse `input` as `container[/optional/folder/prefix]`, create the container
+/// (idempotent), then — if a prefix is given — create a `.keep` placeholder blob
+/// so the virtual folder appears in listings immediately.
+async fn do_create_container_or_folder(input: String) -> Result<(), String> {
+    let (container, folder) = match input.find('/') {
+        None => (input.clone(), None),
+        Some(pos) => {
+            let c = input[..pos].trim().to_string();
+            let f = input[pos + 1..].trim().trim_end_matches('/').to_string();
+            (c, if f.is_empty() { None } else { Some(f) })
+        }
+    };
+    // Create the container (ignores 409 Already Exists)
+    let c2 = container.clone();
+    tokio::task::spawn_blocking(move || azurite_client::create_container(&c2))
+        .await
+        .map_err(|e| format!("Task panicked: {}", e))?
+        .map_err(|e| format!("Create container failed: {}", e))?;
+    // If a folder prefix was given, materialise it with a .keep blob
+    if let Some(prefix) = folder {
+        let c3 = container.clone();
+        tokio::task::spawn_blocking(move || {
+            azurite_client::create_virtual_folder(&c3, &prefix)
+        })
+        .await
+        .map_err(|e| format!("Task panicked: {}", e))?
+        .map_err(|e| format!("Create folder failed: {}", e))?;
+    }
+    Ok(())
+}
+
+fn blob_fetch_all() -> Result<Vec<(String, Vec<BlobInfo>)>, String> {
+    let names = azurite_client::list_containers()
+        .map_err(|e| format!("list containers: {}", e))?;
+    let mut out = Vec::new();
+    for name in names {
+        let blobs = azurite_client::list_blobs(&name).unwrap_or_default();
+        out.push((name, blobs));
+    }
+    Ok(out)
+}
+
 fn do_fetch_conn_str(
     ns:             String,
     rg_cached:      Option<String>,
+    subscription:   Option<String>,
     mut sb_rg:      Signal<Option<String>>,
     mut sb_cs_edit: Signal<String>,
     mut fetching:   Signal<bool>,
@@ -21,7 +68,8 @@ fn do_fetch_conn_str(
             Ok(r)
         } else {
             let ns2 = ns.clone();
-            tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns2))
+            let sub = subscription.clone();
+            tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns2, sub.as_deref()))
                 .await
                 .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
         };
@@ -53,6 +101,7 @@ pub struct DbPanelProps {
     /// (setting_key, current_value) for the SB connection string, if detected
     pub sb_conn_str:       Option<(String, String)>,
     pub sb_queues:         Vec<SbQueueInfo>,
+    pub azurite_running:   bool,
     pub on_close:          EventHandler<()>,
     pub on_saved:          EventHandler<()>,
 }
@@ -100,6 +149,28 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     let mut az_queues:         Signal<Option<Vec<String>>> = use_signal(|| None);
     let mut az_queues_loading: Signal<bool>                = use_signal(|| false);
     let mut az_creating:       Signal<HashSet<String>>     = use_signal(HashSet::new);
+
+    // ── Subscription (for scoped az calls) ──────────────────────────────────
+    // Stored as a Signal so closures can clone it freely without move conflicts.
+    let subscription: Signal<Option<String>> =
+        use_signal(|| azure_sync::detect_subscription(&props.logic_apps_dir));
+
+    // ── Local blob storage (Azurite) ─────────────────────────────────────────
+    // Vec of (container_name, blobs) — None = not yet fetched
+    let mut blob_containers:  Signal<Option<Vec<(String, Vec<BlobInfo>)>>> = use_signal(|| None);
+    let mut blob_loading:     Signal<bool>              = use_signal(|| false);
+    let mut blob_clearing:    Signal<HashSet<String>>   = use_signal(HashSet::new);
+    let mut blob_uploading:   Signal<HashSet<String>>   = use_signal(HashSet::new);
+    let mut blob_creating:    Signal<bool>              = use_signal(|| false);
+    // Which containers have their blob list expanded
+    let mut blob_expanded:    Signal<HashSet<String>>   = use_signal(HashSet::new);
+    // Input for new container name
+    let mut new_container_name: Signal<String>          = use_signal(String::new);
+    // Inline confirmation: container name waiting for a second "Confirm" click
+    let mut blob_clear_confirm: Signal<Option<String>>  = use_signal(|| None);
+
+    // ── Active tab ───────────────────────────────────────────────────────────
+    let mut active_tab: Signal<&'static str> = use_signal(|| "sql");
 
     // ── Shared status bar ────────────────────────────────────────────────────
     let mut status: Signal<Option<(String, bool)>> = use_signal(|| None);
@@ -157,8 +228,29 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
             div { class: "db-panel-header",
                 span { class: "db-panel-title", "🔌 Connections" }
                 div { style: "display:flex;gap:8px;align-items:center",
-                    button { class: "btn btn-run btn-small", onclick: on_save, "💾 Save" }
+                    if *active_tab.read() != "blob" {
+                        button { class: "btn btn-run btn-small", onclick: on_save, "💾 Save" }
+                    }
                     button { class: "btn-icon", onclick: move |_| props.on_close.call(()), "×" }
+                }
+            }
+
+            // ── Tab bar ────────────────────────────────────────────────────
+            div { class: "db-tabs",
+                button {
+                    class: if *active_tab.read() == "sql" { "db-tab active" } else { "db-tab" },
+                    onclick: move |_| active_tab.set("sql"),
+                    "🗄 SQL"
+                }
+                button {
+                    class: if *active_tab.read() == "sb" { "db-tab active" } else { "db-tab" },
+                    onclick: move |_| active_tab.set("sb"),
+                    "📨 Service Bus"
+                }
+                button {
+                    class: if *active_tab.read() == "blob" { "db-tab active" } else { "db-tab" },
+                    onclick: move |_| active_tab.set("blob"),
+                    "🗄 Blob Storage"
                 }
             }
 
@@ -175,6 +267,8 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                 // ════════════════════════════════════════════════════════════
                 // SQL SECTION
                 // ════════════════════════════════════════════════════════════
+                div {
+                    class: if *active_tab.read() == "sql" { "tab-pane" } else { "tab-pane hidden" },
                 div { class: "db-section-title", "🗄 SQL Connections" }
 
                 if props.connections.is_empty() {
@@ -314,17 +408,21 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                             }
                         }
                     }
-                }
+                } // end SQL for loop
+                } // end SQL tab-pane
 
                 // ════════════════════════════════════════════════════════════
                 // SERVICE BUS SECTION
                 // ════════════════════════════════════════════════════════════
+                div {
+                    class: if *active_tab.read() == "sb" { "tab-pane" } else { "tab-pane hidden" },
                 div { class: "db-section-title", style: "margin-top:20px; display:flex; align-items:center; gap:10px;",
                     span { "📨 Service Bus" }
                     {
                         let is_loading = *az_queues_loading.read();
                         let ns = sb_ns_edit.read().clone();
                         let already = az_queues.read().is_some();
+                        let sub_for_check = subscription.read().clone();
                         rsx! {
                             button {
                                 class: "btn btn-small btn-fetch",
@@ -335,12 +433,13 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                     let rg_cached = sb_rg.read().clone();
                                     az_queues.set(None);
                                     az_queues_loading.set(true);
+                                    let sub2 = sub_for_check.clone();
                                     spawn(async move {
                                         let rg = if let Some(r) = rg_cached {
                                             Ok(r)
                                         } else {
                                             let ns3 = ns2.clone();
-                                            tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns3))
+                                            tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns3, sub2.as_deref()))
                                                 .await
                                                 .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
                                         };
@@ -497,6 +596,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                                                 do_fetch_conn_str(
                                                                                     fqdn3.clone(),
                                                                                     Some(rg2.clone()),
+                                                                                    subscription.read().clone(),
                                                                                     sb_rg, sb_cs_edit,
                                                                                     sb_cs_fetching, status,
                                                                                 );
@@ -578,6 +678,8 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                             let ns  = props.sb_namespace.clone();
                             let ns2 = ns.clone();
                             let ns3 = ns.clone();
+                            let sub_stats  = subscription.read().clone();
+                            let sub_create = subscription.read().clone();
                             let is_fetching    = sb_fetching.read().contains(&queue_name);
                             let stats_opt      = sb_stats.read().get(&queue_name).cloned();
                             let is_send_open   = sb_send_open.read().contains(&queue_name);
@@ -618,11 +720,12 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                             let qn2 = queue_name5.clone();
                                                             let ns4 = ns3.clone();
                                                             let rg_now = sb_rg.read().clone();
+                                                            let sub4 = sub_create.clone();
                                                             az_creating.write().insert(qn.clone());
                                                             spawn(async move {
                                                                 let rg = if let Some(r) = rg_now { Ok(r) } else {
                                                                     let ns5 = ns4.clone();
-                                                                    tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns5))
+                                                                    tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns5, sub4.as_deref()))
                                                                         .await
                                                                         .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
                                                                 };
@@ -674,6 +777,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                     let qn2 = queue_name2.clone();
                                                     let ns3 = ns.clone();
                                                     let rg_now = sb_rg.read().clone();
+                                                    let sub3 = sub_stats.clone();
                                                     sb_fetching.write().insert(qn.clone());
                                                     spawn(async move {
                                                         // Resolve RG once
@@ -682,7 +786,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                         } else {
                                                             let ns4 = ns3.clone();
                                                             match tokio::task::spawn_blocking(move || {
-                                                                azure_cli::sb_find_rg(&ns4)
+                                                                azure_cli::sb_find_rg(&ns4, sub3.as_deref())
                                                             }).await {
                                                                 Ok(Ok(r)) => {
                                                                     sb_rg.set(Some(r.clone()));
@@ -848,7 +952,303 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                             rsx! {}
                         }
                     }
+                } // end SB content
+                } // end SB tab-pane
+
+                // ════════════════════════════════════════════════════════════
+                // LOCAL BLOB STORAGE (AZURITE)
+                // ════════════════════════════════════════════════════════════
+                div {
+                    class: if *active_tab.read() == "blob" { "tab-pane" } else { "tab-pane hidden" },
+                div { class: "db-section",
+                    // ── Header row ───────────────────────────────────────────
+                    div { class: "db-section-header",
+                        div { class: "db-section-title-row",
+                            span { class: "db-section-title", "🗄 Local Blob Storage" }
+                            span { class: "db-az-badge local", "Azurite" }
+                            if props.azurite_running && !*blob_loading.read() {
+                                button {
+                                    class: "btn btn-small",
+                                    onclick: move |_| {
+                                        blob_loading.set(true);
+                                        blob_clear_confirm.set(None);
+                                        status.set(None);
+                                        spawn(async move {
+                                            match tokio::task::spawn_blocking(blob_fetch_all).await {
+                                                Ok(Ok(list)) => {
+                                                    blob_containers.set(Some(list));
+                                                }
+                                                Ok(Err(e)) => {
+                                                    status.set(Some((format!("Refresh failed: {}", e), true)));
+                                                    blob_containers.set(Some(vec![]));
+                                                }
+                                                Err(e) => {
+                                                    status.set(Some((format!("Task panicked: {}", e), true)));
+                                                }
+                                            }
+                                            blob_loading.set(false);
+                                        });
+                                    },
+                                    "⟳ Refresh"
+                                }
+                            }
+                            if *blob_loading.read() {
+                                span { class: "db-fetching", "loading…" }
+                            }
+                        }
+                        span { class: "db-section-sub", "http://127.0.0.1:10000/devstoreaccount1" }
+                    }
+
+                    if !props.azurite_running {
+                        div { class: "blob-offline", "⚠ Start Azurite to manage local storage" }
+                    } else {
+                        // ── New container form ────────────────────────────────
+                        div { class: "blob-new-row",
+                            input {
+                                r#type: "text",
+                                placeholder: "container  or  container/folder/subfolder",
+                                value: "{new_container_name.read()}",
+                                oninput: move |e| new_container_name.set(e.value()),
+                                onkeydown: move |e| {
+                                    if e.key() == Key::Enter {
+                                        let name = new_container_name.read().trim().to_string();
+                                        if !name.is_empty() && !*blob_creating.read() {
+                                            blob_creating.set(true);
+                                            status.set(None);
+                                            spawn(async move {
+                                                if let Err(msg) = do_create_container_or_folder(name).await {
+                                                    status.set(Some((msg, true)));
+                                                    blob_creating.set(false);
+                                                    return;
+                                                }
+                                                match tokio::task::spawn_blocking(blob_fetch_all).await {
+                                                    Ok(Ok(list)) => { blob_containers.set(Some(list)); }
+                                                    Ok(Err(e)) => { status.set(Some((format!("List failed: {}", e), true))); }
+                                                    Err(_) => {}
+                                                }
+                                                new_container_name.set(String::new());
+                                                blob_creating.set(false);
+                                            });
+                                        }
+                                    }
+                                },
+                            }
+                            button {
+                                class: "btn btn-small btn-run",
+                                disabled: new_container_name.read().trim().is_empty() || *blob_creating.read(),
+                                onclick: move |_| {
+                                    let name = new_container_name.read().trim().to_string();
+                                    if !name.is_empty() && !*blob_creating.read() {
+                                        blob_creating.set(true);
+                                        status.set(None);
+                                        spawn(async move {
+                                            if let Err(msg) = do_create_container_or_folder(name).await {
+                                                status.set(Some((msg, true)));
+                                                blob_creating.set(false);
+                                                return;
+                                            }
+                                            match tokio::task::spawn_blocking(blob_fetch_all).await {
+                                                Ok(Ok(list)) => { blob_containers.set(Some(list)); }
+                                                Ok(Err(e)) => { status.set(Some((format!("List failed: {}", e), true))); }
+                                                Err(_) => {}
+                                            }
+                                            new_container_name.set(String::new());
+                                            blob_creating.set(false);
+                                        });
+                                    }
+                                },
+                                if *blob_creating.read() { "Creating…" } else { "+ Create" }
+                            }
+                        }
+
+                        // ── Container tree ────────────────────────────────────
+                        div { class: "blob-tree",
+                            if let Some(containers) = blob_containers.read().clone() {
+                                if containers.is_empty() {
+                                    div { class: "blob-empty", "No containers — create one above or click ⟳ Refresh" }
+                                }
+                                for (cname, blobs) in containers {
+                                    {
+                                        let cname2    = cname.clone();
+                                        let cname3    = cname.clone();
+                                        let cname4    = cname.clone();
+                                        let cname_exp = cname.clone();
+                                        let is_expanded  = blob_expanded.read().contains(&cname);
+                                        let is_clearing  = blob_clearing.read().contains(&cname);
+                                        let is_uploading = blob_uploading.read().contains(&cname);
+                                        let confirm_pending = blob_clear_confirm.read().as_deref() == Some(&cname);
+                                        let blob_count_label = if blobs.is_empty() {
+                                            "empty".to_string()
+                                        } else {
+                                            let s = if blobs.len() == 1 { "" } else { "s" };
+                                            format!("{} blob{}", blobs.len(), s)
+                                        };
+                                        let expand_icon = if is_expanded { "▼" } else { "▶" };
+                                        rsx! {
+                                            // Container row
+                                            div { class: "blob-container-row",
+                                                // Expand / collapse toggle
+                                                button {
+                                                    class: "blob-expand-btn",
+                                                    title: if is_expanded { "Collapse" } else { "Expand blob list" },
+                                                    onclick: move |_| {
+                                                        let mut exp = blob_expanded.write();
+                                                        if exp.contains(&cname_exp) {
+                                                            exp.remove(&cname_exp);
+                                                        } else {
+                                                            exp.insert(cname_exp.clone());
+                                                        }
+                                                    },
+                                                    "{expand_icon}"
+                                                }
+                                                div { class: "blob-container-info",
+                                                    span { class: "blob-container-name", "{cname}" }
+                                                    span { class: "blob-count", "{blob_count_label}" }
+                                                }
+                                                div { class: "blob-container-actions",
+                                                    // Upload button
+                                                    button {
+                                                        class: "btn btn-small",
+                                                        disabled: is_uploading || is_clearing,
+                                                        title: "Upload a file into this container",
+                                                        onclick: move |_| {
+                                                            let c = cname3.clone();
+                                                            blob_uploading.write().insert(c.clone());
+                                                            spawn(async move {
+                                                                if let Some(file) = rfd::AsyncFileDialog::new().pick_file().await {
+                                                                    let path = file.path().to_string_lossy().to_string();
+                                                                    let name = file.file_name();
+                                                                    let c2   = c.clone();
+                                                                    let _ = tokio::task::spawn_blocking(move || {
+                                                                        azurite_client::upload_blob(&c2, &path, &name)
+                                                                    }).await;
+                                                                    // Auto-expand + refresh this container
+                                                                    blob_expanded.write().insert(c.clone());
+                                                                    let c3 = c.clone();
+                                                                    if let Ok(Ok(updated)) = tokio::task::spawn_blocking(move || {
+                                                                        azurite_client::list_blobs(&c3)
+                                                                    }).await {
+                                                                        if let Some(ref mut list) = *blob_containers.write() {
+                                                                            if let Some(entry) = list.iter_mut().find(|(n, _)| n == &c) {
+                                                                                entry.1 = updated;
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                blob_uploading.write().remove(&c);
+                                                            });
+                                                        },
+                                                        if is_uploading { "↑ …" } else { "↑ Upload" }
+                                                    }
+                                                    // Clear button (two-step confirmation)
+                                                    if confirm_pending {
+                                                        button {
+                                                            class: "btn btn-small btn-danger",
+                                                            disabled: is_clearing,
+                                                            title: "Confirm — delete ALL blobs in this container",
+                                                            onclick: move |_| {
+                                                                let c = cname2.clone();
+                                                                blob_clear_confirm.set(None);
+                                                                blob_clearing.write().insert(c.clone());
+                                                                spawn(async move {
+                                                                    let c2 = c.clone();
+                                                                    let _ = tokio::task::spawn_blocking(move || {
+                                                                        azurite_client::clear_container(&c2)
+                                                                    }).await;
+                                                                    if let Some(ref mut list) = *blob_containers.write() {
+                                                                        if let Some(entry) = list.iter_mut().find(|(n, _)| n == &c) {
+                                                                            entry.1.clear();
+                                                                        }
+                                                                    }
+                                                                    blob_clearing.write().remove(&c);
+                                                                });
+                                                            },
+                                                            if is_clearing { "🗑 …" } else { "🗑 Confirm?" }
+                                                        }
+                                                        button {
+                                                            class: "btn btn-small",
+                                                            onclick: move |_| blob_clear_confirm.set(None),
+                                                            "Cancel"
+                                                        }
+                                                    } else {
+                                                        button {
+                                                            class: "btn btn-small",
+                                                            disabled: is_clearing || is_uploading,
+                                                            title: "Delete all blobs in this container",
+                                                            onclick: move |_| {
+                                                                blob_clear_confirm.set(Some(cname4.clone()));
+                                                            },
+                                                            if is_clearing { "🗑 …" } else { "🗑 Clear" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            // ── Expanded blob list ────────────────
+                                            if is_expanded {
+                                                if blobs.is_empty() {
+                                                    div { class: "blob-list",
+                                                        div { class: "blob-empty", style: "padding:6px 0",
+                                                            "Container is empty"
+                                                        }
+                                                    }
+                                                } else {
+                                                    div { class: "blob-list",
+                                                        for b in &blobs {
+                                                            {
+                                                                // Blobs ending with /.keep are virtual folder markers
+                                                                let is_folder = b.name.ends_with("/.keep");
+                                                                let (icon, display, full) = if is_folder {
+                                                                    let folder_path = b.name
+                                                                        .strip_suffix("/.keep")
+                                                                        .unwrap_or(&b.name);
+                                                                    let folder_name = folder_path
+                                                                        .rsplit('/')
+                                                                        .next()
+                                                                        .unwrap_or(folder_path);
+                                                                    ("📁", folder_name.to_string(), folder_path.to_string())
+                                                                } else {
+                                                                    let name = b.name
+                                                                        .rsplit('/')
+                                                                        .next()
+                                                                        .unwrap_or(&b.name)
+                                                                        .to_string();
+                                                                    ("📄", name, b.name.clone())
+                                                                };
+                                                                let size_str = if is_folder {
+                                                                    String::new()
+                                                                } else {
+                                                                    let kb = b.size as f64 / 1024.0;
+                                                                    if b.size < 1024 {
+                                                                        format!("{} B", b.size)
+                                                                    } else if kb < 1024.0 {
+                                                                        format!("{:.1} KB", kb)
+                                                                    } else {
+                                                                        format!("{:.1} MB", kb / 1024.0)
+                                                                    }
+                                                                };
+                                                                let row_cls = if is_folder { "blob-row blob-folder-row" } else { "blob-row" };
+                                                                rsx! {
+                                                                    div { class: "{row_cls}", title: "{full}",
+                                                                        span { class: "blob-row-icon", "{icon}" }
+                                                                        span { class: "blob-name", "{display}" }
+                                                                        span { class: "blob-size", "{size_str}" }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                div { class: "blob-empty", "Click ⟳ Refresh to list containers" }
+                            }
+                        }
+                    }
                 }
+                } // end blob tab-pane
             }
         }
     }

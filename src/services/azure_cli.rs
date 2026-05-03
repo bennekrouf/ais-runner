@@ -156,18 +156,23 @@ pub fn sb_list_namespaces() -> Result<Vec<(String, String, String)>, AzError> {
 }
 
 /// Find the resource group of a SB namespace without knowing it upfront.
-pub fn sb_find_rg(namespace_fqdn: &str) -> Result<String, AzError> {
+/// Pass `subscription` to target the correct subscription directly.
+pub fn sb_find_rg(namespace_fqdn: &str, subscription: Option<&str>) -> Result<String, AzError> {
     let short_name = namespace_fqdn.split('.').next().unwrap_or(namespace_fqdn);
-    let rg = run(&[
-        "resource", "list",
-        "--resource-type", "Microsoft.ServiceBus/namespaces",
+    let mut args = vec![
+        "servicebus", "namespace", "show",
         "--name", short_name,
-        "--query", "[0].resourceGroup",
+        "--query", "resourceGroup",
         "-o", "tsv",
-    ])?;
+    ];
+    if let Some(sub) = subscription {
+        args.push("--subscription");
+        args.push(sub);
+    }
+    let rg = run(&args)?;
     if rg.is_empty() || rg == "None" || rg == "null" {
         return Err(AzError::Other(format!(
-            "Namespace '{}' not found in current subscription — run az account show to check",
+            "Namespace '{}' not found — check az login and subscription",
             short_name
         )));
     }
@@ -247,6 +252,31 @@ pub fn sb_create_queue(rg: &str, namespace_fqdn: &str, queue: &str) -> Result<()
     ]).map(|_| ())
 }
 
+/// List all storage accounts in the subscription with their blob endpoint URLs.
+/// Returns (account_name, blob_endpoint) pairs.
+pub fn list_storage_accounts(subscription: Option<&str>) -> Result<Vec<(String, String)>, AzError> {
+    let mut args = vec![
+        "storage", "account", "list",
+        "--query", "[].{name:name,ep:primaryEndpoints.blob}",
+        "-o", "tsv",
+    ];
+    let sub_owned;
+    if let Some(sub) = subscription {
+        sub_owned = sub.to_string();
+        args.push("--subscription");
+        args.push(&sub_owned);
+    }
+    let out = run(&args)?;
+    Ok(out.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(2, '\t');
+            let name = parts.next()?.trim().to_string();
+            let ep   = parts.next().unwrap_or("").trim().trim_end_matches('/').to_string();
+            if name.is_empty() { None } else { Some((name, ep)) }
+        })
+        .collect())
+}
+
 /// Fetches the primary connection string for a Service Bus namespace.
 pub fn fetch_servicebus_connection_string(subscription: &str, rg: &str, namespace: &str) -> Result<String, AzError> {
     run(&[
@@ -258,5 +288,78 @@ pub fn fetch_servicebus_connection_string(subscription: &str, rg: &str, namespac
         "--query", "primaryConnectionString",
         "-o", "tsv",
     ])
+}
+
+// ── Azurite / local blob storage helpers ──────────────────────────────────
+
+#[allow(dead_code)]
+pub const AZURITE_CONN_STR: &str = "UseDevelopmentStorage=true";
+
+#[derive(Debug, Clone)]
+pub struct BlobInfo {
+    pub name: String,
+    pub size: u64,
+}
+
+#[allow(dead_code)]
+pub fn storage_create_container(conn_str: &str, container: &str) -> Result<(), AzError> {
+    run(&["storage", "container", "create", "--connection-string", conn_str, "--name", container]).map(|_| ())
+}
+
+#[allow(dead_code)]
+pub fn storage_list_containers(conn_str: &str) -> Result<Vec<String>, AzError> {
+    let out = run(&[
+        "storage", "container", "list",
+        "--connection-string", conn_str,
+        "--query", "[].name",
+        "-o", "tsv",
+    ])?;
+    Ok(out.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+}
+
+#[allow(dead_code)]
+pub fn storage_list_blobs(conn_str: &str, container: &str) -> Result<Vec<BlobInfo>, AzError> {
+    let out = run(&[
+        "storage", "blob", "list",
+        "--container-name", container,
+        "--connection-string", conn_str,
+        "--query", "[].{name:name,size:properties.contentLength}",
+        "-o", "json",
+    ])?;
+    let arr: serde_json::Value =
+        serde_json::from_str(&out).map_err(|e| AzError::Other(e.to_string()))?;
+    let mut result = Vec::new();
+    if let Some(items) = arr.as_array() {
+        for item in items {
+            let name = item["name"].as_str().unwrap_or("").to_string();
+            let size = item["size"].as_u64().unwrap_or(0);
+            if !name.is_empty() {
+                result.push(BlobInfo { name, size });
+            }
+        }
+    }
+    Ok(result)
+}
+
+#[allow(dead_code)]
+pub fn storage_clear_container(conn_str: &str, container: &str) -> Result<u64, AzError> {
+    let out = run(&[
+        "storage", "blob", "delete-batch",
+        "--source", container,
+        "--connection-string", conn_str,
+    ])?;
+    Ok(out.trim().parse().unwrap_or(0))
+}
+
+#[allow(dead_code)]
+pub fn storage_upload_blob(conn_str: &str, container: &str, file_path: &str, blob_name: &str) -> Result<(), AzError> {
+    run(&[
+        "storage", "blob", "upload",
+        "--file", file_path,
+        "--container-name", container,
+        "--name", blob_name,
+        "--connection-string", conn_str,
+        "--overwrite", "true",
+    ]).map(|_| ())
 }
 

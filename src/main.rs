@@ -5,6 +5,7 @@ use chrono::{Local, Utc};
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
 use dioxus::desktop::LogicalSize;
+use dark_light;
 
 use components::{
     log_panel::{LogLevel, LogLine, LogPanel},
@@ -23,6 +24,8 @@ use services::{
     system_check,
     sql_check,
     sb_check,
+    env_mode::{self, EnvMode},
+    setup_manager,
     workflows::{self, ActionItem, RunItem, WorkflowItem, run_trigger_direct},
 };
 
@@ -39,6 +42,7 @@ fn main() {
             dioxus::desktop::WindowBuilder::new()
                 .with_title("AIS Local Runner")
                 .with_inner_size(LogicalSize::new(1280.0, 820.0))
+                .with_maximized(true)
                 .with_always_on_top(false),
         );
     LaunchBuilder::desktop().with_cfg(cfg).launch(App);
@@ -231,10 +235,61 @@ fn MainScreen(props: MainScreenProps) -> Element {
     let mut actions = use_signal(|| Vec::<ActionItem>::new());
     let running_wfs = use_signal(|| HashSet::<String>::new());
     let current_view = use_signal(|| "Workflows".to_string());
-    let mut is_light = use_signal(|| false);
+    let system_light = dark_light::detect() != dark_light::Mode::Dark;
+    let mut is_light = use_signal(|| system_light);
+
+    // ── Setup / Onboarding ─────────────────────────────────────────────────
+    let dir_for_setup = dir.clone();
+    let setup_status = use_signal(move || setup_manager::check_setup(&dir_for_setup));
+    let setup_updates: Signal<HashMap<String, String>> = use_signal(HashMap::new);
+
+    let on_initialize = {
+        let dir = dir.clone();
+        let mut status = setup_status.clone();
+        move |_| {
+            let d = dir.clone();
+            let d2 = dir.clone();
+            spawn(async move {
+                if let Ok(_) = tokio::task::spawn_blocking(move || setup_manager::initialize_from_template(&d)).await.unwrap() {
+                    status.set(setup_manager::check_setup(&d2));
+                }
+            });
+        }
+    };
+
+    let _on_apply_setup = {
+        let dir = dir.clone();
+        let mut status = setup_status.clone();
+        let updates = setup_updates.clone();
+        move |_: Event<MouseData>| {
+            let d = dir.clone();
+            let d2 = dir.clone();
+            let u = updates.read().clone();
+            spawn(async move {
+                if let Ok(_) = tokio::task::spawn_blocking(move || setup_manager::apply_settings(&d, u)).await.unwrap() {
+                    status.set(setup_manager::check_setup(&d2));
+                }
+            });
+        }
+    };
+
+    // ── Environment mode (Local ↔ Azure) ───────────────────────────────────
+    let dir_for_env = dir.clone();
+    let mut current_env  = use_signal(move || env_mode::detect_mode(&dir_for_env));
+    let mut env_switching = use_signal(|| false);
+    // Storage accounts for "needs_fetch" picker: Vec<(account_name, blob_endpoint)>
+    let mut storage_accounts: Signal<Vec<(String, String)>> = use_signal(Vec::new);
+    // Keys that need a storage account picked before they can go Azure
+    let mut pending_keys: Signal<Vec<String>> = use_signal(Vec::new);
+
+    // Apply body class on first render so no flash of wrong theme.
+    use_effect(move || {
+        let cls = if *is_light.read() { "light" } else { "" };
+        document::eval(&format!("document.body.className = '{}';", cls));
+    });
     // (wf_name, trigger_name, trigger_type, suggested_payload)
     let mut run_dialog  = use_signal(|| Option::<(String, String, String, String)>::None);
-    let active_tab       = use_signal(|| "Source".to_string());
+    let mut active_tab   = use_signal(|| "Source".to_string());
     // workflows that have at least one run in history (survives workflow selection changes)
     let mut traced_wfs   = use_signal(|| HashSet::<String>::new());
     // workflows the user explicitly cleared → timestamp of the clear (ISO 8601)
@@ -487,34 +542,6 @@ fn MainScreen(props: MainScreenProps) -> Element {
     };
 
     // ── Load workflows ─────────────────────────────────────────────────────
-    let on_load_workflows = {
-        let wfs     = workflows.clone();
-        let push    = push_log.clone();
-        let traced  = traced_wfs.clone();
-        let cleared = cleared_wfs.clone();
-        move |_| {
-            let mut wfs    = wfs.clone();
-            let mut push   = push.clone();
-            let mut traced = traced.clone();
-            let cleared    = cleared.clone();
-            spawn(async move {
-                push("Fetching workflows from localhost:7071…".to_string(), LogLevel::Info);
-                match workflows::list_workflows().await {
-                    Ok(list) => {
-                        push(format!("Loaded {} workflow(s)", list.len()), LogLevel::Ok);
-                        let names: Vec<String> = list.iter().map(|w| w.name.clone()).collect();
-                        wfs.set(list);
-                        sweep_run_history(names, &mut traced, &cleared).await;
-                    }
-                    Err(e) if e == "host-not-ready" => {
-                        push("func start is still initializing — try again in a few seconds.".to_string(), LogLevel::Warn);
-                    }
-                    Err(e) => push(format!("Cannot reach func start: {}", e), LogLevel::Error),
-                }
-            });
-        }
-    };
-
     // ── Select workflow ────────────────────────────────────────────────────
     let on_select_wf = {
         let mut selected = selected_wf.clone();
@@ -720,15 +747,17 @@ fn MainScreen(props: MainScreenProps) -> Element {
                 let mut actions = actions.clone();
                 let mut push    = push.clone();
                 spawn(async move {
-                    if let Ok(r) = workflows::list_runs(&wf).await {
-                        if let Some(latest) = r.first() {
-                            if let Ok(a) = workflows::list_actions(&wf, &latest.name).await {
-                                actions.set(a);
+                    match workflows::list_runs(&wf).await {
+                        Ok(r) => {
+                            if let Some(latest) = r.first() {
+                                match workflows::list_actions(&wf, &latest.name).await {
+                                    Ok(a)  => actions.set(a),
+                                    Err(e) => push(format!("Actions error: {}", e), LogLevel::Error),
+                                }
                             }
+                            runs.set(r);
                         }
-                        runs.set(r);
-                    } else {
-                        push("Refresh failed".to_string(), LogLevel::Warn);
+                        Err(e) => push(format!("Refresh failed: {}", e), LogLevel::Error),
                     }
                 });
             }
@@ -821,6 +850,35 @@ fn MainScreen(props: MainScreenProps) -> Element {
 
     rsx! {
         div { id: "app",
+            match setup_status.read().clone() {
+                setup_manager::SetupStatus::NeedsInitialization => rsx! {
+                    div { class: "setup-banner",
+                        span { "🚀 Your environment is not initialized yet. Create local.settings.json from template?" }
+                        button { class: "setup-banner-btn", onclick: on_initialize, "Bootstrap Settings" }
+                    }
+                },
+                setup_manager::SetupStatus::NeedsConfiguration(count) => rsx! {
+                    div { class: "setup-banner",
+                        span { "⚠ {count} settings require attention (SQL passwords, Azure endpoints)." }
+                        button { 
+                            class: "setup-banner-btn", 
+                            onclick: move |_| { active_tab.set("Settings".to_string()); }, 
+                            "Configure Environment" 
+                        }
+                    }
+                },
+                setup_manager::SetupStatus::MissingKeys(keys) => rsx! {
+                    div { class: "setup-banner",
+                        span { "⚠ connections.json requires missing keys: {keys.join(\", \")}" }
+                        button { 
+                            class: "setup-banner-btn", 
+                            onclick: move |_| { active_tab.set("Settings".to_string()); }, 
+                            "Fix Settings" 
+                        }
+                    }
+                },
+                _ => rsx! {}
+            }
 
             // TOOLBAR
             div { id: "toolbar",
@@ -936,10 +994,114 @@ fn MainScreen(props: MainScreenProps) -> Element {
                     },
                     }
                 }
-                button {
-                    class: "btn btn-run btn-small",
-                    onclick: on_load_workflows,
-                    "⟳ Load Workflows"
+                // ── Environment toggle ─────────────────────────────────────
+                {
+                    let mode       = current_env.read().clone();
+                    let switching  = *env_switching.read();
+                    let dir_env    = dir.clone();
+                    let sub_env    = services::azure_sync::detect_subscription(&dir.clone());
+                    let (badge_class, badge_label, toggle_label, toggle_title) = match &mode {
+                        EnvMode::Local   => ("env-badge local",  "🏠 Local",  "☁ Use Azure",  "Switch blob connections to real Azure storage"),
+                        EnvMode::Azure   => ("env-badge azure",  "☁ Azure",  "🏠 Use Local", "Switch blob connections to Azurite (local dev)"),
+                        EnvMode::Mixed   => ("env-badge mixed",  "⚠ Mixed",  "🏠 All Local", "Some connections are mixed — switch all to Azurite"),
+                        EnvMode::Unknown => ("env-badge unknown","? Unknown", "?", "No blob connections found"),
+                    };
+                    let env_block_class = match &mode {
+                        EnvMode::Local   => "env-block local",
+                        EnvMode::Azure   => "env-block azure",
+                        EnvMode::Mixed   => "env-block mixed",
+                        EnvMode::Unknown => "env-block",
+                    };
+                    rsx! {
+                        div { class: "{env_block_class}",
+                            span { class: "{badge_class}", "{badge_label}" }
+                            if mode != EnvMode::Unknown {
+                                button {
+                                    class: "btn btn-small env-toggle-btn",
+                                    disabled: switching,
+                                    title: "{toggle_title}",
+                                    onclick: move |_| {
+                                        let d  = dir_env.clone();
+                                        let sub = sub_env.clone();
+                                        env_switching.set(true);
+                                        pending_keys.set(vec![]);
+                                        storage_accounts.set(vec![]);
+                                        let going_local = !matches!(*current_env.read(), EnvMode::Azure);
+                                        spawn(async move {
+                                            if going_local {
+                                                let d3 = d.clone();
+                                                let result = tokio::task::spawn_blocking(move || env_mode::switch_to_local(&d3))
+                                                    .await.unwrap_or(Err("task failed".into()));
+                                                match result {
+                                                    Ok(_)  => current_env.set(env_mode::detect_mode(&d)),
+                                                    Err(e) => { let _ = e; } // will show in next detect
+                                                }
+                                            } else {
+                                                let d3 = d.clone();
+                                                let result = tokio::task::spawn_blocking(move || env_mode::switch_to_azure(&d3))
+                                                    .await.unwrap_or(Err("task failed".into()));
+                                                match result {
+                                                    Ok(r) if r.needs_fetch.is_empty() => {
+                                                        current_env.set(env_mode::detect_mode(&d));
+                                                    }
+                                                    Ok(r) => {
+                                                        // Partially switched; fetch storage accounts for picker
+                                                        current_env.set(env_mode::detect_mode(&d));
+                                                        pending_keys.set(r.needs_fetch);
+                                                        let sub2 = sub.clone();
+                                                        let accounts = tokio::task::spawn_blocking(move || {
+                                                            services::azure_cli::list_storage_accounts(sub2.as_deref())
+                                                        }).await.unwrap_or(Ok(vec![])).unwrap_or_default();
+                                                        storage_accounts.set(accounts);
+                                                    }
+                                                    Err(_) => {}
+                                                }
+                                            }
+                                            env_switching.set(false);
+                                        });
+                                    },
+                                    if switching { "…" } else { "{toggle_label}" }
+                                }
+                            }
+                        }
+                        // Picker for keys that need a storage account assigned
+                        if !pending_keys.read().is_empty() && !storage_accounts.read().is_empty() {
+                            div { class: "env-picker",
+                                span { class: "env-picker-title", "Pick Azure storage accounts:" }
+                                for key in pending_keys.read().clone() {
+                                    {
+                                        let key2 = key.clone();
+                                        let display = key.trim_end_matches("_blobStorageEndpoint").to_string();
+                                        let dir_k = dir.clone();
+                                        rsx! {
+                                            div { class: "env-picker-row",
+                                                span { class: "env-picker-key", "{display}" }
+                                                select {
+                                                    class: "env-picker-select",
+                                                    onchange: move |e| {
+                                                        let endpoint = e.value();
+                                                        let k = key2.clone();
+                                                        let d = dir_k.clone();
+                                                        let d2 = dir_k.clone();
+                                                        spawn(async move {
+                                                            let _ = tokio::task::spawn_blocking(move || {
+                                                                env_mode::apply_fetched_endpoint(&d, &k, &endpoint)
+                                                            }).await;
+                                                            current_env.set(env_mode::detect_mode(&d2));
+                                                        });
+                                                    },
+                                                    option { value: "", "— pick —" }
+                                                    for (name, ep) in storage_accounts.read().clone() {
+                                                        option { value: "{ep}", "{name}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 {
                     let dir_sql = dir.clone();
@@ -1141,6 +1303,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
                     sb_namespace_key:  sb_namespace_key.read().clone(),
                     sb_conn_str:       sb_conn_str.read().clone(),
                     sb_queues:         sb_queues.read().clone(),
+                    azurite_running:   *azurite_state.read() == ServiceState::Running,
                     on_close: move |_| db_panel_open.set(false),
                     on_saved: move |_| {
                         let dir7 = dir.clone();

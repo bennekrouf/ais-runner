@@ -253,9 +253,12 @@ fn ActionRow(props: ActionRowProps) -> Element {
     let atype = props.action.properties.action_type.as_deref().unwrap_or("");
     let is_expandable = matches!(atype, "Foreach" | "Scope" | "Until" | "If");
 
-    let mut expanded = use_signal(|| false);
-    let mut loading  = use_signal(|| false);
-    let mut children = use_signal(|| Vec::<ActionItem>::new());
+    let mut expanded       = use_signal(|| false);
+    let mut loading        = use_signal(|| false);
+    let mut children       = use_signal(|| Vec::<ActionItem>::new());
+    let mut detail_open    = use_signal(|| false);
+    let mut detail_loading = use_signal(|| false);
+    let mut detail_json    = use_signal(|| String::new());
 
     let status_l = props.action.properties.status.to_lowercase();
     let is_running = props.is_live && !matches!(status_l.as_str(),
@@ -288,9 +291,10 @@ fn ActionRow(props: ActionRowProps) -> Element {
     let icon_class  = if is_running { "action-icon spin" } else { "action-icon" };
     let indent_px   = props.depth as u32 * 18;
 
-    let error_msg = props.action.properties.error
-        .as_ref()
-        .and_then(|e| e.message.clone());
+    let error_msg = props.action.properties.error.as_ref().and_then(|e| {
+        // Prefer message; fall back to code so skipped-reason is always visible
+        e.message.clone().or_else(|| e.code.clone())
+    });
 
     let child_max_ms = {
         let c = children.read();
@@ -305,7 +309,7 @@ fn ActionRow(props: ActionRowProps) -> Element {
 
     rsx! {
         div { class: "{row_class}", style: "padding-left:{indent_px}px",
-            // expand toggle (only for ForEach / Scope / Until / If)
+            // ── expand toggle: child actions (Foreach/Scope/Until/If) ──
             if is_expandable {
                 button {
                     class: "btn-icon action-expand",
@@ -340,7 +344,6 @@ fn ActionRow(props: ActionRowProps) -> Element {
                     else { "▶" }
                 }
             } else {
-                // placeholder so action columns stay aligned
                 span { class: "action-expand-placeholder" }
             }
             span { class: "{icon_class}", "{icon}" }
@@ -349,9 +352,50 @@ fn ActionRow(props: ActionRowProps) -> Element {
             div { class: "timing-bar-bg",
                 div { class: "{bar_class}", style: "width:{pct:.0}%" }
             }
+            // ── detail toggle: raw input/output JSON ──────────────────
+            button {
+                class: "btn-icon action-detail-btn",
+                title: if *detail_open.read() { "Hide detail" } else { "Show input / output" },
+                onclick: {
+                    let wf   = props.workflow.clone();
+                    let rid  = props.run_id.clone();
+                    let name = props.action.name.clone();
+                    move |_| {
+                        if *detail_open.read() {
+                            detail_open.set(false);
+                        } else if detail_json.read().is_empty() {
+                            detail_loading.set(true);
+                            let wf2   = wf.clone();
+                            let rid2  = rid.clone();
+                            let name2 = name.clone();
+                            spawn(async move {
+                                let text = match workflows::get_action_detail(&wf2, &rid2, &name2).await {
+                                    Ok(v)  => serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string()),
+                                    Err(e) => format!("Error fetching detail: {}", e),
+                                };
+                                detail_json.set(text);
+                                detail_loading.set(false);
+                                detail_open.set(true);
+                            });
+                        } else {
+                            detail_open.set(true);
+                        }
+                    }
+                },
+                if *detail_loading.read() { "…" }
+                else if *detail_open.read() { "▲" }
+                else { "⋯" }
+            }
         }
         if let Some(msg) = error_msg {
             div { class: "{err_class}", style: "padding-left:{indent_px}px", "{msg}" }
+        }
+        if *detail_open.read() {
+            pre {
+                class: "action-detail-pre",
+                style: "padding-left:{indent_px}px",
+                "{detail_json.read()}"
+            }
         }
         if *expanded.read() {
             for child in children.read().clone() {
