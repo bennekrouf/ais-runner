@@ -1666,6 +1666,15 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
 }
 .blob-row-icon { color: var(--text3); flex-shrink: 0; font-size: 11px; }
 .blob-folder-row .blob-name { color: var(--text1); font-style: italic; }
+.blob-nested-row { padding-left: 20px; }
+.blob-folder-upload-btn {
+    margin-left: auto;
+    padding: 1px 7px;
+    font-size: 11px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.blob-folder-row:hover .blob-folder-upload-btn { opacity: 1; }
 .blob-name {
     color: var(--text2);
     flex: 1;

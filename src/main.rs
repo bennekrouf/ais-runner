@@ -380,9 +380,9 @@ fn MainScreen(props: MainScreenProps) -> Element {
         move |_| {
             state.set(ServiceState::Starting);
             let az_bin = services::runtime_manager::resolve_tool("azurite");
-            push(format!("$ {} --location /tmp/azurite --debug /tmp/azurite/debug.log", az_bin), LogLevel::Info);
+            push(format!("$ {} --location /tmp/azurite --debug /tmp/azurite/debug.log --skipApiVersionCheck", az_bin), LogLevel::Info);
             match proc.read().start(&az_bin,
-                &["--location", "/tmp/azurite", "--debug", "/tmp/azurite/debug.log"], None) {
+                &["--location", "/tmp/azurite", "--debug", "/tmp/azurite/debug.log", "--skipApiVersionCheck"], None) {
                 Ok(_) => { state.set(ServiceState::Running); push("Azurite started on ports 10000/10001/10002".to_string(), LogLevel::Ok); }
                 Err(e) => { state.set(ServiceState::Stopped); push(format!("Azurite error: {}", e), LogLevel::Error); }
             }

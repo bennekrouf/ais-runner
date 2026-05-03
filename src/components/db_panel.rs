@@ -174,7 +174,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     let mut new_queue_creating: Signal<bool>            = use_signal(|| false);
 
     // ── Active tab ───────────────────────────────────────────────────────────
-    let mut active_tab: Signal<&'static str> = use_signal(|| "sql");
+    let mut active_tab: Signal<&'static str> = use_signal(|| "blob");
 
     // ── Shared status bar ────────────────────────────────────────────────────
     let mut status: Signal<Option<(String, bool)>> = use_signal(|| None);
@@ -261,9 +261,9 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
             // ── Tab bar ────────────────────────────────────────────────────
             div { class: "db-tabs",
                 button {
-                    class: if *active_tab.read() == "sql" { "db-tab active" } else { "db-tab" },
-                    onclick: move |_| active_tab.set("sql"),
-                    "🗄 SQL"
+                    class: if *active_tab.read() == "blob" { "db-tab active" } else { "db-tab" },
+                    onclick: move |_| active_tab.set("blob"),
+                    "🗄 Blob"
                 }
                 button {
                     class: if *active_tab.read() == "sb" { "db-tab active" } else { "db-tab" },
@@ -271,9 +271,9 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     "📨 Service Bus"
                 }
                 button {
-                    class: if *active_tab.read() == "blob" { "db-tab active" } else { "db-tab" },
-                    onclick: move |_| active_tab.set("blob"),
-                    "🗄 Blob Storage"
+                    class: if *active_tab.read() == "sql" { "db-tab active" } else { "db-tab" },
+                    onclick: move |_| active_tab.set("sql"),
+                    "🗄 SQL"
                 }
             }
 
@@ -1298,12 +1298,61 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                                         format!("{:.1} MB", kb / 1024.0)
                                                                     }
                                                                 };
-                                                                let row_cls = if is_folder { "blob-row blob-folder-row" } else { "blob-row" };
+                                                                // Files inside a virtual folder get an extra indent level
+                                                                let is_nested = !is_folder && b.name.contains('/');
+                                                                let row_cls = if is_folder {
+                                                                    "blob-row blob-folder-row"
+                                                                } else if is_nested {
+                                                                    "blob-row blob-nested-row"
+                                                                } else {
+                                                                    "blob-row"
+                                                                };
+                                                                // For folder rows: composite upload key = "container/folder"
+                                                                let upload_key = format!("{}/{}", cname, full);
+                                                                let is_folder_uploading = blob_uploading.read().contains(&upload_key);
+                                                                let folder_prefix = full.clone();
+                                                                let ct_for_folder = cname.clone();
                                                                 rsx! {
                                                                     div { class: "{row_cls}", title: "{full}",
                                                                         span { class: "blob-row-icon", "{icon}" }
                                                                         span { class: "blob-name", "{display}" }
                                                                         span { class: "blob-size", "{size_str}" }
+                                                                        if is_folder {
+                                                                            button {
+                                                                                class: "btn btn-small blob-folder-upload-btn",
+                                                                                disabled: is_folder_uploading,
+                                                                                title: "Upload a file into this folder",
+                                                                                onclick: move |_| {
+                                                                                    let uk  = upload_key.clone();
+                                                                                    let ct  = ct_for_folder.clone();
+                                                                                    let pfx = folder_prefix.clone();
+                                                                                    blob_uploading.write().insert(uk.clone());
+                                                                                    spawn(async move {
+                                                                                        if let Some(file) = rfd::AsyncFileDialog::new().pick_file().await {
+                                                                                            let path = file.path().to_string_lossy().to_string();
+                                                                                            let blob_name = format!("{}/{}", pfx, file.file_name());
+                                                                                            let ct2 = ct.clone();
+                                                                                            let _ = tokio::task::spawn_blocking(move || {
+                                                                                                azurite_client::upload_blob(&ct2, &path, &blob_name)
+                                                                                            }).await;
+                                                                                            blob_expanded.write().insert(ct.clone());
+                                                                                            let ct3 = ct.clone();
+                                                                                            if let Ok(Ok(updated)) = tokio::task::spawn_blocking(move || {
+                                                                                                azurite_client::list_blobs(&ct3)
+                                                                                            }).await {
+                                                                                                if let Some(ref mut list) = *blob_containers.write() {
+                                                                                                    if let Some(entry) = list.iter_mut().find(|(n, _)| n == &ct) {
+                                                                                                        entry.1 = updated;
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                        blob_uploading.write().remove(&uk);
+                                                                                    });
+                                                                                },
+                                                                                if is_folder_uploading { "↑ …" } else { "↑ Upload" }
+                                                                            }
+                                                                        }
                                                                     }
                                                                 }
                                                             }
