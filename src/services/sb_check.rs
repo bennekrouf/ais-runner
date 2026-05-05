@@ -12,7 +12,7 @@ pub struct SbQueueInfo {
 /// The local.settings.json key + current value for the SB connection string, if present.
 /// Returns `(key, current_value)`.
 pub fn detect_sb_conn_str_key(logic_apps_dir: &str) -> Option<(String, String)> {
-    let dir = std::path::Path::new(logic_apps_dir);
+    let dir = crate::services::workflows::resolve_logic_apps_dir(logic_apps_dir);
 
     let settings_text = std::fs::read_to_string(dir.join("local.settings.json")).ok()?;
     let settings: serde_json::Value = serde_json::from_str(&settings_text).ok()?;
@@ -60,7 +60,7 @@ pub fn detect_sb_conn_str_key(logic_apps_dir: &str) -> Option<(String, String)> 
 /// The setting key that holds the Service Bus FQDN (or connection string), if resolved from @appsetting.
 /// Returns None when the namespace/connection string is hardcoded in connections.json.
 pub fn detect_sb_namespace_key(logic_apps_dir: &str) -> Option<String> {
-    let dir = std::path::Path::new(logic_apps_dir);
+    let dir = crate::services::workflows::resolve_logic_apps_dir(logic_apps_dir);
     let conn_text = std::fs::read_to_string(dir.join("connections.json")).ok()?;
     let conn_json: serde_json::Value = serde_json::from_str(&conn_text).ok()?;
     let providers = conn_json["serviceProviderConnections"].as_object()?;
@@ -84,7 +84,7 @@ pub fn detect_sb_namespace_key(logic_apps_dir: &str) -> Option<String> {
 
 /// Scan all workflow.json files and return (namespace_fqdn, queues).
 pub fn detect_sb_queues(logic_apps_dir: &str) -> (String, Vec<SbQueueInfo>) {
-    let dir = std::path::Path::new(logic_apps_dir);
+    let dir = crate::services::workflows::resolve_logic_apps_dir(logic_apps_dir);
 
     // Resolve @appsetting references from local.settings.json
     let settings: HashMap<String, String> = std::fs::read_to_string(dir.join("local.settings.json"))
@@ -136,6 +136,15 @@ pub fn detect_sb_queues(logic_apps_dir: &str) -> (String, Vec<SbQueueInfo>) {
             if val.contains(".servicebus.windows.net") && !val.contains("Endpoint=") {
                 namespace = val.trim().to_string();
                 break;
+            }
+        }
+    }
+    
+    // Second Fallback: check project link in config
+    if namespace.is_empty() {
+        if let Some(link) = crate::services::config::load().get_link(logic_apps_dir) {
+            if let Some(ns) = &link.sb_namespace {
+                namespace = ns.clone();
             }
         }
     }
@@ -269,8 +278,22 @@ fn resolve_appsetting(val: &str, settings: &HashMap<String, String>) -> String {
 }
 
 /// TCP test to the Service Bus namespace on AMQP port 5671.
+/// TCP test to the Service Bus namespace on the specified port.
+pub fn test_sb_port(namespace: &str, port: u16) -> TestResult {
+    let host = if namespace.contains('.') {
+        namespace.to_string()
+    } else {
+        format!("{}.servicebus.windows.net", namespace)
+    };
+    test_tcp(&host, port)
+}
+
 pub fn test_sb_tcp(namespace: &str) -> TestResult {
-    test_tcp(namespace, 5671)
+    test_sb_port(namespace, 5671)
+}
+
+pub fn test_sb_tcp_443(namespace: &str) -> TestResult {
+    test_sb_port(namespace, 443)
 }
 
 /// Extract the hostname from a Service Bus connection string.

@@ -1,106 +1,241 @@
-use std::path::Path;
 use std::fs;
-use std::collections::{HashMap, HashSet};
-use serde_json::Value;
-use regex::Regex;
+use std::path::Path;
+use std::collections::HashMap;
+use crate::services::{
+    azure_cli,
+    settings_file,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SetupStatus {
+    MissingSettings,
+    NeedsInitialization,
+    NeedsConfiguration(usize),
+    MissingKeys(Vec<String>),
     Ready,
-    NeedsInitialization,       // local.settings.json is missing, template exists
-    NeedsConfiguration(usize), // X keys are "" or "$FETCH_FROM_AZURE"
-    MissingKeys(Vec<String>),  // connections.json requires keys not found in settings
 }
 
 pub fn check_setup(dir: &str) -> SetupStatus {
-    let p = Path::new(dir);
+    let p = crate::services::workflows::resolve_logic_apps_dir(dir);
     let settings_path = p.join("local.settings.json");
     let template_path = p.join("local.settings.json.template");
 
-    // 1. Initial Bootstrap
     if !settings_path.exists() {
         if template_path.exists() {
             return SetupStatus::NeedsInitialization;
+        } else {
+            return SetupStatus::MissingSettings;
         }
-        return SetupStatus::Ready; 
     }
 
-    // 2. Scan for TODOs
-    let settings = read_settings(dir).unwrap_or_default();
-    let todo_count = settings.values()
-        .filter(|v| v.as_str().map_or(false, |s| s.is_empty() || s == "$FETCH_FROM_AZURE"))
-        .count();
-    
-    if todo_count > 0 {
-        return SetupStatus::NeedsConfiguration(todo_count);
+    let settings_text = fs::read_to_string(&settings_path).unwrap_or_default();
+    let settings: serde_json::Value = serde_json::from_str(&settings_text).unwrap_or_default();
+    let vals = settings["Values"].as_object();
+
+    let mut missing_count = 0;
+    if let Some(v) = vals {
+        for (key, val) in v {
+            if let Some(s) = val.as_str() {
+                let is_missing = s.contains("TODO") || (s.is_empty() && (
+                    key.contains("KEY") || 
+                    key.contains("CONNECTION") || 
+                    key.contains("SUBSCRIPTION") || 
+                    key.contains("RESOURCE_GROUP") ||
+                    key.contains("siteName")
+                ));
+                if is_missing {
+                    missing_count += 1;
+                }
+            }
+        }
     }
 
-    // 3. Cross-reference with connections.json
-    let missing = find_missing_keys_from_connections(dir, &settings);
-    if !missing.is_empty() {
-        return SetupStatus::MissingKeys(missing);
+    if missing_count > 0 {
+        return SetupStatus::NeedsConfiguration(missing_count);
+    }
+
+    // Check for missing keys required by connections.json
+    let conn_path = p.join("connections.json");
+    if conn_path.exists() {
+        let conn_text = fs::read_to_string(conn_path).unwrap_or_default();
+        let conn_json: serde_json::Value = serde_json::from_str(&conn_text).unwrap_or_default();
+        let mut missing_keys = Vec::new();
+        
+        // Scan for both @appsetting('key') and @{appsetting('key')} forms
+        let conn_str = conn_json.to_string();
+        for cap in regex::Regex::new(r"@\{?appsetting\('([^']+)'\)\}?").unwrap().captures_iter(&conn_str) {
+            let key = &cap[1];
+            if let Some(v) = vals {
+                if !v.contains_key(key) && !missing_keys.contains(&key.to_string()) {
+                    missing_keys.push(key.to_string());
+                }
+            } else if !missing_keys.contains(&key.to_string()) {
+                missing_keys.push(key.to_string());
+            }
+        }
+        
+        if !missing_keys.is_empty() {
+            return SetupStatus::MissingKeys(missing_keys);
+        }
     }
 
     SetupStatus::Ready
 }
 
 pub fn initialize_from_template(dir: &str) -> Result<(), String> {
-    let p = Path::new(dir);
+    let p = crate::services::workflows::resolve_logic_apps_dir(dir);
     let settings_path = p.join("local.settings.json");
     let template_path = p.join("local.settings.json.template");
 
     if !template_path.exists() {
-        return Err("Template file not found".into());
+        return Err("Template not found".into());
     }
 
     fs::copy(template_path, settings_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-pub fn find_missing_keys_from_connections(dir: &str, settings: &HashMap<String, Value>) -> Vec<String> {
-    let connections_path = Path::new(dir).join("connections.json");
-    if !connections_path.exists() {
-        return vec![];
+pub fn initialize_default(dir: &str) -> Result<(), String> {
+    let p = crate::services::workflows::resolve_logic_apps_dir(dir);
+    
+    // 1. local.settings.json
+    let settings_path = p.join("local.settings.json");
+    let settings_content = r#"{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "WORKFLOWS_SUBSCRIPTION_ID": "",
+    "WORKFLOWS_RESOURCE_GROUP_NAME": "",
+    "WORKFLOWS_LOCATION_NAME": "switzerlandnorth"
+  }
+}"#;
+    if !settings_path.exists() {
+        fs::write(settings_path, settings_content).map_err(|e| e.to_string())?;
     }
 
-    let mut missing = Vec::new();
-    if let Ok(text) = fs::read_to_string(connections_path) {
-        // Find all @appsetting('KEY_NAME')
-        let re = Regex::new(r"@appsetting\('([^']+)'\)").unwrap();
-        let mut required_keys = HashSet::new();
-        for cap in re.captures_iter(&text) {
-            required_keys.insert(cap[1].to_string());
-        }
+    // 2. package.json (required by Node worker)
+    let pkg_path = p.join("package.json");
+    let pkg_content = r#"{
+  "name": "logic-apps",
+  "version": "1.0.0",
+  "dependencies": {}
+}"#;
+    if !pkg_path.exists() {
+        fs::write(pkg_path, pkg_content).map_err(|e| e.to_string())?;
+    }
 
-        for key in required_keys {
-            if !settings.contains_key(&key) {
-                missing.push(key);
+    Ok(())
+}
+
+/// Attempts to auto-discover SB namespace and SQL server in the given resource group
+/// and updates local.settings.json with the values.
+pub fn auto_detect_resources(dir: &str, subscription_id: Option<&str>, resource_group: &str) -> Result<String, String> {
+    let mut messages = Vec::new();
+
+    // 0. Update Subscription ID in local.settings.json if provided
+    if let Some(sub_id) = subscription_id {
+        if let Ok(text) = settings_file::read_local_settings(dir) {
+            if let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(vals) = root["Values"].as_object_mut() {
+                    let sub_key = "WORKFLOWS_SUBSCRIPTION_ID";
+                    if vals.get(sub_key).and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+                        vals.insert(sub_key.to_string(), serde_json::Value::String(sub_id.to_string()));
+                        let new_text = serde_json::to_string_pretty(&root).unwrap_or_default();
+                        let _ = settings_file::write_local_settings(dir, &new_text);
+                        messages.push(format!("✅ Set subscription: {}", sub_id));
+                    }
+                }
             }
         }
     }
-    missing.sort();
-    missing
+
+    // 1. Service Bus
+    match azure_cli::sb_list_namespaces() {
+        Ok(list) => {
+            let matches: Vec<_> = list.iter()
+                .filter(|(_, _, rg)| rg.to_lowercase() == resource_group.to_lowercase())
+                .collect();
+            
+            if matches.len() == 1 {
+                let fqdn = &matches[0].1;
+                if let Ok(text) = settings_file::read_local_settings(dir) {
+                    if let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if let Some(vals) = root["Values"].as_object_mut() {
+                            // Find the key used in connections.json for SB
+                            let sb_key = "serviceBus_fullyQualifiedNamespace"; 
+                            vals.insert(sb_key.to_string(), serde_json::Value::String(fqdn.clone()));
+                            
+                            let new_text = serde_json::to_string_pretty(&root).unwrap_or_default();
+                            let _ = settings_file::write_local_settings(dir, &new_text);
+                            messages.push(format!("✅ Auto-detected SB namespace: {}", fqdn));
+                        }
+                    }
+                }
+            } else if matches.len() > 1 {
+                messages.push(format!("ℹ Found {} SB namespaces in RG — please pick one manually.", matches.len()));
+            }
+        }
+        Err(e) => { messages.push(format!("❌ Failed to list SB namespaces: {:?}", e)); }
+    }
+
+    if messages.is_empty() {
+        Ok("No resources found to auto-detect.".into())
+    } else {
+        Ok(messages.join("\n"))
+    }
 }
 
-pub fn read_settings(dir: &str) -> Option<HashMap<String, Value>> {
-    let path = Path::new(dir).join("local.settings.json");
-    let text = fs::read_to_string(path).ok()?;
-    let root: Value = serde_json::from_str(&text).ok()?;
-    root["Values"].as_object().map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+/// Writes smart defaults for every key in `missing_keys` that isn't already in local.settings.json.
+/// Idempotent — never overwrites existing values.
+pub fn stub_missing_keys(dir: &str, missing_keys: &[String]) -> Result<(), String> {
+    let stubs: HashMap<String, String> = missing_keys.iter()
+        .map(|k| (k.clone(), smart_default(k)))
+        .collect();
+    apply_settings(dir, stubs)
+}
+
+/// Returns a sensible local-dev default for a known key pattern, or empty string.
+fn smart_default(key: &str) -> String {
+    const AZURITE: &str = "http://127.0.0.1:10000/devstoreaccount1";
+
+    match key {
+        // The built-in AzureBlob connection always points at Azurite locally
+        "AzureBlob_blobStorageEndpoint" => AZURITE.into(),
+
+        // IgniteBlob is an internal storage — Azurite is the right local stand-in
+        "IgniteBlob_blobStorageEndpoint" => AZURITE.into(),
+
+        // Standard func host settings
+        "AzureWebJobsStorage"      => "UseDevelopmentStorage=true".into(),
+        "FUNCTIONS_WORKER_RUNTIME" => "node".into(),
+        "WORKFLOWS_LOCATION_NAME"  => "switzerlandnorth".into(),
+
+        // Java function trigger URLs — infer from key name:
+        // "azureFunction_{Name}_triggerUrl" → "http://localhost:7072/api/{Name}"
+        k if k.starts_with("azureFunction_") && k.ends_with("_triggerUrl") => {
+            let name = k
+                .strip_prefix("azureFunction_").unwrap_or(k)
+                .strip_suffix("_triggerUrl").unwrap_or(k);
+            format!("http://localhost:7072/api/{}", name)
+        }
+
+        // Everything else (external systems, secrets) — leave empty for the user to fill
+        _ => String::new(),
+    }
 }
 
 pub fn apply_settings(dir: &str, updates: HashMap<String, String>) -> Result<(), String> {
-    let path = Path::new(dir).join("local.settings.json");
-    let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let mut root: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let text = settings_file::read_local_settings(dir)?;
+    let mut root: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     
-    if let Some(obj) = root["Values"].as_object_mut() {
+    if let Some(vals) = root["Values"].as_object_mut() {
         for (k, v) in updates {
-            obj.insert(k, Value::String(v));
+            vals.insert(k, serde_json::Value::String(v));
         }
     }
 
-    let pretty = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
-    fs::write(path, pretty).map_err(|e| e.to_string())?;
+    let new_text = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
+    settings_file::write_local_settings(dir, &new_text)?;
     Ok(())
 }

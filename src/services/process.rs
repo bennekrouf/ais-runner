@@ -2,6 +2,46 @@ use std::io::BufRead;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
+/// Resolve `program` to an absolute path by searching `rich_path()`.
+/// `Command::new(program)` searches the *parent* process PATH, not the env we
+/// set on the child, so binaries in /opt/homebrew/bin aren't found when
+/// ais-runner is launched without a full shell PATH.
+pub fn resolve_bin(program: &str) -> String {
+    if program.starts_with('/') {
+        return program.to_string();
+    }
+    for dir in rich_path().split(':') {
+        let candidate = std::path::Path::new(dir).join(program);
+        if candidate.is_file() {
+            return candidate.to_string_lossy().to_string();
+        }
+    }
+    program.to_string()
+}
+
+/// Build a PATH that works whether ais-runner was launched from a terminal or
+/// from the macOS .app bundle (which inherits only the system minimal PATH).
+pub fn rich_path() -> String {
+    let inherited = std::env::var("PATH").unwrap_or_default();
+    let extras = [
+        "/opt/homebrew/bin",   // Homebrew on Apple Silicon
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",      // Homebrew on Intel + npm global + func CLI
+        "/usr/local/sbin",
+        "/usr/bin",
+        "/usr/sbin",
+        "/bin",
+        "/sbin",
+    ];
+    let mut parts: Vec<&str> = inherited.split(':').filter(|s| !s.is_empty()).collect();
+    for extra in &extras {
+        if !parts.contains(extra) {
+            parts.push(extra);
+        }
+    }
+    parts.join(":")
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum ServiceState {
     Stopped,
@@ -29,10 +69,12 @@ impl ManagedProcess {
         if guard.is_some() {
             return Err("Process already started".into());
         }
-        let mut cmd = Command::new(program);
+        let resolved = resolve_bin(program);
+        let mut cmd = Command::new(&resolved);
         cmd.args(args)
            .stdout(Stdio::piped())
-           .stderr(Stdio::piped());
+           .stderr(Stdio::piped())
+           .env("PATH", rich_path());
         if let Some(dir) = workdir {
             cmd.current_dir(dir);
         }

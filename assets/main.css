@@ -164,7 +164,60 @@ body {
     direction: rtl;
     text-align: left;
 }
+.recent-rg {
+    font-size: 11px;
+    color: var(--text3);
+    margin-top: 2px;
+}
 .recent-arrow { font-size: 16px; color: var(--text2); }
+
+/* ── ONBOARDING ── */
+#onboarding {
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+#onboarding h3 { font-size: 16px; color: var(--blue); }
+.onboarding-path { font-size: 12px; color: var(--text3); font-family: monospace; word-break: break-all; }
+.onboarding-hint { font-size: 13px; color: var(--text2); margin-top: 4px; }
+.onboarding-list {
+    max-height: 280px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg0);
+}
+.onboarding-item {
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.1s;
+}
+.onboarding-item:last-child { border-bottom: none; }
+.onboarding-item:hover { background: var(--bg2); }
+.onboarding-item-name { font-size: 14px; font-weight: 600; color: var(--text1); }
+.onboarding-item-rg { font-size: 11px; color: var(--text3); }
+.onboarding-loading { padding: 40px; text-align: center; color: var(--text3); font-size: 14px; }
+.onboarding-error { padding: 16px; background: rgba(248, 81, 73, 0.1); border: 1px solid var(--red); color: var(--red); border-radius: 6px; font-size: 13px; }
+.onboarding-actions { margin-top: 10px; display: flex; justify-content: flex-start; }
+.btn-back { background: transparent; border: 1px solid var(--border); color: var(--text2); padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.btn-back:hover { background: var(--bg2); }
+
+.settings-link-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: var(--blue-dark);
+    border: 1px solid var(--blue-bg);
+    color: var(--blue);
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+}
 
 /* ══════════════════════════════════════════════
    MAIN APP SCREEN
@@ -349,6 +402,7 @@ body.light .tool-banner-item code { background: #f0f3f6; color: #9a6700; }
 .env-badge.azure   { color: var(--blue); }
 .env-badge.mixed   { color: var(--yellow); }
 .env-badge.unknown { color: var(--text3); }
+.env-badge.linked  { color: #fff; background: var(--blue-bg); padding: 2px 8px; border-radius: 4px; font-size: 11px; }
 
 .env-block.local { border-color: var(--green-bg); }
 .env-block.azure { border-color: var(--blue-bg); animation: env-pulse 2s ease-in-out infinite; }
@@ -2012,3 +2066,57 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
     margin: 10px 0 15px;
     padding: 0 4px;
 }
+
+/* ── SFTP TAB ── */
+.sftp-row {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 12px;
+    overflow: hidden;
+}
+.sftp-row-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: var(--bg1);
+    border-bottom: 1px solid var(--border);
+}
+.sftp-name {
+    font-weight: 600;
+    flex: 1;
+}
+.sftp-details {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 14px;
+}
+.sftp-field {
+    display: flex;
+    gap: 10px;
+    font-size: 12px;
+}
+.sftp-label {
+    width: 60px;
+    color: var(--text2);
+    flex-shrink: 0;
+}
+.sftp-value {
+    font-family: monospace;
+    color: var(--text1);
+}
+.sftp-value.missing {
+    color: var(--warn);
+    font-style: italic;
+}
+.sftp-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+.sftp-badge.ok        { background: #1a3a1a; color: #6fcf6f; }
+.sftp-badge.warn      { background: #3a2e0a; color: #f0c040; }
+.sftp-badge.error     { background: #3a1a1a; color: #e07070; }
+.sftp-badge.unchecked { background: var(--bg2); color: var(--text2); }

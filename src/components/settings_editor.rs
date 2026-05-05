@@ -50,8 +50,7 @@ pub struct SettingsEditorProps {
 
 #[component]
 pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
-    let dir = props.logic_apps_dir.clone();
-
+    let logic_apps_dir = props.logic_apps_dir.clone();
     let app_cfg = config::load();
 
     let mut pairs      = use_signal(|| IndexMap::<String, String>::new());
@@ -61,9 +60,9 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
     let mut filter     = use_signal(|| String::new());
     let mut fetching   = use_signal(|| String::new());
     let mut show_keys  = use_signal(|| std::collections::HashSet::<String>::new());
-    // namespace & subscription editable in the UI, persisted to AppConfig
-    let mut sb_namespace  = use_signal(|| app_cfg.servicebus_namespace.clone().unwrap_or_default());
-    let mut subscription  = use_signal(|| app_cfg.subscription_id.clone().unwrap_or_else(|| DEFAULT_SUBSCRIPTION.to_string()));
+    let link = app_cfg.get_link(&props.logic_apps_dir);
+    let mut sb_namespace  = use_signal(|| link.and_then(|l| l.sb_namespace.clone()).unwrap_or_default());
+    let mut subscription  = use_signal(|| link.map(|l| l.subscription_id.clone()).unwrap_or_else(|| DEFAULT_SUBSCRIPTION.to_string()));
     let mut ns_options    = use_signal(|| Vec::<String>::new());
     let mut ns_loading    = use_signal(|| false);
     let mut sub_options   = use_signal(|| Vec::<(String, String)>::new());
@@ -71,9 +70,9 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
 
     // load on mount
     use_effect({
-        let dir = dir.clone();
+        let logic_apps_dir = logic_apps_dir.clone();
         move || {
-            match settings_file::read_local_settings(&dir) {
+            match settings_file::read_local_settings(&logic_apps_dir) {
                 Ok(text) if !text.is_empty() => {
                     if let Ok(serde_json::Value::Object(root)) = serde_json::from_str::<serde_json::Value>(&text) {
                         if let Some(serde_json::Value::Object(vals)) = root.get("Values") {
@@ -90,7 +89,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
     });
 
     let on_save = {
-        let dir = dir.clone();
+        let logic_apps_dir = logic_apps_dir.clone();
         move |_| {
             let vals: serde_json::Map<_, _> = pairs.read().iter()
                 .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
@@ -99,7 +98,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                 "IsEncrypted": false,
                 "Values": serde_json::Value::Object(vals)
             })).unwrap_or_default();
-            match settings_file::write_local_settings(&dir, &text) {
+            match settings_file::write_local_settings(&logic_apps_dir, &text) {
                 Ok(_) => { status.set("Saved — restart func start to apply changes.".to_string()); is_err.set(false); }
                 Err(e) => { status.set(e); is_err.set(true); }
             }
@@ -166,50 +165,136 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                     input {
                         class: "settings-cfg-val",
                         value: "{subscription}",
-                        oninput: move |e| {
-                            let v = e.value();
-                            subscription.set(v.clone());
-                            sub_options.set(vec![]);
-                            let mut cfg = config::load();
-                            cfg.subscription_id = if v.is_empty() { None } else { Some(v) };
-                            config::save(&cfg);
-                        },
-                    }
-                    button {
-                        class: "btn btn-small btn-fetch",
-                        disabled: *sub_loading.read(),
-                        title: "List subscriptions",
-                        onclick: move |_| {
-                            sub_loading.set(true);
-                            sub_options.set(vec![]);
-                            spawn(async move {
-                                let result = tokio::task::spawn_blocking(|| {
-                                    azure_cli::list_subscriptions()
-                                }).await.unwrap_or(Err(azure_cli::AzError::Other("Task failed".to_string())));
-                                sub_loading.set(false);
-                                match result {
-                                    Ok(list) => {
-                                        if list.is_empty() {
-                                            status.set("No subscriptions found.".to_string());
-                                            is_err.set(false);
-                                        } else {
-                                            sub_options.set(list);
-                                        }
-                                    }
-                                    Err(azure_cli::AzError::NotLoggedIn) => {
-                                        az_expired.set(true);
-                                        status.set("Session expired — click 'az login'".to_string());
-                                        is_err.set(true);
-                                    }
-                                    Err(azure_cli::AzError::Other(e)) => {
-                                        status.set(e);
-                                        is_err.set(true);
-                                    }
+                        disabled: config::load().get_link(&logic_apps_dir).is_some(),
+                        oninput: {
+                            let dir = logic_apps_dir.clone();
+                            move |e: FormEvent| {
+                                let v = e.value();
+                                subscription.set(v.clone());
+                                sub_options.set(vec![]);
+                                let mut cfg = config::load();
+                                if let Some(l) = cfg.workspace_links.get_mut(&dir) {
+                                    l.subscription_id = v;
                                 }
-                            });
+                                config::save(&cfg);
+                            }
                         },
-                        if *sub_loading.read() { "…" } else { "⊕ Browse" }
                     }
+                    {
+                        if let Some(link) = config::load().get_link(&logic_apps_dir) {
+                            let rg = link.resource_group.clone();
+                            rsx! {
+                                button {
+                                    class: "btn btn-small btn-magic",
+                                    style: "margin-left: 8px",
+                                    title: "Auto-detect subscription from Resource Group",
+                                    onclick: {
+                                        let dir = logic_apps_dir.clone();
+                                        let rg = rg.clone();
+                                        move |_| {
+                                            let rg = rg.clone();
+                                            let dir = dir.clone();
+                                            status.set("Detecting subscription...".to_string());
+                                            is_err.set(false);
+                                        spawn(async move {
+                                            // Try primary RG name
+                                            let mut res = tokio::task::spawn_blocking({
+                                                let rg = rg.clone();
+                                                move || azure_cli::get_subscription_id_by_group(&rg)
+                                            }).await.unwrap_or(Err(azure_cli::AzError::Other("Task failed".to_string())));
+
+                                            // Fallback: if it's 'rg-' but project uses 'logic-', try that
+                                            if res.is_err() && rg.starts_with("rg-") {
+                                                let fallback = rg.replace("rg-", "logic-");
+                                                let res2 = tokio::task::spawn_blocking({
+                                                    let f = fallback.clone();
+                                                    move || azure_cli::get_subscription_id_by_group(&f)
+                                                }).await.unwrap_or(Err(azure_cli::AzError::Other("Task failed".to_string())));
+                                                if res2.is_ok() {
+                                                    res = res2;
+                                                }
+                                            }
+
+                                            match res {
+                                                Ok(id) => {
+                                                    subscription.set(id.clone());
+                                                    status.set(format!("✅ Found subscription"));
+                                                    is_err.set(false);
+                                                    let mut cfg = config::load();
+                                                    if let Some(l) = cfg.workspace_links.get_mut(&dir) {
+                                                        l.subscription_id = id.clone();
+                                                    }
+                                                    config::save(&cfg);
+                                                }
+                                                Err(azure_cli::AzError::NotLoggedIn) => {
+                                                    az_expired.set(true);
+                                                    status.set("Session expired — click 'az login'".to_string());
+                                                    is_err.set(true);
+                                                }
+                                                Err(e) => {
+                                                    status.set(format!("Error: {:?}", e));
+                                                    is_err.set(true);
+                                                }
+                                            }
+                                        });
+                                    }
+                                },
+                                    "✨ Auto-detect"
+                                }
+                            }
+                        } else {
+                            rsx! {
+                                button {
+                                    class: "btn btn-small btn-fetch",
+                                    disabled: *sub_loading.read(),
+                                    title: "List subscriptions",
+                                    onclick: move |_| {
+                                        sub_loading.set(true);
+                                        sub_options.set(vec![]);
+                                        spawn(async move {
+                                            let result = tokio::task::spawn_blocking(|| {
+                                                azure_cli::list_subscriptions()
+                                            }).await.unwrap_or(Err(azure_cli::AzError::Other("Task failed".to_string())));
+                                            sub_loading.set(false);
+                                            match result {
+                                                Ok(list) => {
+                                                    if list.is_empty() {
+                                                        status.set("No subscriptions found.".to_string());
+                                                        is_err.set(false);
+                                                    } else {
+                                                        sub_options.set(list);
+                                                    }
+                                                }
+                                                Err(azure_cli::AzError::NotLoggedIn) => {
+                                                    az_expired.set(true);
+                                                    status.set("Session expired — click 'az login'".to_string());
+                                                    is_err.set(true);
+                                                }
+                                                Err(azure_cli::AzError::Other(e)) => {
+                                                    status.set(e);
+                                                    is_err.set(true);
+                                                }
+                                            }
+                                        });
+                                    },
+                                    if *sub_loading.read() { "…" } else { "⊕ Browse" }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Resource Group (Read-Only) ───────────────────────────────
+                {
+                    config::load().get_link(&logic_apps_dir).map(|link| {
+                        let rg_display = link.sb_namespace.as_ref().unwrap_or(&link.resource_group);
+                        rsx! {
+                            label { class: "settings-cfg-label", style: "margin-top: 10px", "Azure Context" }
+                            div { class: "settings-cfg-ns-wrap",
+                                span { class: "settings-link-badge", "🔗 {rg_display}" }
+                            }
+                        }
+                    })
                 }
 
                 if !sub_options.read().is_empty() {
@@ -221,12 +306,18 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                 rsx! {
                                     div {
                                         class: if *subscription.read() == id { "ns-option selected" } else { "ns-option" },
-                                        onclick: move |_| {
-                                            subscription.set(id2.clone());
-                                            sub_options.set(vec![]);
-                                            let mut cfg = config::load();
-                                            cfg.subscription_id = Some(id2.clone());
-                                            config::save(&cfg);
+                                        onclick: {
+                                            let dir = logic_apps_dir.clone();
+                                            let id2 = id2.clone();
+                                            move |_| {
+                                                subscription.set(id2.clone());
+                                                sub_options.set(vec![]);
+                                                let mut cfg = config::load();
+                                                if let Some(l) = cfg.workspace_links.get_mut(&dir) {
+                                                    l.subscription_id = id2.clone();
+                                                }
+                                                config::save(&cfg);
+                                            }
                                         },
                                         span { style: "color:var(--text2);margin-right:8px", "{name}" }
                                         span { style: "color:var(--text3);font-size:11px", "{id}" }
@@ -242,13 +333,18 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                         class: "settings-cfg-val",
                         placeholder: "e.g. logic-tom-dev-chn-001",
                         value: "{sb_namespace}",
-                        oninput: move |e| {
-                            let v = e.value();
-                            sb_namespace.set(v.clone());
-                            ns_options.set(vec![]);
-                            let mut cfg = config::load();
-                            cfg.servicebus_namespace = if v.is_empty() { None } else { Some(v) };
-                            config::save(&cfg);
+                        oninput: {
+                            let dir = logic_apps_dir.clone();
+                            move |e: FormEvent| {
+                                let v = e.value();
+                                sb_namespace.set(v.clone());
+                                ns_options.set(vec![]);
+                                let mut cfg = config::load();
+                                if let Some(l) = cfg.workspace_links.get_mut(&dir) {
+                                    l.sb_namespace = if v.is_empty() { None } else { Some(v) };
+                                }
+                                config::save(&cfg);
+                            }
                         },
                     }
                     button {
@@ -300,12 +396,18 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                 rsx! {
                                     div {
                                         class: if *sb_namespace.read() == ns { "ns-option selected" } else { "ns-option" },
-                                        onclick: move |_| {
-                                            sb_namespace.set(ns2.clone());
-                                            ns_options.set(vec![]);
-                                            let mut cfg = config::load();
-                                            cfg.servicebus_namespace = Some(ns2.clone());
-                                            config::save(&cfg);
+                                        onclick: {
+                                            let dir = logic_apps_dir.clone();
+                                            let ns2 = ns2.clone();
+                                            move |_| {
+                                                sb_namespace.set(ns2.clone());
+                                                ns_options.set(vec![]);
+                                                let mut cfg = config::load();
+                                                if let Some(l) = cfg.workspace_links.get_mut(&dir) {
+                                                    l.sb_namespace = Some(ns2.clone());
+                                                }
+                                                config::save(&cfg);
+                                            }
                                         },
                                         "{ns}"
                                     }

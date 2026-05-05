@@ -91,11 +91,60 @@ pub async fn wait_for_workflows(timeout_secs: u64) -> Result<Vec<WorkflowItem>, 
     Err(last_err)
 }
 
+/// Returns the actual directory containing the workflow folders.
+/// It checks if the provided `base_dir` contains `logic_apps` or `logic-apps` subfolders.
+pub fn resolve_logic_apps_dir(base_dir: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(base_dir);
+    if p.join("logic_apps").exists() {
+        p.join("logic_apps")
+    } else if p.join("logic-apps").exists() {
+        p.join("logic-apps")
+    } else {
+        p.to_path_buf()
+    }
+}
+
+/// Scans every workflow.json under `logic_apps_dir` and builds WorkflowItems from disk.
+/// Used to refresh the left-panel list after a pull when func is not running.
+pub fn scan_local_workflows(logic_apps_dir: &str) -> Vec<WorkflowItem> {
+    let dir = resolve_logic_apps_dir(logic_apps_dir);
+    let mut items = Vec::new();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return items,
+    };
+    for entry in entries.flatten() {
+        let wf_path = entry.path().join("workflow.json");
+        if !wf_path.exists() { continue; }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let text = match std::fs::read_to_string(&wf_path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let v: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let triggers = v["definition"]["triggers"].as_object();
+        let trigger_name = triggers
+            .and_then(|t| t.keys().next().map(|s| s.to_string()))
+            .unwrap_or_else(|| "manual".to_string());
+        let trigger_type = triggers
+            .and_then(|t| t.values().next())
+            .and_then(|t| t["type"].as_str())
+            .unwrap_or("Unknown")
+            .to_string();
+        items.push(WorkflowItem { name, healthy: true, disabled: false, trigger_name, trigger_type, health_error: None });
+    }
+    items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    items
+}
+
 /// Scans every workflow.json under `logic_apps_dir` and returns names of files with JSON errors.
 pub fn scan_broken_workflows(logic_apps_dir: &str) -> Vec<(String, String)> {
-    let dir = std::path::Path::new(logic_apps_dir);
+    let dir = resolve_logic_apps_dir(logic_apps_dir);
     let mut broken = Vec::new();
-    let entries = match std::fs::read_dir(dir) {
+    let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
         Err(_) => return broken,
     };
@@ -162,7 +211,11 @@ pub async fn run_trigger_direct(workflow: &str, trigger: &str, body: &str) -> Re
         Ok(())
     } else {
         let b: serde_json::Value = resp.json().await.unwrap_or_default();
-        Err(extract_api_error(&b).unwrap_or_else(|| format!("HTTP {}", status)))
+        let code = b["error"]["code"].as_str().unwrap_or("");
+        let hint = if code == "WorkflowNotFound" {
+            " — check blob/connection endpoints in local.settings.json and restart func"
+        } else { "" };
+        Err(format!("{}{}", extract_api_error(&b).unwrap_or_else(|| format!("HTTP {}", status)), hint))
     }
 }
 
@@ -203,6 +256,18 @@ pub struct RunProperties {
 }
 
 fn parse_value_array<T: for<'de> Deserialize<'de>>(body: serde_json::Value) -> Result<Vec<T>, String> {
+    if let Some(code) = body["error"]["code"].as_str() {
+        let msg = body["error"]["message"].as_str().unwrap_or(code);
+        if code == "WorkflowNotFound" {
+            return Err(format!(
+                "Workflow not found by the runtime — this usually means a connection \
+                 (e.g. IgniteBlob, KyribaBlob) failed to initialise. \
+                 Check that blob storage endpoints are set in local.settings.json, \
+                 then restart func. ({})", msg
+            ));
+        }
+        return Err(format!("{}: {}", code, msg));
+    }
     let arr = body.as_array().cloned()
         .or_else(|| body["value"].as_array().cloned())
         .ok_or_else(|| {

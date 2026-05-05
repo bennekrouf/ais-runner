@@ -71,7 +71,7 @@ pub fn parse_server_from_conn_str(conn_str: &str) -> Option<String> {
 
 /// Load all SQL service-provider connections and resolve their settings.
 pub fn load_sql_connections(logic_apps_dir: &str) -> Vec<SqlConnection> {
-    let dir = std::path::Path::new(logic_apps_dir);
+    let dir = crate::services::workflows::resolve_logic_apps_dir(logic_apps_dir);
 
     let conn_text = match std::fs::read_to_string(dir.join("connections.json")) {
         Ok(t) => t,
@@ -153,7 +153,7 @@ pub fn load_sql_connections(logic_apps_dir: &str) -> Vec<SqlConnection> {
 
 /// Returns the set of workflow names (folder names) that reference any SQL connection.
 pub fn detect_sql_workflows(logic_apps_dir: &str) -> HashSet<String> {
-    let dir = std::path::Path::new(logic_apps_dir);
+    let dir = crate::services::workflows::resolve_logic_apps_dir(logic_apps_dir);
 
     let conn_text = match std::fs::read_to_string(dir.join("connections.json")) {
         Ok(t) => t,

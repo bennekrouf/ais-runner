@@ -17,7 +17,7 @@ use components::{
     db_panel::DbPanel,
     azure_panel::AzurePanel,
 };
-use services::{
+use crate::services::{
     config,
     payload,
     process::{ManagedProcess, ServiceState},
@@ -89,7 +89,7 @@ fn App() -> Element {
         match screen.read().clone() {
             Screen::Welcome => rsx! {
                 WelcomeScreen {
-                    recent: app_cfg.read().recent_dirs.clone(),
+                    app_cfg: app_cfg,
                     on_open: on_open,
                 }
             },
@@ -109,15 +109,21 @@ fn App() -> Element {
 
 #[derive(Props, Clone, PartialEq)]
 struct WelcomeScreenProps {
-    recent: Vec<String>,
+    app_cfg: Signal<config::AppConfig>,
     on_open: EventHandler<String>,
 }
 
 #[component]
 fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
+    let app_cfg = props.app_cfg;
     let on_open = props.on_open.clone();
-    let on_open2 = props.on_open.clone();
-    let recent = props.recent.clone();
+    let recent = app_cfg.read().recent_dirs.clone();
+    
+    // Onboarding state for a newly picked folder
+    let mut picked_dir: Signal<Option<String>> = use_signal(|| None);
+    let mut rg_list:    Signal<Vec<crate::services::azure_sync::LogicAppSite>> = use_signal(Vec::new);
+    let mut fetching:   Signal<bool> = use_signal(|| false);
+    let mut error:      Signal<Option<String>> = use_signal(|| None);
 
     rsx! {
         div { id: "welcome",
@@ -127,39 +133,130 @@ fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
             }
 
             div { id: "welcome-box",
-                div { id: "welcome-pick",
-                    p { "Choose the root folder of your ais_platform repo" }
-                    button {
-                        class: "btn-pick-folder",
-                        onclick: move |_| {
-                            let on_open = on_open.clone();
-                            spawn(async move {
-                                let picked = tokio::task::spawn_blocking(|| {
-                                    config::pick_folder(None)
-                                }).await.ok().flatten();
-                                if let Some(dir) = picked {
-                                    on_open.call(dir);
+                if let Some(dir) = picked_dir.read().clone() {
+                    // ── ONBOARDING: PICK RESOURCE GROUP ──────────────────────
+                    div { id: "onboarding",
+                        h3 { "🔗 Link Project to Azure" }
+                        p { class: "onboarding-path", "{dir}" }
+                        p { class: "onboarding-hint", "Select the Logic App site (Resource Group) for this customer repo:" }
+                        
+                        if *fetching.read() {
+                            div { class: "onboarding-loading", "Fetching sites from Azure..." }
+                        } else if let Some(err) = error.read().clone() {
+                            div { class: "onboarding-error", 
+                                "{err}"
+                                button { 
+                                    class: "btn btn-small", 
+                                    style: "margin-left: 10px",
+                                    onclick: move |_| {
+                                        error.set(None);
+                                        fetching.set(true);
+                                        spawn(async move {
+                                            // Trigger re-login
+                                            crate::services::azure_cli::launch_az_login(None);
+                                        });
+                                    },
+                                    "🔐 Login"
                                 }
-                            });
-                        },
-                        "📁  Browse…"
+                            }
+                        } else {
+                            div { class: "onboarding-list",
+                                for site in rg_list.read().clone() {
+                                    div { 
+                                        class: "onboarding-item",
+                                        onclick: {
+                                            let site = site.clone();
+                                            let dir = dir.clone();
+                                            let mut app_cfg = app_cfg.clone();
+                                            let on_open = on_open.clone();
+                                            move |_| {
+                                                let mut cfg = app_cfg.read().clone();
+                                                cfg.workspace_links.insert(dir.clone(), config::WorkspaceLink {
+                                                    subscription_id: site.subscription.clone(),
+                                                    resource_group:  site.resource_group.clone(),
+                                                    logic_app_name:  Some(site.name.clone()),
+                                                    sb_namespace:    None,
+                                                });
+                                                config::save(&cfg);
+                                                app_cfg.set(cfg);
+                                                on_open.call(dir.clone());
+                                            }
+                                        },
+                                        span { class: "onboarding-item-name", "{site.name}" }
+                                        span { class: "onboarding-item-rg", "{site.resource_group}" }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        div { class: "onboarding-actions",
+                            button { 
+                                class: "btn-back", 
+                                onclick: move |_| picked_dir.set(None),
+                                "← Back"
+                            }
+                        }
                     }
-                }
+                } else {
+                    // ── DEFAULT: FOLDER PICKER & RECENT ──────────────────────
+                    div { id: "welcome-pick",
+                        p { "Choose the root folder of your ais_platform repo" }
+                        button {
+                            class: "btn-pick-folder",
+                            onclick: move |_| {
+                                spawn(async move {
+                                    let picked = tokio::task::spawn_blocking(|| {
+                                        config::pick_folder(None)
+                                    }).await.ok().flatten();
+                                    
+                                    if let Some(dir) = picked {
+                                        // Check if already linked
+                                        let cfg = config::load();
+                                        if cfg.workspace_links.contains_key(&dir) {
+                                            on_open.call(dir);
+                                        } else {
+                                            // Start onboarding
+                                            picked_dir.set(Some(dir));
+                                            fetching.set(true);
+                                            let res = tokio::task::spawn_blocking(|| {
+                                                crate::services::azure_sync::list_logic_app_sites(None)
+                                            }).await.unwrap_or(Err(crate::services::azure_cli::AzError::Other("Task failed".into())));
+                                            
+                                            fetching.set(false);
+                                            match res {
+                                                Ok(list) => rg_list.set(list),
+                                                Err(e) => error.set(Some(format!("Azure error: {:?}", e))),
+                                            }
+                                        }
+                                    }
+                                });
+                            },
+                            "📁  Browse…"
+                        }
+                    }
 
-                if !recent.is_empty() {
-                    div { id: "recent-list",
-                        h3 { "Recent" }
-                        for dir in recent {
-                            {
-                                let dir2 = dir.clone();
-                                let on_open = on_open2.clone();
-                                rsx! {
-                                    div {
-                                        class: "recent-item",
-                                        onclick: move |_| on_open.call(dir2.clone()),
-                                        span { class: "recent-icon", "🗂" }
-                                        span { class: "recent-path", title: "{dir}", "{dir}" }
-                                        span { class: "recent-arrow", "›" }
+                    if !recent.is_empty() {
+                        div { id: "recent-list",
+                            h3 { "Recent Projects" }
+                            for dir in recent {
+                                {
+                                    let dir2 = dir.clone();
+                                    let on_open = on_open.clone();
+                                    let link = app_cfg.read().workspace_links.get(&dir).cloned();
+                                    let rg_name = link.as_ref().and_then(|l| l.logic_app_name.clone())
+                                        .or_else(|| link.as_ref().map(|l| l.resource_group.clone()))
+                                        .unwrap_or_else(|| "Not linked".to_string());
+                                    
+                                    rsx! {
+                                        div {
+                                            class: "recent-item",
+                                            onclick: move |_| on_open.call(dir2.clone()),
+                                            div { style: "display:flex; flex-direction:column",
+                                                span { class: "recent-path", title: "{dir}", "{dir}" }
+                                                span { class: "recent-rg", "{rg_name}" }
+                                            }
+                                            span { class: "recent-arrow", "›" }
+                                        }
                                     }
                                 }
                             }
@@ -212,6 +309,8 @@ struct MainScreenProps {
 #[component]
 fn MainScreen(props: MainScreenProps) -> Element {
     let dir = props.logic_apps_dir.clone();
+    let cfg = use_signal(config::load);
+    let workspace_link = cfg.read().get_link(&dir).cloned();
 
     // ── Service states ─────────────────────────────────────────────────────
     let azurite_state    = use_signal(|| ServiceState::Stopped);
@@ -238,6 +337,16 @@ fn MainScreen(props: MainScreenProps) -> Element {
     let system_light = dark_light::detect() != dark_light::Mode::Dark;
     let mut is_light = use_signal(|| system_light);
 
+    // ── Log ────────────────────────────────────────────────────────────────
+    let log_lines = use_signal(|| Vec::<LogLine>::new());
+
+    let push_log = {
+        let mut log_lines = log_lines.clone();
+        move |msg: String, level: LogLevel| {
+            log_lines.write().push(LogLine { time: now(), msg, level });
+        }
+    };
+
     // ── Setup / Onboarding ─────────────────────────────────────────────────
     let dir_for_setup = dir.clone();
     let setup_status = use_signal(move || setup_manager::check_setup(&dir_for_setup));
@@ -246,14 +355,82 @@ fn MainScreen(props: MainScreenProps) -> Element {
     let on_initialize = {
         let dir = dir.clone();
         let mut status = setup_status.clone();
+        let push = push_log.clone();
         move |_| {
             let d = dir.clone();
             let d2 = dir.clone();
+            let mut push = push.clone();
             spawn(async move {
-                if let Ok(_) = tokio::task::spawn_blocking(move || setup_manager::initialize_from_template(&d)).await.unwrap() {
-                    status.set(setup_manager::check_setup(&d2));
+                match tokio::task::spawn_blocking(move || setup_manager::initialize_from_template(&d)).await.unwrap() {
+                    Ok(_) => {
+                        push("Settings initialized from template.".to_string(), LogLevel::Ok);
+                        status.set(setup_manager::check_setup(&d2));
+                    }
+                    Err(e) => push(format!("Failed to initialize: {}", e), LogLevel::Error),
                 }
             });
+        }
+    };
+
+    let on_initialize_default = {
+        let dir = dir.clone();
+        let mut status = setup_status.clone();
+        let push = push_log.clone();
+        let link = workspace_link.clone();
+        move |_| {
+            let d = dir.clone();
+            let d2 = dir.clone();
+            let d3 = dir.clone();
+            let mut push = push.clone();
+            let link = link.clone();
+            spawn(async move {
+                // 1. Create files
+                match tokio::task::spawn_blocking(move || setup_manager::initialize_default(&d)).await.unwrap() {
+                    Ok(_) => {
+                        push("Default local.settings.json created.".to_string(), LogLevel::Ok);
+                        
+                        // 2. Auto-detect if linked
+                        if let Some(l) = link {
+                            push(format!("Auto-detecting resources in {}...", l.resource_group), LogLevel::Info);
+                            match tokio::task::spawn_blocking(move || {
+                                setup_manager::auto_detect_resources(&d3, Some(&l.subscription_id), &l.resource_group)
+                            }).await.unwrap() {
+                                Ok(msg) => push(msg, LogLevel::Ok),
+                                Err(e) => push(format!("Auto-detect failed: {}", e), LogLevel::Error),
+                            }
+                        }
+
+                        status.set(setup_manager::check_setup(&d2));
+                    }
+                    Err(e) => push(format!("Failed to create default settings: {}", e), LogLevel::Error),
+                }
+            });
+        }
+    };
+
+    let on_auto_detect = {
+        let dir = dir.clone();
+        let mut status = setup_status.clone();
+        let push = push_log.clone();
+        let link = workspace_link.clone();
+        move |_| {
+            if let Some(l) = &link {
+                let d = dir.clone();
+                let d2 = dir.clone();
+                let rg = l.resource_group.clone();
+                let sub_id = l.subscription_id.clone();
+                let mut push = push.clone();
+                spawn(async move {
+                    push(format!("Auto-detecting resources in {}...", rg), LogLevel::Info);
+                    match tokio::task::spawn_blocking(move || {
+                        setup_manager::auto_detect_resources(&d, Some(&sub_id), &rg)
+                    }).await.unwrap() {
+                        Ok(msg) => push(msg, LogLevel::Ok),
+                        Err(e) => push(format!("Auto-detect failed: {}", e), LogLevel::Error),
+                    }
+                    status.set(setup_manager::check_setup(&d2));
+                });
+            }
         }
     };
 
@@ -301,8 +478,15 @@ fn MainScreen(props: MainScreenProps) -> Element {
     let mut db_panel_open    = use_signal(|| false);
     let mut azure_panel_open = use_signal(|| false);
 
+    // SFTP connections
+    let mut sftp_conns = use_signal(|| Vec::<services::sftp_check::SftpConnection>::new());
+
     // Service Bus panel state
-    let mut sb_namespace      = use_signal(|| String::new());
+    let mut sb_namespace      = use_signal(|| {
+        config::load().get_link(&dir)
+            .and_then(|l| l.sb_namespace.clone())
+            .unwrap_or_default()
+    });
     let mut sb_namespace_key  = use_signal(|| Option::<String>::None);
     // (setting_key, current_value)
     let mut sb_conn_str       = use_signal(|| Option::<(String, String)>::None);
@@ -331,6 +515,21 @@ fn MainScreen(props: MainScreenProps) -> Element {
                 .unwrap_or(Err(services::azure_cli::AzError::Other("check failed".into())));
             az_status.set(Some(result));
         });
+    });
+
+    // ── Auto-bootstrap workspace link from local.settings.json ───────────
+    use_effect({
+        let dir2 = dir.clone();
+        let mut cfg2 = cfg.clone();
+        move || {
+            if cfg2.read().get_link(&dir2).is_none() {
+                if let Some(link) = services::settings_file::try_bootstrap_link(&dir2) {
+                    let mut c = cfg2.write();
+                    c.set_link(dir2.clone(), link);
+                    config::save(&c);
+                }
+            }
+        }
     });
 
     // ── SQL + SB detection on mount ────────────────────────────────────────
@@ -362,15 +561,10 @@ fn MainScreen(props: MainScreenProps) -> Element {
         }
     });
 
-    // ── Log ────────────────────────────────────────────────────────────────
-    let log_lines = use_signal(|| Vec::<LogLine>::new());
 
-    let push_log = {
-        let mut log_lines = log_lines.clone();
-        move |msg: String, level: LogLevel| {
-            log_lines.write().push(LogLine { time: now(), msg, level });
-        }
-    };
+
+
+    // ── Setup / Onboarding ─────────────────────────────────────────────────
 
     // ── Azurite ────────────────────────────────────────────────────────────
     let on_azurite_start = {
@@ -431,10 +625,21 @@ fn MainScreen(props: MainScreenProps) -> Element {
                 }
             }
 
+            // Fail fast if local.settings.json is absent — func start will hang without it
+            if !std::path::Path::new(&func_cwd).join("local.settings.json").exists() {
+                push(
+                    format!("⚠ local.settings.json not found in {} — func start requires it. Create the file first.", func_cwd),
+                    LogLevel::Warn,
+                );
+                state.set(ServiceState::Stopped);
+                return;
+            }
+
             push(format!("$ cd {} && func start", func_cwd), LogLevel::Info);
             // Kill any stale process on port 7071 before starting
-            let _ = std::process::Command::new("sh")
+            let _ = std::process::Command::new("/bin/sh")
                 .args(["-c", "lsof -ti :7071 | xargs kill -9 2>/dev/null; true"])
+                .env("PATH", services::process::rich_path())
                 .output();
             match proc.read().start("func", &["start"], Some(&func_cwd)) {
                 Ok((stdout, stderr)) => {
@@ -451,7 +656,27 @@ fn MainScreen(props: MainScreenProps) -> Element {
                     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
                     services::process::stream_output(stdout, stderr, tx, true);
                     spawn(async move {
+                        let mut function_conn_warned = false;
                         while let Some((line, is_err)) = rx.recv().await {
+                            // Collapse the repeated functionConnections parse error into one note
+                            if line.contains("functionConnections")
+                                && line.contains("cannot be parsed")
+                            {
+                                if !function_conn_warned {
+                                    function_conn_warned = true;
+                                    push3(
+                                        "⚠ functionConnections: @{appsetting(...)} interpolation in function.id is not supported locally — triggerUrl is used for invocation and is unaffected.".into(),
+                                        LogLevel::Warn,
+                                    );
+                                }
+                                continue;
+                            }
+                            // Suppress the redundant follow-on lines for the same error
+                            if line.contains("Workflow processing failed")
+                                && line.contains("functionConnections")
+                            {
+                                continue;
+                            }
                             let level = if is_err { LogLevel::Error } else { LogLevel::Info };
                             push3(line, level);
                         }
@@ -556,7 +781,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
             selected.set(Some(name.clone()));
             actions.set(vec![]);
             // load source file synchronously — it's local disk, negligible latency
-            let src_path = std::path::Path::new(&dir_src).join(&name).join("workflow.json");
+            let src_path = workflows::resolve_logic_apps_dir(&dir_src).join(&name).join("workflow.json");
             source_text.set(match std::fs::read_to_string(&src_path) {
                 Ok(txt) => txt,
                 Err(e)  => format!("// could not read {}: {}", src_path.display(), e),
@@ -604,7 +829,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
             // Select the workflow and switch to Run tab so it's ready when the dialog confirms
             sel.set(Some(name.clone()));
             tab.set("Run".to_string());
-            let src_path = std::path::Path::new(&dir_src).join(&name).join("workflow.json");
+            let src_path = workflows::resolve_logic_apps_dir(&dir_src).join(&name).join("workflow.json");
             source_text.set(match std::fs::read_to_string(&src_path) {
                 Ok(txt) => txt,
                 Err(e)  => format!("// could not read {}: {}", src_path.display(), e),
@@ -643,6 +868,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
         let mut tab     = active_tab.clone();
         let mut traced  = traced_wfs.clone();
         let mut cleared = cleared_wfs.clone();
+        let dir_diag    = dir.clone();
         move |(name, trigger_name, trigger_type, body): (String, String, String, String)| {
             run_dialog.set(None);
             tab.set("Run".to_string());
@@ -657,16 +883,35 @@ fn MainScreen(props: MainScreenProps) -> Element {
             let mut push    = push.clone();
             let mut running = running.clone();
             let cleared_at  = Some(trigger_ts);
+            let dir_diag    = dir_diag.clone();
             push(format!("Triggering: {}", wf), LogLevel::Info);
             // only Request/Http triggers support listCallbackUrl
             let is_recurrence = !matches!(trigger_type.to_lowercase().as_str(), "request" | "http");
             running.write().insert(wf.clone());
             spawn(async move {
+                let emit_not_found_hint = |push: &mut dyn FnMut(String, LogLevel), wf: &str, dir: &str| {
+                    let missing = services::connection_diag::missing_endpoints_for_workflow(dir, wf);
+                    if missing.is_empty() {
+                        push("  hint: workflow not found — check blob/connection endpoints in local.settings.json and restart func".to_string(), LogLevel::Warn);
+                    } else {
+                        for (conn, key) in &missing {
+                            push(format!("  hint: '{}' has empty '{}' in local.settings.json — set it and restart func", conn, key), LogLevel::Warn);
+                        }
+                    }
+                };
                 // ── Fire the trigger ──────────────────────────────────────
                 if is_recurrence {
                     match run_trigger_direct(&wf, &trigger_name, &body).await {
                         Ok(_) => push(format!("Run triggered ({})", trigger_type), LogLevel::Ok),
-                        Err(e) => { push(format!("Trigger error: {}", e), LogLevel::Error); running.write().remove(&wf); return; }
+                        Err(e) => {
+                            let es = e.to_string();
+                            push(format!("Trigger error: {}", es), LogLevel::Error);
+                            if es.to_lowercase().contains("could not be found") {
+                                emit_not_found_hint(&mut push, &wf, &dir_diag);
+                            }
+                            running.write().remove(&wf);
+                            return;
+                        }
                     }
                 } else {
                     match workflows::get_callback_url(&wf, &trigger_name).await {
@@ -674,10 +919,26 @@ fn MainScreen(props: MainScreenProps) -> Element {
                             push(format!("$ curl -X POST \"{}\"", url), LogLevel::Info);
                             match workflows::trigger_workflow(&url, &body).await {
                                 Ok(run_id) => push(format!("Run started: {}", run_id), LogLevel::Ok),
-                                Err(e) => { push(format!("Trigger error: {}", e), LogLevel::Error); running.write().remove(&wf); return; }
+                                Err(e) => {
+                                    let es = e.to_string();
+                                    push(format!("Trigger error: {}", es), LogLevel::Error);
+                                    if es.to_lowercase().contains("could not be found") {
+                                        emit_not_found_hint(&mut push, &wf, &dir_diag);
+                                    }
+                                    running.write().remove(&wf);
+                                    return;
+                                }
                             }
                         }
-                        Err(e) => { push(format!("Callback URL error: {}", e), LogLevel::Error); running.write().remove(&wf); return; }
+                        Err(e) => {
+                            let es = e.to_string();
+                            push(format!("Callback URL error: {}", es), LogLevel::Error);
+                            if es.to_lowercase().contains("could not be found") {
+                                emit_not_found_hint(&mut push, &wf, &dir_diag);
+                            }
+                            running.write().remove(&wf);
+                            return;
+                        }
                     }
                 }
 
@@ -851,6 +1112,12 @@ fn MainScreen(props: MainScreenProps) -> Element {
     rsx! {
         div { id: "app",
             match setup_status.read().clone() {
+                setup_manager::SetupStatus::MissingSettings => rsx! {
+                    div { class: "setup-banner",
+                        span { "⚠ local.settings.json is missing and no template was found." }
+                        button { class: "setup-banner-btn", onclick: on_initialize_default, "Bootstrap Default Settings" }
+                    }
+                },
                 setup_manager::SetupStatus::NeedsInitialization => rsx! {
                     div { class: "setup-banner",
                         span { "🚀 Your environment is not initialized yet. Create local.settings.json from template?" }
@@ -860,20 +1127,42 @@ fn MainScreen(props: MainScreenProps) -> Element {
                 setup_manager::SetupStatus::NeedsConfiguration(count) => rsx! {
                     div { class: "setup-banner",
                         span { "⚠ {count} settings require attention (SQL passwords, Azure endpoints)." }
+                        if let Some(_) = &workspace_link {
+                            button { 
+                                class: "setup-banner-btn", 
+                                style: "background: var(--blue); margin-right: 8px;",
+                                onclick: on_auto_detect, 
+                                "Auto-Detect from Azure" 
+                            }
+                        }
                         button { 
                             class: "setup-banner-btn", 
                             onclick: move |_| { active_tab.set("Settings".to_string()); }, 
-                            "Configure Environment" 
+                            "Configure Manually" 
                         }
                     }
                 },
                 setup_manager::SetupStatus::MissingKeys(keys) => rsx! {
                     div { class: "setup-banner",
-                        span { "⚠ connections.json requires missing keys: {keys.join(\", \")}" }
-                        button { 
-                            class: "setup-banner-btn", 
-                            onclick: move |_| { active_tab.set("Settings".to_string()); }, 
-                            "Fix Settings" 
+                        span { "⚠ {keys.len()} key(s) referenced in connections.json are missing from local.settings.json." }
+                        button {
+                            class: "setup-banner-btn",
+                            style: "background: var(--blue); margin-right: 8px;",
+                            onclick: {
+                                let keys = keys.clone();
+                                let dir  = dir.clone();
+                                let mut setup_status = setup_status.clone();
+                                move |_| {
+                                    let _ = setup_manager::stub_missing_keys(&dir, &keys);
+                                    setup_status.set(setup_manager::check_setup(&dir));
+                                }
+                            },
+                            "Auto-stub Missing Keys"
+                        }
+                        button {
+                            class: "setup-banner-btn",
+                            onclick: move |_| { active_tab.set("Settings".to_string()); },
+                            "Edit Manually"
                         }
                     }
                 },
@@ -996,15 +1285,23 @@ fn MainScreen(props: MainScreenProps) -> Element {
                 }
                 // ── Environment toggle ─────────────────────────────────────
                 {
+                    let has_settings = !matches!(*setup_status.read(), setup_manager::SetupStatus::MissingSettings);
+                    if !has_settings { return rsx! {}; }
                     let mode       = current_env.read().clone();
                     let switching  = *env_switching.read();
                     let dir_env    = dir.clone();
                     let sub_env    = services::azure_sync::detect_subscription(&dir.clone());
                     let (badge_class, badge_label, toggle_label, toggle_title) = match &mode {
-                        EnvMode::Local   => ("env-badge local",  "🏠 Local",  "☁ Use Azure",  "Switch blob connections to real Azure storage"),
-                        EnvMode::Azure   => ("env-badge azure",  "☁ Azure",  "🏠 Use Local", "Switch blob connections to Azurite (local dev)"),
-                        EnvMode::Mixed   => ("env-badge mixed",  "⚠ Mixed",  "🏠 All Local", "Some connections are mixed — switch all to Azurite"),
-                        EnvMode::Unknown => ("env-badge unknown","? Unknown", "?", "No blob connections found"),
+                        EnvMode::Local   => ("env-badge local",  "🏠 Local".to_string(),  "☁ Use Azure".to_string(),  "Switch blob connections to real Azure storage".to_string()),
+                        EnvMode::Azure   => ("env-badge azure",  "☁ Azure".to_string(),  "🏠 Use Local".to_string(), "Switch blob connections to Azurite (local dev)".to_string()),
+                        EnvMode::Mixed   => ("env-badge mixed",  "⚠ Mixed".to_string(),  "🏠 All Local".to_string(), "Some connections are mixed — switch all to Azurite".to_string()),
+                        EnvMode::Unknown => {
+                            if let Some(link) = &workspace_link {
+                                ("env-badge linked", format!("☁ Linked: {}", link.resource_group), "?".to_string(), format!("Linked to Azure Resource Group: {}", link.resource_group))
+                            } else {
+                                ("env-badge unknown", "? Unknown".to_string(), "?".to_string(), "No blob connections found".to_string())
+                            }
+                        }
                     };
                     let env_block_class = match &mode {
                         EnvMode::Local   => "env-block local",
@@ -1116,15 +1413,17 @@ fn MainScreen(props: MainScreenProps) -> Element {
                                 let dir7 = dir_sql.clone();
                                 let dir8 = dir_sql.clone();
                                 let dir9 = dir_sql.clone();
+                                let dira = dir_sql.clone();
                                 spawn(async move {
-                                    let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key) =
+                                    let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, sftp) =
                                         tokio::task::spawn_blocking(move || {
                                             let wfs       = sql_check::detect_sql_workflows(&dir5);
                                             let conns     = sql_check::load_sql_connections(&dir6);
                                             let sb        = sb_check::detect_sb_queues(&dir7);
                                             let sb_key    = sb_check::detect_sb_namespace_key(&dir8);
                                             let sb_cs_key = sb_check::detect_sb_conn_str_key(&dir9);
-                                            (wfs, conns, sb, sb_key, sb_cs_key)
+                                            let sftp      = services::sftp_check::detect_sftp_connections(&dira);
+                                            (wfs, conns, sb, sb_key, sb_cs_key, sftp)
                                         }).await.unwrap_or_default();
                                     sql_wfs.set(wfs);
                                     sql_conns.set(conns);
@@ -1132,6 +1431,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
                                     sb_queues.set(sb_qs);
                                     sb_namespace_key.set(sb_key);
                                     sb_conn_str.set(sb_cs_key);
+                                    sftp_conns.set(sftp);
                                 });
                                 db_panel_open.set(true);
                             },
@@ -1282,6 +1582,9 @@ fn MainScreen(props: MainScreenProps) -> Element {
             if *azure_panel_open.read() {
                 {
                     let mut push2 = push_log.clone();
+                    let wfs_reload   = workflows.clone();
+                    let func_check   = func_state.clone();
+                    let dir_reload   = dir.clone();
                     rsx! {
                         AzurePanel {
                             logic_apps_dir:  dir.clone(),
@@ -1289,6 +1592,23 @@ fn MainScreen(props: MainScreenProps) -> Element {
                             on_close:  move |_| azure_panel_open.set(false),
                             on_pulled: move |name: String| {
                                 push2(format!("⬇ {} pulled from Azure", name), LogLevel::Ok);
+                                let mut wfs = wfs_reload.clone();
+                                let is_running = matches!(*func_check.read(), ServiceState::Running);
+                                let dir_c = dir_reload.clone();
+                                spawn(async move {
+                                    if is_running {
+                                        if let Ok(list) = services::workflows::list_workflows().await {
+                                            wfs.set(list);
+                                        }
+                                    } else {
+                                        let list = tokio::task::spawn_blocking(move || {
+                                            services::workflows::scan_local_workflows(&dir_c)
+                                        }).await.unwrap_or_default();
+                                        if !list.is_empty() {
+                                            wfs.set(list);
+                                        }
+                                    }
+                                });
                             },
                         }
                     }
@@ -1302,6 +1622,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
                     sb_namespace_key:  sb_namespace_key.read().clone(),
                     sb_conn_str:       sb_conn_str.read().clone(),
                     sb_queues:         sb_queues.read().clone(),
+                    sftp_connections:  sftp_conns.read().clone(),
                     azurite_running:   *azurite_state.read() == ServiceState::Running,
                     on_close: move |_| db_panel_open.set(false),
                     on_saved: move |_| {
@@ -1310,15 +1631,17 @@ fn MainScreen(props: MainScreenProps) -> Element {
                         let dir9 = dir.clone();
                         let dira = dir.clone();
                         let dirb = dir.clone();
+                        let dirc = dir.clone();
                         spawn(async move {
-                            let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key) =
+                            let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, sftp) =
                                 tokio::task::spawn_blocking(move || {
                                     let wfs       = sql_check::detect_sql_workflows(&dir7);
                                     let conns     = sql_check::load_sql_connections(&dir8);
                                     let sb        = sb_check::detect_sb_queues(&dir9);
                                     let sb_key    = sb_check::detect_sb_namespace_key(&dira);
                                     let sb_cs_key = sb_check::detect_sb_conn_str_key(&dirb);
-                                    (wfs, conns, sb, sb_key, sb_cs_key)
+                                    let sftp      = services::sftp_check::detect_sftp_connections(&dirc);
+                                    (wfs, conns, sb, sb_key, sb_cs_key, sftp)
                                 }).await.unwrap_or_default();
                             sql_wfs.set(wfs);
                             sql_conns.set(conns);
@@ -1326,6 +1649,7 @@ fn MainScreen(props: MainScreenProps) -> Element {
                             sb_queues.set(sb_qs);
                             sb_namespace_key.set(sb_key);
                             sb_conn_str.set(sb_cs_key);
+                            sftp_conns.set(sftp);
                         });
                     },
                 }

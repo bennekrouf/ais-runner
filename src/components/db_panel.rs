@@ -4,7 +4,9 @@ use crate::services::{
     azure_cli::{self, BlobInfo, SbQueueStats},
     azurite_client,
     azure_sync,
+    config,
     sb_check::{self, SbQueueInfo},
+    sftp_check::{self, SftpConnection, SftpTestResult},
     sql_check::{self, SqlAuthType, SqlConnection, TestResult},
     settings_file,
 };
@@ -101,6 +103,7 @@ pub struct DbPanelProps {
     /// (setting_key, current_value) for the SB connection string, if detected
     pub sb_conn_str:       Option<(String, String)>,
     pub sb_queues:         Vec<SbQueueInfo>,
+    pub sftp_connections:  Vec<SftpConnection>,
     pub azurite_running:   bool,
     pub on_close:          EventHandler<()>,
     pub on_saved:          EventHandler<()>,
@@ -124,6 +127,8 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     // ── Service Bus signals ──────────────────────────────────────────────────
     let mut sb_tcp_result: Signal<Option<TestResult>> = use_signal(|| None);
     let mut sb_tcp_testing: Signal<bool>              = use_signal(|| false);
+    let mut sb_tcp_443_result: Signal<Option<TestResult>> = use_signal(|| None);
+    let mut sb_tcp_443_testing: Signal<bool>              = use_signal(|| false);
     let mut sb_rg:          Signal<Option<String>>    = use_signal(|| None);
     let mut sb_stats:       Signal<HashMap<String, SbQueueStats>> = use_signal(HashMap::new);
     let mut sb_fetching:    Signal<HashSet<String>>   = use_signal(HashSet::new);
@@ -131,8 +136,15 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     let mut sb_send_bodies: Signal<HashMap<String, String>> = use_signal(HashMap::new);
 
     // Namespace editing
-    let mut sb_ns_edit: Signal<String> =
-        use_signal(|| props.sb_namespace.clone());
+    let mut sb_ns_edit: Signal<String> = use_signal(|| {
+        if !props.sb_namespace.is_empty() {
+            props.sb_namespace.clone()
+        } else {
+            config::load().get_link(&props.logic_apps_dir)
+                .and_then(|l| l.sb_namespace.clone())
+                .unwrap_or_default()
+        }
+    });
     // (short_name, fqdn, rg) list fetched from az
     let mut sb_ns_list:    Signal<Vec<(String, String, String)>> = use_signal(Vec::new);
     let mut sb_ns_loading: Signal<bool>                          = use_signal(|| false);
@@ -194,6 +206,36 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     Err(_)       => {}
                 }
                 blob_loading.set(false);
+            });
+        }
+    });
+
+    // Auto-refresh SB queues when the SB tab becomes active
+    use_effect(move || {
+        if *active_tab.read() == "sb" && !sb_ns_edit.read().is_empty() && az_queues.read().is_none() && !*az_queues_loading.peek() {
+            let ns = sb_ns_edit.read().clone();
+            let rg_cached = sb_rg.read().clone();
+            let sub = subscription.read().clone();
+            az_queues_loading.set(true);
+            spawn(async move {
+                let rg = if let Some(r) = rg_cached { Ok(r) } else {
+                    let ns2 = ns.clone();
+                    tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns2, sub.as_deref()))
+                        .await
+                        .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
+                };
+                match rg {
+                    Ok(r) => {
+                        sb_rg.set(Some(r.clone()));
+                        match tokio::task::spawn_blocking(move || azure_cli::sb_list_queues(&r, &ns)).await {
+                            Ok(Ok(list)) => { az_queues.set(Some(list)); }
+                            Ok(Err(_))   => {}
+                            Err(_)       => {}
+                        }
+                    }
+                    Err(_) => {}
+                }
+                az_queues_loading.set(false);
             });
         }
     });
@@ -274,6 +316,11 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     class: if *active_tab.read() == "sql" { "db-tab active" } else { "db-tab" },
                     onclick: move |_| active_tab.set("sql"),
                     "🗄 SQL"
+                }
+                button {
+                    class: if *active_tab.read() == "sftp" { "db-tab active" } else { "db-tab" },
+                    onclick: move |_| active_tab.set("sftp"),
+                    "📡 SFTP"
                 }
             }
 
@@ -525,7 +572,6 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                             Ok(Ok(_)) => {
                                                 status.set(Some((format!("✅ Created queue '{}'", q), false)));
                                                 new_queue_name.set(String::new());
-                                                // Trigger a refresh of the queue list if it's already open
                                                 if let Some(ref mut list) = *az_queues.write() {
                                                     list.push(q);
                                                 }
@@ -543,11 +589,41 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     }
                 }
 
-                if props.sb_namespace.is_empty() {
-                    div { class: "empty-state", "No Service Bus connection found in connections.json" }
-                } else {
-                    // Namespace card — editable + browse
-                    {
+                {
+                    let app_cfg = config::load();
+                    let link = app_cfg.get_link(&props.logic_apps_dir);
+
+                    if props.sb_namespace.is_empty() && props.sb_namespace_key.is_none() && props.sb_conn_str.is_none() {
+                        rsx! { div { class: "empty-state", "No Service Bus connection found in connections.json" } }
+                    } else if props.sb_namespace.is_empty() && link.is_some() {
+                        let l = link.unwrap();
+                        let rg = l.resource_group.clone();
+                        let sub_id = l.subscription_id.clone();
+                        let dir_auto = props.logic_apps_dir.clone();
+                        rsx! {
+                            div { class: "db-card", style: "background: var(--blue-bg); border: 1px solid var(--blue); padding: 15px; display: flex; flex-direction: column; gap: 10px;",
+                                div { style: "font-weight: 600; color: var(--blue);", "🔗 Azure Link Detected" }
+                                div { style: "font-size: 13px;", "This project is linked to Resource Group " b { "{rg}" } ". We can automatically find your Service Bus namespace." }
+                                button {
+                                    class: "btn btn-run btn-small",
+                                    style: "align-self: flex-start;",
+                                    onclick: move |_| {
+                                        let d = dir_auto.clone();
+                                        let rg2 = rg.clone();
+                                        let sub2 = sub_id.clone();
+                                        spawn(async move {
+                                            let _ = tokio::task::spawn_blocking(move || {
+                                                crate::services::setup_manager::auto_detect_resources(&d, Some(&sub2), &rg2)
+                                            }).await;
+                                            props.on_saved.call(());
+                                        });
+                                    },
+                                    "Auto-Link Service Bus"
+                                }
+                            }
+                        }
+                    } else {
+                        // Namespace card — editable + browse
                         let tcp_res = sb_tcp_result.read().clone();
                         let is_tcp_testing = *sb_tcp_testing.read();
                         let is_loading = *sb_ns_loading.read();
@@ -555,11 +631,9 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                         let current_edit = sb_ns_edit.read().clone();
                         let has_key = props.sb_namespace_key.is_some();
                         let uses_conn_str = props.sb_conn_str.is_some();
-                        // FQDN is editable only when it maps directly to a setting key (MSI mode)
-                        let fqdn_editable = has_key && !uses_conn_str;
                         let auth_badge: &str = if uses_conn_str { "ConnStr" } else { "MSI" };
                         let auth_class: &str = if uses_conn_str { "db-auth-badge cs" } else { "db-auth-badge msi" };
-                        let fqdn_title: &str = if fqdn_editable {
+                        let fqdn_title: &str = if has_key && !uses_conn_str {
                             "Edit to switch to a different namespace"
                         } else if uses_conn_str {
                             "FQDN is derived from the connection string — edit the connection string to change it"
@@ -603,14 +677,47 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                             },
                                             if is_tcp_testing { "Testing…" } else { "⚡ Test TCP" }
                                         }
+
+                                        if let Some(ref r) = *sb_tcp_result.read() {
+                                            if !r.reachable {
+                                                button {
+                                                    class: "btn btn-small btn-fetch",
+                                                    style: "margin-left: 8px",
+                                                    disabled: *sb_tcp_443_testing.read() || current_edit.is_empty(),
+                                                    onclick: move |_| {
+                                                        let ns = sb_ns_edit.read().clone();
+                                                        sb_tcp_443_result.set(None);
+                                                        sb_tcp_443_testing.set(true);
+                                                        spawn(async move {
+                                                            let result = tokio::task::spawn_blocking(move || {
+                                                                sb_check::test_sb_tcp_443(&ns)
+                                                            }).await.unwrap_or(TestResult {
+                                                                reachable: false, latency_ms: None,
+                                                                error: Some("Task failed".into()),
+                                                            });
+                                                            sb_tcp_443_result.set(Some(result));
+                                                            sb_tcp_443_testing.set(false);
+                                                        });
+                                                    },
+                                                    if *sb_tcp_443_testing.read() { "Testing 443…" } else { "⚡ Test 443" }
+                                                }
+                                            }
+                                        }
+                                        
+                                        if let Some(ref r) = *sb_tcp_443_result.read() {
+                                            if r.reachable {
+                                                span { class: "db-test-ok", style: "margin-left: 8px", "✅ Port 443 reachable ({r.latency_ms.unwrap_or(0)}ms)" }
+                                            } else {
+                                                span { class: "db-test-err", style: "margin-left: 8px", title: "{r.error.as_deref().unwrap_or(\"\")}", "❌ Port 443 unreachable" }
+                                            }
+                                        }
                                     }
                                 }
 
-                                // Namespace combobox — click to open list, pick to close
+                                // Namespace combobox
                                 div { class: "db-field-row",
                                     label { class: "db-field-label", "Namespace" }
                                     div { class: "db-ns-combobox",
-                                        // The clickable field
                                         div {
                                             class: if is_loading { "db-ns-field loading" } else { "db-ns-field" },
                                             title: fqdn_title,
@@ -620,17 +727,12 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                     spawn(async move {
                                                         match tokio::task::spawn_blocking(azure_cli::sb_list_namespaces).await {
                                                             Ok(Ok(list)) => { sb_ns_list.set(list); }
-                                                            Ok(Err(e)) => {
-                                                                status.set(Some((format!("az error: {:?}", e), true)));
-                                                            }
-                                                            Err(_) => {
-                                                                status.set(Some(("Could not list namespaces — az login required".into(), true)));
-                                                            }
+                                                            Ok(Err(e)) => { status.set(Some((format!("az error: {:?}", e), true))); }
+                                                            Err(_) => { status.set(Some(("Could not list namespaces — az login required".into(), true))); }
                                                         }
                                                         sb_ns_loading.set(false);
                                                     });
                                                 } else {
-                                                    // Toggle — close if already open
                                                     sb_ns_list.write().clear();
                                                 }
                                             },
@@ -645,7 +747,6 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                 if is_loading { "…" } else if !ns_list.is_empty() { "▲" } else { "▾" }
                                             }
                                         }
-                                        // Dropdown list
                                         if !ns_list.is_empty() {
                                             {
                                                 let uses_cs = uses_conn_str;
@@ -663,16 +764,10 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                                         onclick: move |_| {
                                                                             sb_ns_edit.set(fqdn2.clone());
                                                                             sb_tcp_result.set(None);
-                                                                            sb_ns_list.write().clear(); // close
+                                                                            sb_ns_list.write().clear();
                                                                             if uses_cs {
                                                                                 sb_rg.set(Some(rg2.clone()));
-                                                                                do_fetch_conn_str(
-                                                                                    fqdn3.clone(),
-                                                                                    Some(rg2.clone()),
-                                                                                    subscription.read().clone(),
-                                                                                    sb_rg, sb_cs_edit,
-                                                                                    sb_cs_fetching, status,
-                                                                                );
+                                                                                do_fetch_conn_str(fqdn3.clone(), Some(rg2.clone()), subscription.read().clone(), sb_rg, sb_cs_edit, sb_cs_fetching, status);
                                                                             }
                                                                         },
                                                                         span { class: "db-ns-item-name", "{short_name}" }
@@ -687,32 +782,15 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                         }
                                     }
                                 }
-
-                                // Connection string status row
                                 if let Some((ref cs_key_label, _)) = props.sb_conn_str {
                                     {
-                                        let cs_key_label   = cs_key_label.clone();
                                         let is_cs_fetching = *sb_cs_fetching.read();
-                                        let cs_value       = sb_cs_edit.read().clone();
-                                        let cs_status: &str = if is_cs_fetching {
-                                            "Fetching…"
-                                        } else if !cs_value.is_empty() {
-                                            "✅ Set"
-                                        } else {
-                                            "⚠ Not set — pick a namespace above"
-                                        };
-                                        let cs_status_class: &str = if is_cs_fetching || cs_value.is_empty() {
-                                            "db-cs-status warn"
-                                        } else {
-                                            "db-cs-status ok"
-                                        };
+                                        let cs_value = sb_cs_edit.read().clone();
+                                        let cs_status: &str = if is_cs_fetching { "Fetching…" } else if !cs_value.is_empty() { "✅ Set" } else { "⚠ Not set" };
+                                        let cs_status_class: &str = if is_cs_fetching || cs_value.is_empty() { "db-cs-status warn" } else { "db-cs-status ok" };
                                         rsx! {
                                             div { class: "db-field-row", style: "margin-top:6px",
-                                                label {
-                                                    class: "db-field-label",
-                                                    title: "Setting: {cs_key_label}",
-                                                    "Conn string"
-                                                }
+                                                label { class: "db-field-label", title: "Setting: {cs_key_label}", "Conn string" }
                                                 span { class: "{cs_status_class}", "{cs_status}" }
                                             }
                                         }
@@ -720,25 +798,20 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                 }
 
                                 if !has_key && !uses_conn_str {
-                                    div { class: "db-msi-note",
-                                        "⚠ Namespace is hardcoded — add "
-                                        code { "\"fullyQualifiedNamespace\": \"@appsetting('serviceBus_fullyQualifiedNamespace')\"" }
-                                        " to connections.json to make it switchable."
-                                    }
+                                    div { class: "db-msi-note", "⚠ Namespace is hardcoded — add @appsetting('serviceBus_fullyQualifiedNamespace') to connections.json" }
                                 }
 
                                 if let Some(ref r) = tcp_res {
                                     if !r.reachable {
                                         if let Some(ref err) = r.error {
-                                            div { class: "db-test-error-detail",
-                                                "{err} — try port 443 (AMQP over WebSockets)."
-                                            }
+                                            div { class: "db-test-error-detail", "{err} — try port 443 (AMQP over WebSockets)." }
                                         }
                                     }
                                 }
                             }
                         }
                     }
+                }
 
                     // Queue cards (local workflows)
                     for q in props.sb_queues.clone() {
@@ -1025,7 +1098,6 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                             rsx! {}
                         }
                     }
-                } // end SB content
                 } // end SB tab-pane
 
                 // ════════════════════════════════════════════════════════════
@@ -1370,6 +1442,117 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     }
                 }
                 } // end blob tab-pane
+
+                // ════════════════════════════════════════════════════════════
+                // SFTP TAB
+                // ════════════════════════════════════════════════════════════
+                div {
+                    class: if *active_tab.read() == "sftp" { "tab-pane" } else { "tab-pane hidden" },
+                    SftpTab { connections: props.sftp_connections.clone(), logic_apps_dir: props.logic_apps_dir.clone() }
+                }
+            }
+        }
+    }
+}
+
+// ── SFTP Tab component ────────────────────────────────────────────────────────
+
+#[derive(Props, Clone, PartialEq)]
+struct SftpTabProps {
+    connections:    Vec<SftpConnection>,
+    logic_apps_dir: String,
+}
+
+#[component]
+fn SftpTab(props: SftpTabProps) -> Element {
+    let mut test_results: Signal<std::collections::HashMap<String, SftpTestResult>> =
+        use_signal(std::collections::HashMap::new);
+    let mut testing: Signal<std::collections::HashSet<String>> =
+        use_signal(std::collections::HashSet::new);
+
+    if props.connections.is_empty() {
+        return rsx! {
+            div { class: "empty-state", "No SFTP connections found in connections.json" }
+        };
+    }
+
+    rsx! {
+        div { class: "db-section",
+            div { class: "db-section-title", "📡 SFTP Connections" }
+
+            for conn in props.connections.clone() {
+                {
+                    let name    = conn.connection_name.clone();
+                    let is_testing = testing.read().contains(&name);
+                    let result  = test_results.read().get(&name).cloned();
+
+                    let status_badge = match &result {
+                        None                          => rsx! { span { class: "sftp-badge unchecked", "—" } },
+                        Some(SftpTestResult::Ok)      => rsx! { span { class: "sftp-badge ok",        "✅ Reachable" } },
+                        Some(SftpTestResult::AuthFailed) => rsx! { span { class: "sftp-badge warn",   "⚠ Auth — host reachable, password auth will work at runtime" } },
+                        Some(SftpTestResult::Unreachable(e)) => rsx! { span { class: "sftp-badge error", "❌ {e}" } },
+                        Some(SftpTestResult::NotConfigured)  => rsx! { span { class: "sftp-badge error", "❌ Not configured" } },
+                    };
+
+                    rsx! {
+                        div { class: "sftp-row",
+                            div { class: "sftp-row-header",
+                                span { class: "sftp-name", "{conn.display_name}" }
+                                if is_testing {
+                                    span { class: "sftp-badge unchecked", "Testing…" }
+                                } else {
+                                    {status_badge}
+                                }
+                                button {
+                                    class: "btn btn-small",
+                                    disabled: is_testing || !conn.configured,
+                                    title: if conn.configured { "Test SSH connectivity" } else { "Host or username not configured" },
+                                    onclick: {
+                                        let host = conn.host.clone();
+                                        let user = conn.user.clone();
+                                        let key  = name.clone();
+                                        move |_| {
+                                            testing.write().insert(key.clone());
+                                            let h = host.clone();
+                                            let u = user.clone();
+                                            let k = key.clone();
+                                            spawn(async move {
+                                                let res = tokio::task::spawn_blocking(move || {
+                                                    sftp_check::test_sftp_connection(&h, &u)
+                                                }).await.unwrap_or(SftpTestResult::Unreachable("task failed".into()));
+                                                testing.write().remove(&k);
+                                                test_results.write().insert(k, res);
+                                            });
+                                        }
+                                    },
+                                    "Test"
+                                }
+                            }
+                            div { class: "sftp-details",
+                                span { class: "sftp-field",
+                                    span { class: "sftp-label", "Host" }
+                                    if conn.host.is_empty() {
+                                        span { class: "sftp-value missing", "not set ({conn.host_key})" }
+                                    } else {
+                                        span { class: "sftp-value", "{conn.host}" }
+                                    }
+                                }
+                                span { class: "sftp-field",
+                                    span { class: "sftp-label", "User" }
+                                    if conn.user.is_empty() {
+                                        span { class: "sftp-value missing", "not set ({conn.user_key})" }
+                                    } else {
+                                        span { class: "sftp-value", "{conn.user}" }
+                                    }
+                                }
+                                span { class: "sftp-field",
+                                    span { class: "sftp-label", "Password" }
+                                    span { class: "sftp-value", "••••• ({conn.pass_key})" }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

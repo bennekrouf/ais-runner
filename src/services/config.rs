@@ -1,14 +1,22 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::collections::HashMap;
 
 const MAX_RECENT: usize = 5;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct WorkspaceLink {
+    pub subscription_id: String,
+    pub resource_group: String,
+    pub logic_app_name: Option<String>,
+    pub sb_namespace:   Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     pub recent_dirs: Vec<String>,
-    pub servicebus_namespace: Option<String>,
-    pub subscription_id: Option<String>,
+    pub workspace_links: HashMap<String, WorkspaceLink>,
 }
 
 impl AppConfig {
@@ -16,6 +24,14 @@ impl AppConfig {
         self.recent_dirs.retain(|d| d != &dir); // remove duplicate
         self.recent_dirs.insert(0, dir);         // most recent first
         self.recent_dirs.truncate(MAX_RECENT);
+    }
+
+    pub fn get_link(&self, dir: &str) -> Option<&WorkspaceLink> {
+        self.workspace_links.get(dir)
+    }
+
+    pub fn set_link(&mut self, dir: String, link: WorkspaceLink) {
+        self.workspace_links.insert(dir, link);
     }
 }
 

@@ -111,8 +111,9 @@ pub fn apply_fetched_endpoint(dir: &str, key: &str, endpoint: &str) -> Result<()
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn read_values(dir: &str) -> Option<HashMap<String, String>> {
+    let dir_path = crate::services::workflows::resolve_logic_apps_dir(dir);
     let text = std::fs::read_to_string(
-        std::path::Path::new(dir).join("local.settings.json"),
+        dir_path.join("local.settings.json"),
     ).ok()?;
     let v: Value = serde_json::from_str(&text).ok()?;
     v["Values"].as_object().map(|m| {
@@ -123,8 +124,9 @@ fn read_values(dir: &str) -> Option<HashMap<String, String>> {
 }
 
 fn read_root(dir: &str) -> Result<(Value, HashMap<String, String>), String> {
+    let dir_path = crate::services::workflows::resolve_logic_apps_dir(dir);
     let text = std::fs::read_to_string(
-        std::path::Path::new(dir).join("local.settings.json"),
+        dir_path.join("local.settings.json"),
     ).map_err(|e| e.to_string())?;
     let root: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     let values: HashMap<String, String> = root["Values"]
@@ -144,9 +146,10 @@ fn write_root(dir: &str, root: &mut Value, values: HashMap<String, String>) -> R
             obj.insert(k.clone(), Value::String(v.clone()));
         }
     }
+    let dir_path = crate::services::workflows::resolve_logic_apps_dir(dir);
     let text = serde_json::to_string_pretty(root).map_err(|e| e.to_string())?;
     std::fs::write(
-        std::path::Path::new(dir).join("local.settings.json"),
+        dir_path.join("local.settings.json"),
         text,
     ).map_err(|e| e.to_string())
 }

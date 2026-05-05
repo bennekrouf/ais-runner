@@ -4,7 +4,7 @@ use serde_json::Value;
 /// Reads a workflow.json and returns a pretty-printed sample JSON body for its trigger.
 /// Tries trigger.inputs.schema first, then the first ParseJson that consumes @triggerBody().
 pub fn suggest_payload(logic_apps_dir: &str, workflow_name: &str) -> String {
-    let path = std::path::Path::new(logic_apps_dir)
+    let path = crate::services::workflows::resolve_logic_apps_dir(logic_apps_dir)
         .join(workflow_name)
         .join("workflow.json");
 

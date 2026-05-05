@@ -8,6 +8,8 @@ pub mod payload;
 pub mod system_check;
 pub mod sql_check;
 pub mod sb_check;
+pub mod sftp_check;
+pub mod connection_diag;
 pub mod azure_sync;
 pub mod env_mode;
 pub mod setup_manager;

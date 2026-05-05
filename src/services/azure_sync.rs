@@ -64,6 +64,43 @@ pub fn list_logic_app_sites(subscription: Option<&str>) -> Result<Vec<LogicAppSi
     Ok(sites)
 }
 
+/// List all Logic Apps Standard sites in a specific Resource Group.
+pub fn list_logic_app_sites_in_rg(subscription: &str, resource_group: &str) -> Result<Vec<LogicAppSite>, AzError> {
+    let out = az_command(&[
+        "resource", "list",
+        "--subscription", subscription,
+        "--resource-group", resource_group,
+        "--resource-type", "Microsoft.Web/sites",
+        "--query", "[?contains(kind, 'workflowapp')].{name:name,rg:resourceGroup,id:id,kind:kind}",
+        "-o", "json",
+    ])
+    .output()
+    .map_err(|e| AzError::Other(format!("az not found: {}", e)))?;
+
+    let raw    = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    if !out.status.success() {
+        if stderr.contains("AADSTS") || stderr.contains("az login") || stderr.contains("refresh token") {
+            return Err(AzError::NotLoggedIn);
+        }
+        return Err(AzError::Other(stderr.trim().to_string()));
+    }
+
+    let arr: Vec<Value> = serde_json::from_str(raw.trim()).unwrap_or_default();
+
+    let mut sites: Vec<LogicAppSite> = arr.iter().filter_map(|v| {
+        let name = v["name"].as_str()?.to_string();
+        let rg   = v["rg"].as_str()?.to_string();
+        let id   = v["id"].as_str().unwrap_or("");
+        let sub  = id.split('/').nth(2).unwrap_or("").to_string();
+        if name.is_empty() || sub.is_empty() { return None; }
+        Some(LogicAppSite { name, resource_group: rg, subscription: sub })
+    }).collect();
+    sites.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(sites)
+}
+
 /// List all workflows in a Logic Apps Standard site.
 pub fn list_azure_workflows(subscription: &str, rg: &str, site: &str)
     -> Result<Vec<AzureWorkflow>, AzError>
@@ -205,10 +242,25 @@ fn line_diff_count(a: &str, b: &str) -> usize {
 
 /// Read the subscription ID from local.settings.json (WORKFLOWS_SUBSCRIPTION_ID).
 pub fn detect_subscription(logic_apps_dir: &str) -> Option<String> {
-    let text = std::fs::read_to_string(
+    let sub = if let Ok(text) = std::fs::read_to_string(
         std::path::Path::new(logic_apps_dir).join("local.settings.json")
-    ).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let sub = v["Values"]["WORKFLOWS_SUBSCRIPTION_ID"].as_str()?.to_string();
-    if sub.is_empty() { None } else { Some(sub) }
+    ) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            v["Values"]["WORKFLOWS_SUBSCRIPTION_ID"].as_str().map(|s| s.to_string())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some(s) = sub {
+        if !s.is_empty() {
+            return Some(s);
+        }
+    }
+
+    // Fallback to WorkspaceLink
+    crate::services::config::load().get_link(logic_apps_dir)
+        .map(|l| l.subscription_id.clone())
 }
