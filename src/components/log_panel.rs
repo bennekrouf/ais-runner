@@ -133,15 +133,17 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                     },
                     "Azurite"
                 }
-                // Spacer + Clear (console only)
+                // Spacer + Clear — always in layout so header height stays fixed
                 div { style: "flex:1" }
-                if tab == "console" {
-                    button {
-                        class: "btn btn-small",
-                        style: "background:#21262d;color:#8b949e",
-                        onclick: move |_| props.on_clear.call(()),
-                        "Clear"
-                    }
+                button {
+                    class: "btn btn-small",
+                    style: if tab == "console" {
+                        "background:#21262d;color:#8b949e"
+                    } else {
+                        "background:#21262d;color:#8b949e;visibility:hidden"
+                    },
+                    onclick: move |_| props.on_clear.call(()),
+                    "Clear"
                 }
             }
 
