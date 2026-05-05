@@ -1077,7 +1077,21 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
     text-transform: uppercase;
     letter-spacing: 0.06em;
 }
-#log-scroll {
+.log-tab {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text2);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 2px 8px 4px;
+    cursor: pointer;
+    line-height: 1;
+}
+.log-tab:hover  { color: var(--text1); }
+.log-tab.active { color: var(--text1); border-bottom-color: var(--accent); }
+#log-scroll, #az-log-scroll {
     flex: 1;
     overflow-y: auto;
     padding: 5px 11px;

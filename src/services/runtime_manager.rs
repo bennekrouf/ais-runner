@@ -22,9 +22,18 @@ pub fn resolve_tool(name: &str) -> String {
     // Check next to the executable (Sidecar / distribution mode)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(parent) = exe_path.parent() {
-            let bundled = parent.join("bin").join(if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() });
-            if bundled.exists() {
-                return bundled.to_str().unwrap_or(name).to_string();
+            let exe_name = if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() };
+
+            // bin/<name>.exe  (flat layout)
+            let flat = parent.join("bin").join(&exe_name);
+            if flat.exists() {
+                return flat.to_str().unwrap_or(name).to_string();
+            }
+
+            // bin/<name>/<name>.exe  (sub-folder layout, e.g. func ships with workers/)
+            let nested = parent.join("bin").join(name).join(&exe_name);
+            if nested.exists() {
+                return nested.to_str().unwrap_or(name).to_string();
             }
         }
     }
@@ -42,8 +51,33 @@ pub fn resolve_tool(name: &str) -> String {
     name.to_string()
 }
 
-/// Returns the full path of `name` if it exists on PATH, else None.
+/// Returns the full path of `name` if it can be found, else None.
+/// GUI apps on macOS don't inherit the shell PATH, so `which` alone misses
+/// Homebrew (/opt/homebrew/bin) and npm-global (/usr/local/bin) installs.
 fn find_on_path(name: &str) -> Option<String> {
+    let exe = if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() };
+
+    // Check well-known directories before relying on PATH.
+    let extra_dirs: &[&str] = if cfg!(target_os = "macos") {
+        &[
+            "/opt/homebrew/bin",  // Homebrew on Apple Silicon
+            "/usr/local/bin",     // Homebrew on Intel / npm global
+            "/opt/local/bin",     // MacPorts
+        ]
+    } else if cfg!(target_os = "linux") {
+        &["/usr/local/bin", "/usr/bin"]
+    } else {
+        &[]
+    };
+
+    for dir in extra_dirs {
+        let candidate = std::path::Path::new(dir).join(&exe);
+        if candidate.exists() {
+            return candidate.to_str().map(|s| s.to_string());
+        }
+    }
+
+    // Fallback: ask the shell (works when launched from a terminal).
     let cmd = if cfg!(windows) { "where" } else { "which" };
     let out = std::process::Command::new(cmd).arg(name).output().ok()?;
     if !out.status.success() { return None; }

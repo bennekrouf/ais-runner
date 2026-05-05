@@ -22,7 +22,7 @@ Set-Location $TempDir
 if (!(Test-Path "node_modules/azurite")) {
     Write-Host "⬇️ Downloading Azurite..." -ForegroundColor Gray
     npm init -y | Out-Null
-    npm install azurite@3.30.0 --no-save
+    npm install azurite@3.35.0 --no-save
 }
 
 # 3. Build Standalone

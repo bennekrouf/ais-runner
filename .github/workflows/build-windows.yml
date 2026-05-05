@@ -13,6 +13,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -22,12 +26,88 @@ jobs:
             target
           key: windows-cargo-${{ hashFiles('Cargo.lock') }}
 
-      - name: Build
+      # ── Build standalone Azurite ─────────────────────────────────────────
+      - name: Cache Azurite build
+        uses: actions/cache@v4
+        with:
+          path: |
+            tmp_azurite_build
+            bin/azurite.exe
+          key: azurite-3.35.0-win-x64
+
+      - name: Build standalone Azurite
+        shell: pwsh
+        run: |
+          if (Test-Path "bin\azurite.exe") {
+            Write-Host "azurite.exe already cached, skipping build."
+          } else {
+            scripts\package_azurite.ps1
+          }
+
+      # ── Bundle Azure Functions Core Tools ────────────────────────────────
+      - name: Cache func CLI
+        uses: actions/cache@v4
+        with:
+          path: bin/func
+          key: func-cli-4-win-x64-v1
+
+      - name: Bundle Azure Functions Core Tools
+        shell: pwsh
+        run: |
+          if (Test-Path "bin\func\func.exe") {
+            Write-Host "func CLI already cached, skipping install."
+          } else {
+            Write-Host "Installing azure-functions-core-tools@4 ..."
+            npm install -g azure-functions-core-tools@4 --unsafe-perm true
+            $npmRoot = npm root -g
+            $funcSrc = "$npmRoot\azure-functions-core-tools\bin"
+            Write-Host "Bundling func from: $funcSrc"
+            New-Item -ItemType Directory -Path "bin\func" -Force | Out-Null
+            Copy-Item "$funcSrc\*" "bin\func\" -Recurse -Force
+            Write-Host "func CLI bundled. Contents:"
+            Get-ChildItem "bin\func" | Select-Object Name, Length
+          }
+
+      # ── Build ais-runner ─────────────────────────────────────────────────
+      - name: Build ais-runner
         run: cargo build --release
 
-      - name: Upload
+      # ── Package distribution ZIP ─────────────────────────────────────────
+      - name: Package ZIP
+        shell: pwsh
+        run: |
+          $dist = "dist\ais-runner-windows"
+          New-Item -ItemType Directory -Path $dist -Force | Out-Null
+
+          # Main executable
+          Copy-Item "target\release\ais-runner.exe" $dist\
+
+          # Bundled tools (azurite.exe flat, func/ sub-folder with workers)
+          Copy-Item "bin" "$dist\" -Recurse -Force
+
+          # README so the user knows how to run it
+          @"
+          AIS Runner for Windows
+          ======================
+          1. Extract this ZIP anywhere.
+          2. Run ais-runner.exe.
+
+          Bundled tools (no installation required):
+            bin\azurite.exe   — Azure Storage Emulator
+            bin\func\func.exe — Azure Functions Core Tools
+
+          The app automatically uses the bundled tools.
+          If you have newer versions installed system-wide, those take priority for Azurite.
+          "@ | Out-File "$dist\README.txt" -Encoding UTF8
+
+          Compress-Archive -Path "$dist\*" -DestinationPath "ais-runner-windows.zip" -Force
+
+          $size = (Get-Item ais-runner-windows.zip).Length / 1MB
+          Write-Host "Package ready: ais-runner-windows.zip ($([math]::Round($size,1)) MB)"
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ais-runner-windows
-          path: target/release/ais-runner.exe
+          path: ais-runner-windows.zip
           retention-days: 30

@@ -25,7 +25,7 @@ cd "$TEMP_DIR"
 if [ ! -d "node_modules/azurite" ]; then
     echo "⬇️ Downloading Azurite..."
     npm init -y > /dev/null
-    npm install azurite@3.30.0 --no-save
+    npm install azurite@3.35.0 --no-save
 fi
 
 # 3. Determine target platform
