@@ -10,6 +10,8 @@ pub mod sql_check;
 pub mod sb_check;
 pub mod sftp_check;
 pub mod connection_diag;
+pub mod blob_check;
+pub mod cosmos_check;
 pub mod azure_sync;
 pub mod env_mode;
 pub mod setup_manager;

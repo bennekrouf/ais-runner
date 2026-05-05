@@ -4,7 +4,10 @@ use crate::services::{
     azure_cli::{self, BlobInfo, SbQueueStats},
     azurite_client,
     azure_sync,
+    blob_check::BlobConnection,
     config,
+    cosmos_check::{self, CosmosConnection},
+    env_mode::{self, EnvMode},
     sb_check::{self, SbQueueInfo},
     sftp_check::{self, SftpConnection, SftpTestResult},
     sql_check::{self, SqlAuthType, SqlConnection, TestResult},
@@ -104,9 +107,15 @@ pub struct DbPanelProps {
     pub sb_conn_str:       Option<(String, String)>,
     pub sb_queues:         Vec<SbQueueInfo>,
     pub sftp_connections:  Vec<SftpConnection>,
+    pub blob_connections:  Vec<BlobConnection>,
+    /// Current value of AzureWebJobsStorage from local.settings.json
+    pub webjobs_storage:   String,
+    pub cosmos_connections: Vec<CosmosConnection>,
+    pub env_mode:          EnvMode,
     pub azurite_running:   bool,
     pub on_close:          EventHandler<()>,
-    pub on_saved:          EventHandler<()>,
+    pub on_saved:          EventHandler<String>,
+    pub on_env_changed:    EventHandler<()>,
 }
 
 #[component]
@@ -121,6 +130,39 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
         }
         m
     });
+
+    // Blob connection endpoint edits: appsetting_key → current value
+    let mut blob_edits: Signal<HashMap<String, String>> = use_signal(|| {
+        props.blob_connections.iter()
+            .map(|c| (c.endpoint_key.clone(), c.endpoint.clone()))
+            .collect()
+    });
+
+    // AzureWebJobsStorage edit
+    let mut webjobs_edit: Signal<String> = use_signal(|| props.webjobs_storage.clone());
+
+    // Cosmos connection edits: appsetting_key → current value
+    let mut cosmos_edits: Signal<HashMap<String, String>> = use_signal(|| {
+        let mut m = HashMap::new();
+        for c in &props.cosmos_connections {
+            if let Some(k) = &c.endpoint_key { m.insert(k.clone(), c.endpoint.clone()); }
+            if let Some(k) = &c.key_key      { m.insert(k.clone(), c.account_key.clone()); }
+        }
+        m
+    });
+    let mut cosmos_test_results: Signal<HashMap<String, Result<u64, String>>> = use_signal(HashMap::new);
+    let mut cosmos_testing: Signal<HashSet<String>> = use_signal(HashSet::new);
+
+    // Standalone emulator test (works even with no connections.json entry)
+    let mut cosmos_adhoc_endpoint: Signal<String> = use_signal(|| cosmos_check::EMULATOR_ENDPOINT.to_string());
+    let mut cosmos_adhoc_key:      Signal<String> = use_signal(|| cosmos_check::EMULATOR_KEY.to_string());
+    let mut cosmos_adhoc_testing:  Signal<bool>   = use_signal(|| false);
+    let mut cosmos_adhoc_result:   Signal<Option<Result<u64, String>>> = use_signal(|| None);
+
+    // ── Env switch (Local ↔ Azure) ────────────────────────────────────────────
+    let mut env_switching:    Signal<bool>                = use_signal(|| false);
+    let mut env_pending_keys: Signal<Vec<String>>         = use_signal(Vec::new);
+    let mut env_accounts:     Signal<Vec<(String, String)>> = use_signal(Vec::new);
     let mut sql_test_results: Signal<HashMap<String, TestResult>> = use_signal(HashMap::new);
     let mut sql_testing:      Signal<HashSet<String>>             = use_signal(HashSet::new);
 
@@ -259,6 +301,16 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                         for (k, v) in edits.read().iter() {
                             vals.insert(k.clone(), serde_json::Value::String(v.clone()));
                         }
+                        for (k, v) in blob_edits.read().iter() {
+                            vals.insert(k.clone(), serde_json::Value::String(v.clone()));
+                        }
+                        let wjs = webjobs_edit.read().clone();
+                        if !wjs.is_empty() {
+                            vals.insert("AzureWebJobsStorage".into(), serde_json::Value::String(wjs));
+                        }
+                        for (k, v) in cosmos_edits.read().iter() {
+                            vals.insert(k.clone(), serde_json::Value::String(v.clone()));
+                        }
                         if let Some(ref key) = ns_key {
                             let new_ns = sb_ns_edit.read().clone();
                             if !new_ns.is_empty() {
@@ -276,7 +328,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     match settings_file::write_local_settings(&dir, &text) {
                         Ok(_) => {
                             status.set(Some(("Saved — restart func start to apply.".into(), false)));
-                            props.on_saved.call(());
+                            props.on_saved.call("⚠ Settings saved — stop and restart func start to apply changes.".into());
                         }
                         Err(e) => { status.set(Some((e, true))); }
                     }
@@ -293,7 +345,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
             div { class: "db-panel-header",
                 span { class: "db-panel-title", "🔌 Connections" }
                 div { style: "display:flex;gap:8px;align-items:center",
-                    if *active_tab.read() != "blob" {
+                    if *active_tab.read() != "blob" || !props.blob_connections.is_empty() {
                         button { class: "btn btn-run btn-small", onclick: on_save, "💾 Save" }
                     }
                     button { class: "btn-icon", onclick: move |_| props.on_close.call(()), "×" }
@@ -316,6 +368,11 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     class: if *active_tab.read() == "sql" { "db-tab active" } else { "db-tab" },
                     onclick: move |_| active_tab.set("sql"),
                     "🗄 SQL"
+                }
+                button {
+                    class: if *active_tab.read() == "cosmos" { "db-tab active" } else { "db-tab" },
+                    onclick: move |_| active_tab.set("cosmos"),
+                    "🌌 Cosmos"
                 }
                 button {
                     class: if *active_tab.read() == "sftp" { "db-tab active" } else { "db-tab" },
@@ -482,6 +539,211 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                 } // end SQL tab-pane
 
                 // ════════════════════════════════════════════════════════════
+                // COSMOS DB SECTION
+                // ════════════════════════════════════════════════════════════
+                div {
+                    class: if *active_tab.read() == "cosmos" { "tab-pane" } else { "tab-pane hidden" },
+
+                    div { class: "db-section-title", "🌌 Cosmos DB" }
+
+                    // ── Standalone emulator test ──────────────────────────
+                    div { class: "db-card",
+                        div { class: "db-card-header",
+                            span { class: "db-card-name", "Emulator Test" }
+                            span { class: "db-auth-badge cs", "ad-hoc" }
+                            div { style: "margin-left:auto;display:flex;gap:8px;align-items:center",
+                                if let Some(ref r) = *cosmos_adhoc_result.read() {
+                                    match r {
+                                        Ok(ms) => rsx! { span { class: "db-test-ok", "✅ {ms}ms" } },
+                                        Err(e) => rsx! {
+                                            span { class: "db-test-err", title: "{e}", "❌ unreachable" }
+                                        },
+                                    }
+                                }
+                                button {
+                                    class: "btn btn-small btn-fetch",
+                                    disabled: *cosmos_adhoc_testing.read(),
+                                    onclick: move |_| {
+                                        let ep = cosmos_adhoc_endpoint.read().clone();
+                                        cosmos_adhoc_testing.set(true);
+                                        cosmos_adhoc_result.set(None);
+                                        spawn(async move {
+                                            let r = cosmos_check::test_cosmos_endpoint(&ep).await;
+                                            cosmos_adhoc_result.set(Some(r));
+                                            cosmos_adhoc_testing.set(false);
+                                        });
+                                    },
+                                    if *cosmos_adhoc_testing.read() { "Testing…" } else { "⚡ Test Connection" }
+                                }
+                            }
+                        }
+
+                        div { class: "db-field-row",
+                            label { class: "db-field-label", "API Endpoint" }
+                            input {
+                                class: "db-field-input",
+                                placeholder: "https://localhost:8081/",
+                                value: "{cosmos_adhoc_endpoint.read()}",
+                                oninput: move |e| {
+                                    cosmos_adhoc_endpoint.set(e.value());
+                                    cosmos_adhoc_result.set(None);
+                                },
+                            }
+                            button {
+                                class: "btn btn-small",
+                                style: "flex-shrink:0",
+                                title: "Reset to emulator default (port 1234 is UI only — API is 8081)",
+                                onclick: move |_| {
+                                    cosmos_adhoc_endpoint.set(cosmos_check::EMULATOR_ENDPOINT.to_string());
+                                    cosmos_adhoc_result.set(None);
+                                },
+                                "↺ Reset"
+                            }
+                        }
+
+                        div { class: "db-field-row",
+                            label { class: "db-field-label", "Account Key" }
+                            input {
+                                class: "db-field-input",
+                                r#type: "password",
+                                placeholder: "emulator or Azure key",
+                                value: "{cosmos_adhoc_key.read()}",
+                                oninput: move |e| {
+                                    cosmos_adhoc_key.set(e.value());
+                                    cosmos_adhoc_result.set(None);
+                                },
+                            }
+                            button {
+                                class: "btn btn-small",
+                                style: "flex-shrink:0",
+                                title: "Reset to well-known emulator key",
+                                onclick: move |_| {
+                                    cosmos_adhoc_key.set(cosmos_check::EMULATOR_KEY.to_string());
+                                    cosmos_adhoc_result.set(None);
+                                },
+                                "↺ Reset"
+                            }
+                        }
+
+                        if let Some(Err(ref e)) = *cosmos_adhoc_result.read() {
+                            div { class: "db-test-error-detail", "{e}" }
+                        }
+                        div { class: "db-msi-note",
+                            "Port 1234 is the data-explorer UI only — Logic Apps connects to "
+                            code { "8081" } "."
+                        }
+                    }
+
+                    if !props.cosmos_connections.is_empty() {
+                        div { class: "db-section-title", style: "margin-top:16px", "Connections from connections.json" }
+                    }
+
+                    for conn in props.cosmos_connections.clone() {
+                        {
+                            let conn_name  = conn.connection_name.clone();
+                            let conn_name2 = conn_name.clone();
+                            let is_testing = cosmos_testing.read().contains(&conn.connection_name);
+                            let test_result = cosmos_test_results.read().get(&conn.connection_name).cloned();
+
+                            let ep_key  = conn.endpoint_key.clone().unwrap_or_default();
+                            let ep_key2 = ep_key.clone();
+                            let ep_key3 = ep_key.clone();
+                            let key_key  = conn.key_key.clone().unwrap_or_default();
+                            let key_key2 = key_key.clone();
+
+                            let current_endpoint = cosmos_edits.read()
+                                .get(&ep_key).cloned().unwrap_or_default();
+
+                            rsx! {
+                                div { class: "db-card",
+                                    div { class: "db-card-header",
+                                        span { class: "db-card-name", "{conn.display_name}" }
+                                        span { class: "db-auth-badge cs", "CosmosDB" }
+                                        div { style: "margin-left:auto;display:flex;gap:8px;align-items:center",
+                                            if let Some(ref r) = test_result {
+                                                match r {
+                                                    Ok(ms) => rsx! { span { class: "db-test-ok", "✅ {ms}ms" } },
+                                                    Err(e) => rsx! {
+                                                        span { class: "db-test-err", title: "{e}", "❌ unreachable" }
+                                                    },
+                                                }
+                                            }
+                                            button {
+                                                class: "btn btn-small btn-fetch",
+                                                disabled: is_testing || current_endpoint.is_empty(),
+                                                title: if current_endpoint.is_empty() { "Set endpoint first" } else { "Test Cosmos endpoint" },
+                                                onclick: move |_| {
+                                                    let ep = cosmos_edits.read().get(&ep_key2).cloned().unwrap_or_default();
+                                                    let name = conn_name.clone();
+                                                    cosmos_testing.write().insert(name.clone());
+                                                    spawn(async move {
+                                                        let result = cosmos_check::test_cosmos_endpoint(&ep).await;
+                                                        cosmos_test_results.write().insert(name.clone(), result);
+                                                        cosmos_testing.write().remove(&name);
+                                                    });
+                                                },
+                                                if is_testing { "Testing…" } else { "⚡ Test" }
+                                            }
+                                        }
+                                    }
+
+                                    div { class: "db-field-row",
+                                        label { class: "db-field-label", "Endpoint" }
+                                        input {
+                                            class: "db-field-input",
+                                            placeholder: "https://localhost:8081/",
+                                            value: "{cosmos_edits.read().get(&ep_key).cloned().unwrap_or_default()}",
+                                            oninput: move |e| { cosmos_edits.write().insert(ep_key.clone(), e.value()); },
+                                        }
+                                        button {
+                                            class: "btn btn-small",
+                                            style: "flex-shrink:0",
+                                            title: "Use Cosmos DB Emulator endpoint",
+                                            onclick: move |_| {
+                                                cosmos_edits.write().insert(ep_key3.clone(), cosmos_check::EMULATOR_ENDPOINT.to_string());
+                                            },
+                                            "🌌 Use Emulator"
+                                        }
+                                    }
+
+                                    if !key_key.is_empty() {
+                                        div { class: "db-field-row",
+                                            label { class: "db-field-label", "Account Key" }
+                                            input {
+                                                class: "db-field-input",
+                                                r#type: "password",
+                                                placeholder: "(emulator key or Azure key)",
+                                                value: "{cosmos_edits.read().get(&key_key).cloned().unwrap_or_default()}",
+                                                oninput: move |e| { cosmos_edits.write().insert(key_key.clone(), e.value()); },
+                                            }
+                                            button {
+                                                class: "btn btn-small",
+                                                style: "flex-shrink:0",
+                                                title: "Use well-known Cosmos DB Emulator key",
+                                                onclick: move |_| {
+                                                    cosmos_edits.write().insert(key_key2.clone(), cosmos_check::EMULATOR_KEY.to_string());
+                                                },
+                                                "🌌 Use Emulator Key"
+                                            }
+                                        }
+                                    }
+
+                                    if let Some(ref r) = test_result {
+                                        if let Err(ref e) = r {
+                                            div { class: "db-test-error-detail", "{e}" }
+                                        }
+                                    }
+                                    div { class: "db-msi-note",
+                                        "After saving, restart func start. The emulator uses a self-signed cert — "
+                                        "Logic Apps Standard accepts it locally."
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } // end Cosmos tab-pane
+
+                // ════════════════════════════════════════════════════════════
                 // SERVICE BUS SECTION
                 // ════════════════════════════════════════════════════════════
                 div {
@@ -615,7 +877,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                             let _ = tokio::task::spawn_blocking(move || {
                                                 crate::services::setup_manager::auto_detect_resources(&d, Some(&sub2), &rg2)
                                             }).await;
-                                            props.on_saved.call(());
+                                            props.on_saved.call("⚠ Settings saved — stop and restart func start to apply changes.".into());
                                         });
                                     },
                                     "Auto-Link Service Bus"
@@ -647,6 +909,28 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                     span { class: "db-card-name", "Namespace" }
                                     span { class: "{auth_class}", "{auth_badge}" }
                                     div { style: "margin-left:auto;display:flex;gap:8px;align-items:center",
+                                        // Fetch button — prominent when namespace is empty
+                                        button {
+                                            class: if current_edit.is_empty() { "btn btn-run btn-small" } else { "btn btn-small btn-fetch" },
+                                            disabled: is_loading,
+                                            title: "List Service Bus namespaces from your Azure subscription",
+                                            onclick: move |_| {
+                                                if sb_ns_list.read().is_empty() && !*sb_ns_loading.peek() {
+                                                    sb_ns_loading.set(true);
+                                                    spawn(async move {
+                                                        match tokio::task::spawn_blocking(azure_cli::sb_list_namespaces).await {
+                                                            Ok(Ok(list)) => { sb_ns_list.set(list); }
+                                                            Ok(Err(e))   => { status.set(Some((format!("az error: {:?}", e), true))); }
+                                                            Err(_)       => { status.set(Some(("Could not list namespaces — az login required".into(), true))); }
+                                                        }
+                                                        sb_ns_loading.set(false);
+                                                    });
+                                                } else {
+                                                    sb_ns_list.write().clear();
+                                                }
+                                            },
+                                            if is_loading { "☁ Loading…" } else if !sb_ns_list.read().is_empty() { "☁ Close" } else { "☁ Fetch from Azure" }
+                                        }
                                         if let Some(ref r) = tcp_res {
                                             if r.reachable {
                                                 span { class: "db-test-ok", "✅ {r.latency_ms.unwrap_or(0)}ms (5671)" }
@@ -1105,6 +1389,216 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                 // ════════════════════════════════════════════════════════════
                 div {
                     class: if *active_tab.read() == "blob" { "tab-pane" } else { "tab-pane hidden" },
+
+                // ── AzureWebJobsStorage ───────────────────────────────────────
+                // This setting controls where the Logic Apps runtime stores workflow
+                // state. If it points to Azure instead of Azurite, ALL workflow runs
+                // APIs return "not found" locally.
+                div { class: "db-card", style: "margin-bottom:12px",
+                    div { class: "db-card-header",
+                        span { class: "db-card-name", "AzureWebJobsStorage" }
+                        {
+                            let v = webjobs_edit.read().clone();
+                            let is_azurite = v == "UseDevelopmentStorage=true"
+                                || v.contains("127.0.0.1:10000")
+                                || v.contains("localhost:10000");
+                            let is_azure   = !v.is_empty() && !is_azurite;
+                            if is_azurite {
+                                rsx! { span { class: "db-auth-badge", style: "color:var(--green);border-color:var(--green)", "🏠 Azurite" } }
+                            } else if is_azure {
+                                rsx! { span { class: "db-auth-badge", style: "color:var(--yellow);border-color:var(--yellow)", "⚠ Azure" } }
+                            } else {
+                                rsx! { span { class: "db-auth-badge db-badge-missing", "not set" } }
+                            }
+                        }
+                    }
+                    div { class: "db-field-row",
+                        input {
+                            class: "db-field-input",
+                            placeholder: "UseDevelopmentStorage=true",
+                            value: "{webjobs_edit.read()}",
+                            oninput: move |e| webjobs_edit.set(e.value()),
+                        }
+                        button {
+                            class: "btn btn-small",
+                            style: "flex-shrink:0",
+                            title: "Use Azurite local emulator",
+                            onclick: move |_| webjobs_edit.set("UseDevelopmentStorage=true".into()),
+                            "🏠 Use Azurite"
+                        }
+                    }
+                    div { class: "db-msi-note",
+                        "Must point to Azurite locally — if set to an Azure URL, "
+                        em { "all" }
+                        " workflow runs APIs return 'not found'."
+                    }
+                }
+
+                // ── Azure Blob Connections (from connections.json) ────────────
+                div { class: "db-section",
+                    div { class: "db-section-title", style: "display:flex;align-items:center;gap:10px;",
+                        span { "☁ Azure Blob Connections" }
+                        {
+                            let mode      = props.env_mode.clone();
+                            let switching = *env_switching.read();
+                            let dir_sw    = props.logic_apps_dir.clone();
+                            let dir_sw2   = props.logic_apps_dir.clone();
+                            let sub       = azure_sync::detect_subscription(&props.logic_apps_dir);
+                            let going_local = !matches!(mode, EnvMode::Azure);
+                            let (btn_label, btn_title) = if going_local {
+                                ("🏠 All Local", "Set all blob endpoints to Azurite (local dev)")
+                            } else {
+                                ("☁ All Azure", "Set all blob endpoints to real Azure storage")
+                            };
+                            rsx! {
+                                button {
+                                    class: "btn btn-small btn-fetch",
+                                    disabled: switching || props.blob_connections.is_empty(),
+                                    title: "{btn_title}",
+                                    onclick: move |_| {
+                                        env_switching.set(true);
+                                        env_pending_keys.set(vec![]);
+                                        env_accounts.set(vec![]);
+                                        let d  = dir_sw.clone();
+                                        let d2 = dir_sw2.clone();
+                                        let sub2 = sub.clone();
+                                        spawn(async move {
+                                            if going_local {
+                                                let _ = tokio::task::spawn_blocking(move || env_mode::switch_to_local(&d)).await;
+                                            } else {
+                                                let result = tokio::task::spawn_blocking(move || env_mode::switch_to_azure(&d))
+                                                    .await.unwrap_or(Err("task failed".into()));
+                                                if let Ok(r) = result {
+                                                    if !r.needs_fetch.is_empty() {
+                                                        let accounts = tokio::task::spawn_blocking(move || {
+                                                            azure_cli::list_storage_accounts(sub2.as_deref())
+                                                        }).await.unwrap_or(Ok(vec![])).unwrap_or_default();
+                                                        env_pending_keys.set(r.needs_fetch);
+                                                        env_accounts.set(accounts);
+                                                    }
+                                                }
+                                            }
+                                            // Reload blob_edits from disk so inputs reflect new values
+                                            let _ = tokio::task::spawn_blocking(move || {
+                                                env_mode::detect_mode(&d2)
+                                            }).await;
+                                            env_switching.set(false);
+                                            props.on_env_changed.call(());
+                                        });
+                                    },
+                                    if switching { "…" } else { "{btn_label}" }
+                                }
+                                // Badge showing current mode
+                                span {
+                                    class: match mode {
+                                        EnvMode::Local   => "db-auth-badge msi",
+                                        EnvMode::Azure   => "db-auth-badge cs",
+                                        EnvMode::Mixed   => "db-auth-badge db-badge-missing",
+                                        EnvMode::Unknown => "db-auth-badge",
+                                    },
+                                    match mode {
+                                        EnvMode::Local   => "🏠 local",
+                                        EnvMode::Azure   => "☁ azure",
+                                        EnvMode::Mixed   => "⚠ mixed",
+                                        EnvMode::Unknown => "? unknown",
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Picker: shown when switching to Azure reveals uncached endpoints
+                    if !env_pending_keys.read().is_empty() && !env_accounts.read().is_empty() {
+                        div { class: "env-picker",
+                            span { class: "env-picker-title", "Pick an Azure storage account for each connection:" }
+                            for key in env_pending_keys.read().clone() {
+                                {
+                                    let key2    = key.clone();
+                                    let display = key.trim_end_matches("_blobStorageEndpoint").to_string();
+                                    let dir_k   = props.logic_apps_dir.clone();
+                                    let dir_k2  = props.logic_apps_dir.clone();
+                                    rsx! {
+                                        div { class: "env-picker-row",
+                                            span { class: "env-picker-key", "{display}" }
+                                            select {
+                                                class: "env-picker-select",
+                                                onchange: move |e| {
+                                                    let endpoint = e.value();
+                                                    let k  = key2.clone();
+                                                    let d  = dir_k.clone();
+                                                    let d2 = dir_k2.clone();
+                                                    let k2       = k.clone();
+                                                    let endpoint2 = endpoint.clone();
+                                                    spawn(async move {
+                                                        let _ = tokio::task::spawn_blocking(move || {
+                                                            env_mode::apply_fetched_endpoint(&d, &k, &endpoint)
+                                                        }).await;
+                                                        blob_edits.write().insert(k2, endpoint2);
+                                                        props.on_env_changed.call(());
+                                                        let _ = d2;
+                                                    });
+                                                },
+                                                option { value: "", "— pick —" }
+                                                for (name, ep) in env_accounts.read().clone() {
+                                                    option { value: "{ep}", "{name}" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if props.blob_connections.is_empty() {
+                        div { class: "empty-state", "No AzureBlob connections found in connections.json" }
+                    } else {
+                        for conn in props.blob_connections.clone() {
+                            {
+                                let key  = conn.endpoint_key.clone();
+                                let key2 = key.clone();
+                                let key3 = key.clone();
+                                let current = blob_edits.read().get(&key).cloned().unwrap_or_default();
+                                let is_configured = !current.is_empty();
+                                let azurite_up = props.azurite_running;
+                                rsx! {
+                                    div { class: "db-card",
+                                        div { class: "db-card-header",
+                                            span { class: "db-card-name", "{conn.display_name}" }
+                                            span {
+                                                class: if is_configured { "db-auth-badge msi" } else { "db-auth-badge db-badge-missing" },
+                                                if is_configured { "✅ configured" } else { "⚠ missing" }
+                                            }
+                                            if !is_configured {
+                                                div { style: "margin-left:auto;display:flex;gap:6px;",
+                                                    button {
+                                                        class: "btn btn-small",
+                                                        title: "Use local Azurite storage (http://127.0.0.1:10000/devstoreaccount1)",
+                                                        onclick: move |_| {
+                                                            blob_edits.write().insert(key3.clone(), env_mode::AZURITE_BLOB.to_string());
+                                                        },
+                                                        if azurite_up { "🏠 Use Azurite" } else { "🏠 Use Azurite (start it first)" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        div { class: "db-field-row",
+                                            label { class: "db-field-label", "Endpoint" }
+                                            input {
+                                                class: "db-field-input",
+                                                placeholder: "https://<account>.blob.core.windows.net",
+                                                value: "{current}",
+                                                oninput: move |e| { blob_edits.write().insert(key.clone(), e.value()); },
+                                            }
+                                        }
+                                        div { class: "db-msi-note",
+                                            "appsetting: " code { "{key2}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 div { class: "db-section",
                     // ── Header row ───────────────────────────────────────────
                     div { class: "db-section-header",

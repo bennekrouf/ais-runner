@@ -4,17 +4,22 @@ use std::fs;
 use std::env;
 
 /// Resolves the path to a tool (like azurite or func).
-/// It first checks if a bundled version exists in the 'bin' folder next to the app executable.
-/// If not found, it returns the tool name as-is (falling back to the system PATH).
+/// For Azurite: prefers the system-installed version (likely newer) over the bundled one.
+/// For other tools: checks the sidecar bin/ next to the exe, then project bin/, then PATH.
 pub fn resolve_tool(name: &str) -> String {
-    // 1. Special case for Azurite: Try extracting the embedded binary (Single-EXE mode)
+    // Special case: always prefer system Azurite — it's usually newer and more compatible
+    // than the bundled binary. Bundled is a fallback for machines without Node.js.
     if name == "azurite" {
+        if let Some(sys) = find_on_path("azurite") {
+            return sys;
+        }
+        // Embedded single-EXE fallback
         if let Ok(path) = extract_embedded_azurite() {
             return path;
         }
     }
 
-    // 2. Check next to the executable (Sidecar mode)
+    // Check next to the executable (Sidecar / distribution mode)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(parent) = exe_path.parent() {
             let bundled = parent.join("bin").join(if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() });
@@ -24,18 +29,26 @@ pub fn resolve_tool(name: &str) -> String {
         }
     }
 
-    // 3. Check in the project root bin/ (Development mode)
-    // We use a macro to get the manifest dir at compile time
+    // Check in the project root bin/ (Development mode)
     let dev_bin = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("bin")
         .join(if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() });
-    
+
     if dev_bin.exists() {
         return dev_bin.to_str().unwrap_or(name).to_string();
     }
 
-    // 4. Fallback to system PATH
+    // Fallback to system PATH
     name.to_string()
+}
+
+/// Returns the full path of `name` if it exists on PATH, else None.
+fn find_on_path(name: &str) -> Option<String> {
+    let cmd = if cfg!(windows) { "where" } else { "which" };
+    let out = std::process::Command::new(cmd).arg(name).output().ok()?;
+    if !out.status.success() { return None; }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if path.is_empty() { None } else { Some(path) }
 }
 
 /// Extracts the embedded Azurite binary to a temp folder if it exists.

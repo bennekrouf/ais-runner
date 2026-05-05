@@ -213,7 +213,7 @@ pub async fn run_trigger_direct(workflow: &str, trigger: &str, body: &str) -> Re
         let b: serde_json::Value = resp.json().await.unwrap_or_default();
         let code = b["error"]["code"].as_str().unwrap_or("");
         let hint = if code == "WorkflowNotFound" {
-            " — check blob/connection endpoints in local.settings.json and restart func"
+            " — if all workflows fail, check AzureWebJobsStorage in Connections → Blob (set to 'UseDevelopmentStorage=true' for Azurite) and restart func"
         } else { "" };
         Err(format!("{}{}", extract_api_error(&b).unwrap_or_else(|| format!("HTTP {}", status)), hint))
     }
@@ -260,10 +260,10 @@ fn parse_value_array<T: for<'de> Deserialize<'de>>(body: serde_json::Value) -> R
         let msg = body["error"]["message"].as_str().unwrap_or(code);
         if code == "WorkflowNotFound" {
             return Err(format!(
-                "Workflow not found by the runtime — this usually means a connection \
-                 (e.g. IgniteBlob, KyribaBlob) failed to initialise. \
-                 Check that blob storage endpoints are set in local.settings.json, \
-                 then restart func. ({})", msg
+                "Workflow not found — if this happens for every workflow, \
+                 AzureWebJobsStorage is likely pointing to Azure instead of Azurite. \
+                 Open Connections → Blob, check AzureWebJobsStorage, set it to \
+                 'UseDevelopmentStorage=true', save, and restart func. ({})", msg
             ));
         }
         return Err(format!("{}: {}", code, msg));
@@ -282,7 +282,71 @@ pub async fn list_runs(workflow: &str) -> Result<Vec<RunItem>, String> {
     let body: serde_json::Value = reqwest::get(&url)
         .await.map_err(|e| e.to_string())?
         .json().await.map_err(|e| e.to_string())?;
+
+    if body["error"]["code"].as_str() == Some("WorkflowNotFound") {
+        // Check whether the workflow itself is accessible (design-time vs runtime split).
+        let wf_url = format!("{}/workflows/{}", BASE, workflow);
+        let wf_body: serde_json::Value = if let Ok(resp) = reqwest::get(&wf_url).await {
+            resp.json().await.unwrap_or_default()
+        } else {
+            serde_json::Value::Null
+        };
+        let in_runtime = wf_body["name"].as_str().is_some()
+            && wf_body["error"].is_null();
+        if in_runtime {
+            return Err(format!(
+                "Workflow is defined but its runtime state is missing — \
+                 the Logic Apps runtime could not initialise its storage tables in Azurite. \
+                 Stop func, stop Azurite, clear Azurite data (Connections → Blob → Reset Azurite Data), \
+                 then restart both."
+            ));
+        } else {
+            return Err(format!(
+                "Workflow not in runtime registry — \
+                 the Logic Apps runtime may not have finished starting, or a connection \
+                 prevented it from registering this workflow. \
+                 Check func start output for errors, or try restarting func."
+            ));
+        }
+    }
+
     parse_value_array(body)
+}
+
+/// Probes the runtime to distinguish "workflow not found" causes and returns hint lines.
+///
+/// Three outcomes:
+/// - Some(true)  → registered in runtime but something else is broken (e.g. run-table inaccessible)
+/// - Some(false) → not registered in runtime at all (connection error blocked startup registration)
+/// - None        → management API unreachable (func not running or still starting)
+pub async fn not_found_hints(workflow: &str) -> Vec<String> {
+    let url = format!("{}/workflows/{}", BASE, workflow);
+    let in_runtime: Option<bool> = async {
+        let body: serde_json::Value = reqwest::get(&url).await.ok()?.json().await.ok()?;
+        if body["error"]["code"].as_str() == Some("WorkflowNotFound") {
+            Some(false)
+        } else if body["name"].as_str().is_some() {
+            Some(true)
+        } else {
+            None
+        }
+    }.await;
+
+    match in_runtime {
+        Some(true) => vec![
+            "  hint: workflow IS registered in the runtime but run history is inaccessible — \
+             Azurite table storage may be corrupted. \
+             Stop func, stop Azurite, delete /tmp/azurite contents, then restart both.".to_string(),
+        ],
+        Some(false) => vec![
+            "  hint: workflow is NOT in the runtime registry — a failing connection likely \
+             blocked registration at startup. Check func start output for errors, \
+             fix the connection, and restart func.".to_string(),
+        ],
+        None => vec![
+            "  hint: func management API did not respond — is func still running?".to_string(),
+        ],
+    }
 }
 
 /// Lightweight existence check — fetches at most 1 run to minimise data transfer.

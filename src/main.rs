@@ -453,11 +453,6 @@ fn MainScreen(props: MainScreenProps) -> Element {
     // ── Environment mode (Local ↔ Azure) ───────────────────────────────────
     let dir_for_env = dir.clone();
     let mut current_env  = use_signal(move || env_mode::detect_mode(&dir_for_env));
-    let mut env_switching = use_signal(|| false);
-    // Storage accounts for "needs_fetch" picker: Vec<(account_name, blob_endpoint)>
-    let mut storage_accounts: Signal<Vec<(String, String)>> = use_signal(Vec::new);
-    // Keys that need a storage account picked before they can go Azure
-    let mut pending_keys: Signal<Vec<String>> = use_signal(Vec::new);
 
     // Apply body class on first render so no flash of wrong theme.
     use_effect(move || {
@@ -480,6 +475,15 @@ fn MainScreen(props: MainScreenProps) -> Element {
 
     // SFTP connections
     let mut sftp_conns = use_signal(|| Vec::<services::sftp_check::SftpConnection>::new());
+
+    // Blob connections (from connections.json)
+    let mut blob_conns = use_signal(|| Vec::<services::blob_check::BlobConnection>::new());
+
+    // Cosmos DB connections (from connections.json)
+    let mut cosmos_conns = use_signal(|| Vec::<services::cosmos_check::CosmosConnection>::new());
+
+    // AzureWebJobsStorage current value
+    let mut webjobs_storage = use_signal(|| String::new());
 
     // Service Bus panel state
     let mut sb_namespace      = use_signal(|| {
@@ -541,15 +545,21 @@ fn MainScreen(props: MainScreenProps) -> Element {
             let dir5 = dir2.clone();
             let dir6 = dir2.clone();
             let dir7 = dir2.clone();
+            let dir8 = dir2.clone();
+            let dir9 = dir2.clone();
+            let dira = dir2.clone();
             spawn(async move {
-                let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key) =
+                let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, blobs, cosmos, wjs) =
                     tokio::task::spawn_blocking(move || {
                         let wfs      = sql_check::detect_sql_workflows(&dir3);
                         let conns    = sql_check::load_sql_connections(&dir4);
                         let sb       = sb_check::detect_sb_queues(&dir5);
                         let sb_key   = sb_check::detect_sb_namespace_key(&dir6);
                         let sb_cs_key = sb_check::detect_sb_conn_str_key(&dir7);
-                        (wfs, conns, sb, sb_key, sb_cs_key)
+                        let blobs    = services::blob_check::detect_blob_connections(&dir8);
+                        let cosmos   = services::cosmos_check::detect_cosmos_connections(&dir9);
+                        let wjs      = services::blob_check::read_webjobs_storage(&dira);
+                        (wfs, conns, sb, sb_key, sb_cs_key, blobs, cosmos, wjs)
                     }).await.unwrap_or_default();
                 sql_wfs.set(wfs);
                 sql_conns.set(conns);
@@ -557,6 +567,9 @@ fn MainScreen(props: MainScreenProps) -> Element {
                 sb_queues.set(sb_qs);
                 sb_namespace_key.set(sb_key);
                 sb_conn_str.set(sb_cs_key);
+                blob_conns.set(blobs);
+                cosmos_conns.set(cosmos);
+                webjobs_storage.set(wjs);
             });
         }
     });
@@ -685,7 +698,50 @@ fn MainScreen(props: MainScreenProps) -> Element {
                     spawn(async move {
                         match workflows::wait_for_workflows(120).await {
                             Ok(list) => {
-                                push2(format!("Loaded {} workflow(s)", list.len()), LogLevel::Ok);
+                                let func_names: std::collections::HashSet<String> =
+                                    list.iter().map(|w| w.name.clone()).collect();
+
+                                // Cross-check local workflows against what func actually registered.
+                                // Any local workflow absent from func's list was silently dropped —
+                                // almost always because a connection failed to initialise.
+                                let la_dir2 = la_dir.clone();
+                                let local_names = tokio::task::spawn_blocking(move || {
+                                    workflows::scan_local_workflows(&la_dir2)
+                                }).await.unwrap_or_default();
+
+                                let missing: Vec<String> = local_names.iter()
+                                    .map(|w| w.name.clone())
+                                    .filter(|n| !func_names.contains(n))
+                                    .collect();
+
+                                push2(
+                                    format!("Loaded {} workflow(s){}", list.len(),
+                                        if !missing.is_empty() {
+                                            format!(" — ⚠ {} local workflow(s) not registered", missing.len())
+                                        } else { String::new() }
+                                    ),
+                                    if !missing.is_empty() { LogLevel::Warn } else { LogLevel::Ok },
+                                );
+
+                                for name in &missing {
+                                    push2(
+                                        format!("⚠ '{}' not registered by func — a connection likely failed to initialise. Open Connections and check for missing or unreachable endpoints, then restart func.", name),
+                                        LogLevel::Warn,
+                                    );
+                                }
+
+                                // Warn on workflows that are registered but unhealthy.
+                                // Being in func's list doesn't mean the workflow can run —
+                                // a bad connection keeps it in an error state indefinitely.
+                                for wf in list.iter().filter(|w| !w.healthy) {
+                                    let detail = wf.health_error.as_deref()
+                                        .unwrap_or("connection failed to initialise");
+                                    push2(
+                                        format!("⚠ '{}' loaded but unhealthy: {} — Open Connections and check endpoints, then restart func.", wf.name, detail),
+                                        LogLevel::Warn,
+                                    );
+                                }
+
                                 let names: Vec<String> = list.iter().map(|w| w.name.clone()).collect();
                                 wfs.set(list);
                                 sweep_run_history(names, &mut traced, &cleared).await;
@@ -889,14 +945,13 @@ fn MainScreen(props: MainScreenProps) -> Element {
             let is_recurrence = !matches!(trigger_type.to_lowercase().as_str(), "request" | "http");
             running.write().insert(wf.clone());
             spawn(async move {
-                let emit_not_found_hint = |push: &mut dyn FnMut(String, LogLevel), wf: &str, dir: &str| {
+                let push_not_found_hints = |push: &mut dyn FnMut(String, LogLevel), dir: &str, wf: &str, hints: Vec<String>| {
                     let missing = services::connection_diag::missing_endpoints_for_workflow(dir, wf);
-                    if missing.is_empty() {
-                        push("  hint: workflow not found — check blob/connection endpoints in local.settings.json and restart func".to_string(), LogLevel::Warn);
-                    } else {
-                        for (conn, key) in &missing {
-                            push(format!("  hint: '{}' has empty '{}' in local.settings.json — set it and restart func", conn, key), LogLevel::Warn);
-                        }
+                    for (conn, key) in &missing {
+                        push(format!("  hint: '{}' has empty '{}' in local.settings.json — set it and restart func", conn, key), LogLevel::Warn);
+                    }
+                    for msg in hints {
+                        push(msg, LogLevel::Warn);
                     }
                 };
                 // ── Fire the trigger ──────────────────────────────────────
@@ -906,8 +961,9 @@ fn MainScreen(props: MainScreenProps) -> Element {
                         Err(e) => {
                             let es = e.to_string();
                             push(format!("Trigger error: {}", es), LogLevel::Error);
-                            if es.to_lowercase().contains("could not be found") {
-                                emit_not_found_hint(&mut push, &wf, &dir_diag);
+                            if es.to_lowercase().contains("could not be found") || es.contains("WorkflowNotFound") {
+                                let hints = workflows::not_found_hints(&wf).await;
+                                push_not_found_hints(&mut push, &dir_diag, &wf, hints);
                             }
                             running.write().remove(&wf);
                             return;
@@ -922,8 +978,9 @@ fn MainScreen(props: MainScreenProps) -> Element {
                                 Err(e) => {
                                     let es = e.to_string();
                                     push(format!("Trigger error: {}", es), LogLevel::Error);
-                                    if es.to_lowercase().contains("could not be found") {
-                                        emit_not_found_hint(&mut push, &wf, &dir_diag);
+                                    if es.to_lowercase().contains("could not be found") || es.contains("WorkflowNotFound") {
+                                        let hints = workflows::not_found_hints(&wf).await;
+                                        push_not_found_hints(&mut push, &dir_diag, &wf, hints);
                                     }
                                     running.write().remove(&wf);
                                     return;
@@ -933,8 +990,9 @@ fn MainScreen(props: MainScreenProps) -> Element {
                         Err(e) => {
                             let es = e.to_string();
                             push(format!("Callback URL error: {}", es), LogLevel::Error);
-                            if es.to_lowercase().contains("could not be found") {
-                                emit_not_found_hint(&mut push, &wf, &dir_diag);
+                            if es.to_lowercase().contains("could not be found") || es.contains("WorkflowNotFound") {
+                                let hints = workflows::not_found_hints(&wf).await;
+                                push_not_found_hints(&mut push, &dir_diag, &wf, hints);
                             }
                             running.write().remove(&wf);
                             return;
@@ -1283,120 +1341,22 @@ fn MainScreen(props: MainScreenProps) -> Element {
                     },
                     }
                 }
-                // ── Environment toggle ─────────────────────────────────────
+                // ── Environment badge (read-only — switch lives in Connections panel) ──
                 {
                     let has_settings = !matches!(*setup_status.read(), setup_manager::SetupStatus::MissingSettings);
                     if !has_settings { return rsx! {}; }
-                    let mode       = current_env.read().clone();
-                    let switching  = *env_switching.read();
-                    let dir_env    = dir.clone();
-                    let sub_env    = services::azure_sync::detect_subscription(&dir.clone());
-                    let (badge_class, badge_label, toggle_label, toggle_title) = match &mode {
-                        EnvMode::Local   => ("env-badge local",  "🏠 Local".to_string(),  "☁ Use Azure".to_string(),  "Switch blob connections to real Azure storage".to_string()),
-                        EnvMode::Azure   => ("env-badge azure",  "☁ Azure".to_string(),  "🏠 Use Local".to_string(), "Switch blob connections to Azurite (local dev)".to_string()),
-                        EnvMode::Mixed   => ("env-badge mixed",  "⚠ Mixed".to_string(),  "🏠 All Local".to_string(), "Some connections are mixed — switch all to Azurite".to_string()),
-                        EnvMode::Unknown => {
-                            if let Some(link) = &workspace_link {
-                                ("env-badge linked", format!("☁ Linked: {}", link.resource_group), "?".to_string(), format!("Linked to Azure Resource Group: {}", link.resource_group))
-                            } else {
-                                ("env-badge unknown", "? Unknown".to_string(), "?".to_string(), "No blob connections found".to_string())
-                            }
-                        }
-                    };
-                    let env_block_class = match &mode {
-                        EnvMode::Local   => "env-block local",
-                        EnvMode::Azure   => "env-block azure",
-                        EnvMode::Mixed   => "env-block mixed",
-                        EnvMode::Unknown => "env-block",
+                    let mode = current_env.read().clone();
+                    let (badge_class, badge_label) = match &mode {
+                        EnvMode::Local   => ("env-badge local",   "🏠 Local"),
+                        EnvMode::Azure   => ("env-badge azure",   "☁ Azure"),
+                        EnvMode::Mixed   => ("env-badge mixed",   "⚠ Mixed"),
+                        EnvMode::Unknown => ("env-badge unknown", "? Env"),
                     };
                     rsx! {
-                        div { class: "{env_block_class}",
-                            span { class: "{badge_class}", "{badge_label}" }
-                            if mode != EnvMode::Unknown {
-                                button {
-                                    class: "btn btn-small env-toggle-btn",
-                                    disabled: switching,
-                                    title: "{toggle_title}",
-                                    onclick: move |_| {
-                                        let d  = dir_env.clone();
-                                        let sub = sub_env.clone();
-                                        env_switching.set(true);
-                                        pending_keys.set(vec![]);
-                                        storage_accounts.set(vec![]);
-                                        let going_local = !matches!(*current_env.read(), EnvMode::Local);
-                                        spawn(async move {
-                                            if going_local {
-                                                let d3 = d.clone();
-                                                let result = tokio::task::spawn_blocking(move || env_mode::switch_to_local(&d3))
-                                                    .await.unwrap_or(Err("task failed".into()));
-                                                match result {
-                                                    Ok(_)  => current_env.set(env_mode::detect_mode(&d)),
-                                                    Err(e) => { let _ = e; } // will show in next detect
-                                                }
-                                            } else {
-                                                let d3 = d.clone();
-                                                let result = tokio::task::spawn_blocking(move || env_mode::switch_to_azure(&d3))
-                                                    .await.unwrap_or(Err("task failed".into()));
-                                                match result {
-                                                    Ok(r) if r.needs_fetch.is_empty() => {
-                                                        current_env.set(env_mode::detect_mode(&d));
-                                                    }
-                                                    Ok(r) => {
-                                                        // Partially switched; fetch storage accounts for picker
-                                                        current_env.set(env_mode::detect_mode(&d));
-                                                        pending_keys.set(r.needs_fetch);
-                                                        let sub2 = sub.clone();
-                                                        let accounts = tokio::task::spawn_blocking(move || {
-                                                            services::azure_cli::list_storage_accounts(sub2.as_deref())
-                                                        }).await.unwrap_or(Ok(vec![])).unwrap_or_default();
-                                                        storage_accounts.set(accounts);
-                                                    }
-                                                    Err(_) => {}
-                                                }
-                                            }
-                                            env_switching.set(false);
-                                        });
-                                    },
-                                    if switching { "…" } else { "{toggle_label}" }
-                                }
-                            }
-                        }
-                        // Picker for keys that need a storage account assigned
-                        if !pending_keys.read().is_empty() && !storage_accounts.read().is_empty() {
-                            div { class: "env-picker",
-                                span { class: "env-picker-title", "Pick Azure storage accounts:" }
-                                for key in pending_keys.read().clone() {
-                                    {
-                                        let key2 = key.clone();
-                                        let display = key.trim_end_matches("_blobStorageEndpoint").to_string();
-                                        let dir_k = dir.clone();
-                                        rsx! {
-                                            div { class: "env-picker-row",
-                                                span { class: "env-picker-key", "{display}" }
-                                                select {
-                                                    class: "env-picker-select",
-                                                    onchange: move |e| {
-                                                        let endpoint = e.value();
-                                                        let k = key2.clone();
-                                                        let d = dir_k.clone();
-                                                        let d2 = dir_k.clone();
-                                                        spawn(async move {
-                                                            let _ = tokio::task::spawn_blocking(move || {
-                                                                env_mode::apply_fetched_endpoint(&d, &k, &endpoint)
-                                                            }).await;
-                                                            current_env.set(env_mode::detect_mode(&d2));
-                                                        });
-                                                    },
-                                                    option { value: "", "— pick —" }
-                                                    for (name, ep) in storage_accounts.read().clone() {
-                                                        option { value: "{ep}", "{name}" }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                        span {
+                            class: "{badge_class}",
+                            title: "Blob storage mode — open Connections to switch",
+                            "{badge_label}"
                         }
                     }
                 }
@@ -1414,8 +1374,11 @@ fn MainScreen(props: MainScreenProps) -> Element {
                                 let dir8 = dir_sql.clone();
                                 let dir9 = dir_sql.clone();
                                 let dira = dir_sql.clone();
+                                let dirb = dir_sql.clone();
+                                let dirc = dir_sql.clone();
+                                let dird = dir_sql.clone();
                                 spawn(async move {
-                                    let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, sftp) =
+                                    let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, sftp, blobs, cosmos, wjs) =
                                         tokio::task::spawn_blocking(move || {
                                             let wfs       = sql_check::detect_sql_workflows(&dir5);
                                             let conns     = sql_check::load_sql_connections(&dir6);
@@ -1423,7 +1386,10 @@ fn MainScreen(props: MainScreenProps) -> Element {
                                             let sb_key    = sb_check::detect_sb_namespace_key(&dir8);
                                             let sb_cs_key = sb_check::detect_sb_conn_str_key(&dir9);
                                             let sftp      = services::sftp_check::detect_sftp_connections(&dira);
-                                            (wfs, conns, sb, sb_key, sb_cs_key, sftp)
+                                            let blobs     = services::blob_check::detect_blob_connections(&dirb);
+                                            let cosmos    = services::cosmos_check::detect_cosmos_connections(&dirc);
+                                            let wjs       = services::blob_check::read_webjobs_storage(&dird);
+                                            (wfs, conns, sb, sb_key, sb_cs_key, sftp, blobs, cosmos, wjs)
                                         }).await.unwrap_or_default();
                                     sql_wfs.set(wfs);
                                     sql_conns.set(conns);
@@ -1432,6 +1398,9 @@ fn MainScreen(props: MainScreenProps) -> Element {
                                     sb_namespace_key.set(sb_key);
                                     sb_conn_str.set(sb_cs_key);
                                     sftp_conns.set(sftp);
+                                    blob_conns.set(blobs);
+                                    cosmos_conns.set(cosmos);
+                                    webjobs_storage.set(wjs);
                                 });
                                 db_panel_open.set(true);
                             },
@@ -1615,7 +1584,10 @@ fn MainScreen(props: MainScreenProps) -> Element {
                 }
             }
             if *db_panel_open.read() {
-                DbPanel {
+                {
+                let dir_env1 = dir.clone();
+                let dir_env2 = dir.clone();
+                rsx! { DbPanel {
                     logic_apps_dir:    dir.clone(),
                     connections:       sql_conns.read().clone(),
                     sb_namespace:      sb_namespace.read().clone(),
@@ -1623,17 +1595,40 @@ fn MainScreen(props: MainScreenProps) -> Element {
                     sb_conn_str:       sb_conn_str.read().clone(),
                     sb_queues:         sb_queues.read().clone(),
                     sftp_connections:  sftp_conns.read().clone(),
+                    blob_connections:  blob_conns.read().clone(),
+                    webjobs_storage:   webjobs_storage.read().clone(),
+                    cosmos_connections: cosmos_conns.read().clone(),
+                    env_mode:          current_env.read().clone(),
                     azurite_running:   *azurite_state.read() == ServiceState::Running,
                     on_close: move |_| db_panel_open.set(false),
-                    on_saved: move |_| {
+                    on_env_changed: move |_| {
+                        let d  = dir_env1.clone();
+                        let d2 = dir_env2.clone();
+                        spawn(async move {
+                            let mode = tokio::task::spawn_blocking(move || env_mode::detect_mode(&d))
+                                .await.unwrap_or(EnvMode::Unknown);
+                            current_env.set(mode);
+                            let blobs = tokio::task::spawn_blocking(move || {
+                                services::blob_check::detect_blob_connections(&d2)
+                            }).await.unwrap_or_default();
+                            blob_conns.set(blobs);
+                        });
+                    },
+                    on_saved: {
+                        let mut push = push_log.clone();
+                        move |msg: String| {
+                        push(msg, LogLevel::Warn);
                         let dir7 = dir.clone();
                         let dir8 = dir.clone();
                         let dir9 = dir.clone();
                         let dira = dir.clone();
                         let dirb = dir.clone();
                         let dirc = dir.clone();
+                        let dird = dir.clone();
+                        let dire = dir.clone();
+                        let dirf = dir.clone();
                         spawn(async move {
-                            let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, sftp) =
+                            let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, sftp, blobs, cosmos, wjs) =
                                 tokio::task::spawn_blocking(move || {
                                     let wfs       = sql_check::detect_sql_workflows(&dir7);
                                     let conns     = sql_check::load_sql_connections(&dir8);
@@ -1641,7 +1636,10 @@ fn MainScreen(props: MainScreenProps) -> Element {
                                     let sb_key    = sb_check::detect_sb_namespace_key(&dira);
                                     let sb_cs_key = sb_check::detect_sb_conn_str_key(&dirb);
                                     let sftp      = services::sftp_check::detect_sftp_connections(&dirc);
-                                    (wfs, conns, sb, sb_key, sb_cs_key, sftp)
+                                    let blobs     = services::blob_check::detect_blob_connections(&dird);
+                                    let cosmos    = services::cosmos_check::detect_cosmos_connections(&dire);
+                                    let wjs       = services::blob_check::read_webjobs_storage(&dirf);
+                                    (wfs, conns, sb, sb_key, sb_cs_key, sftp, blobs, cosmos, wjs)
                                 }).await.unwrap_or_default();
                             sql_wfs.set(wfs);
                             sql_conns.set(conns);
@@ -1650,8 +1648,12 @@ fn MainScreen(props: MainScreenProps) -> Element {
                             sb_namespace_key.set(sb_key);
                             sb_conn_str.set(sb_cs_key);
                             sftp_conns.set(sftp);
+                            blob_conns.set(blobs);
+                            cosmos_conns.set(cosmos);
+                            webjobs_storage.set(wjs);
                         });
-                    },
+                    } },
+                } }
                 }
             }
         }

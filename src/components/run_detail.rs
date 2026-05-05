@@ -147,7 +147,25 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                     if props.workflow.is_none() {
                         div { class: "empty-state", "Select a workflow to view its source." }
                     } else {
-                        pre { id: "source-pre", "{props.source_text}" }
+                        div { class: "source-wrap",
+                            button {
+                                class: "source-copy-btn",
+                                title: "Copy to clipboard",
+                                onclick: {
+                                    let text = props.source_text.clone();
+                                    move |_| {
+                                        let text = text.clone();
+                                        std::thread::spawn(move || {
+                                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                                let _ = cb.set_text(text);
+                                            }
+                                        });
+                                    }
+                                },
+                                "⎘"
+                            }
+                            pre { id: "source-pre", "{props.source_text}" }
+                        }
                     }
                 }
             }

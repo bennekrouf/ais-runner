@@ -17,6 +17,7 @@ dirs = "5"
 indexmap = "2"
 regex = { version = "1.12.3", features = ["std"] }
 dark-light = "1"
+arboard = "3"
 hmac   = "0.12"
 sha2   = "0.10"
 base64 = "0.22"
