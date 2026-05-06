@@ -1986,6 +1986,9 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
 .tooltip-container:hover .tooltip-text {
     visibility: visible;
     opacity: 1;
+}
+/* top-direction only: slide up to 125% */
+.tooltip-container:hover .tooltip-text:not(.bottom) {
     bottom: 125%;
 }
 
