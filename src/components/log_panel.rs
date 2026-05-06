@@ -137,12 +137,14 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                 div { style: "flex:1" }
                 button {
                     class: "btn btn-small",
-                    style: if tab == "console" {
-                        "background:#21262d;color:#8b949e"
-                    } else {
-                        "background:#21262d;color:#8b949e;visibility:hidden"
+                    style: "background:#21262d;color:#8b949e",
+                    onclick: move |_| {
+                        if tab == "console" {
+                            props.on_clear.call(());
+                        } else {
+                            az_lines.write().clear();
+                        }
                     },
-                    onclick: move |_| props.on_clear.call(()),
                     "Clear"
                 }
             }
