@@ -19,13 +19,25 @@ pub fn make_push(
 }
 
 /// Keep only runs whose start_time is after `cleared_at`.
+///
+/// Uses proper datetime parsing with a 2-second tolerance to handle the
+/// timestamp format mismatch between Rust's rfc3339 (`+00:00` suffix, nanoseconds)
+/// and the Logic Apps runtime's format (`Z` suffix, milliseconds). Without the
+/// tolerance the run can appear to precede cleared_at and get filtered forever.
 pub fn filter_cleared(
     runs: Vec<workflows::RunItem>,
     cleared_at: Option<&str>,
 ) -> Vec<workflows::RunItem> {
     let Some(ts) = cleared_at else { return runs };
+    let Ok(cleared_dt) = chrono::DateTime::parse_from_rfc3339(ts) else { return runs };
+    let threshold = cleared_dt - chrono::Duration::seconds(2);
     runs.into_iter()
-        .filter(|r| r.properties.start_time.as_deref().map(|s| s > ts).unwrap_or(false))
+        .filter(|r| {
+            r.properties.start_time.as_deref()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt > threshold)
+                .unwrap_or(false)
+        })
         .collect()
 }
 

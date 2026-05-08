@@ -43,17 +43,27 @@ pub fn check_login() -> Result<String, AzError> {
     run(&["account", "show", "--query", "user.name", "-o", "tsv"])
 }
 
-/// Opens a new Terminal window on macOS and runs `az login`, so the interactive
-/// login flow is visible without blocking the runner's terminal.
-pub fn launch_az_login(subscription_id: Option<String>) {
+/// Returns the tenant ID of the currently active az session.
+pub fn get_active_tenant() -> Result<String, AzError> {
+    run(&["account", "show", "--query", "tenantId", "-o", "tsv"])
+}
+
+/// Opens a new Terminal window on macOS and runs `az login`.
+/// Pass `tenant_id: Some("…")` to target a specific Azure AD tenant;
+/// `None` lets `az` use the user's default tenant.
+pub fn launch_az_login(subscription_id: Option<String>, tenant_id: Option<String>) {
+    let tenant_flag = match tenant_id.as_deref() {
+        Some(t) if !t.is_empty() => format!(" --tenant {}", t),
+        _ => String::new(),
+    };
     let sub_cmd = match subscription_id {
         Some(id) if !id.is_empty() =>
             format!(" && az account set --subscription {}", id),
         _ => String::new(),
     };
     let inner = format!(
-        "az login --tenant 68fac18b-9e76-4cef-b2b7-2c51b521cb94{}; echo ''; echo '✅ Done — close this window and retry in the runner.'",
-        sub_cmd
+        "az login{}{}; echo ''; echo '✅ Done — close this window and retry in the runner.'",
+        tenant_flag, sub_cmd
     );
     let script = format!(
         "tell application \"Terminal\"\n    activate\n    do script \"{}\"\nend tell",
@@ -65,9 +75,17 @@ pub fn launch_az_login(subscription_id: Option<String>) {
 }
 
 /// Spawns `az login` which opens a browser tab for OAuth — no terminal needed.
-pub fn open_login(tenant: &str) {
-    let _ = az_command(&["login", "--tenant", tenant, "--scope", "https://management.core.windows.net//.default"])
-        .spawn();
+/// Pass `tenant: Some("…")` to target a specific Azure AD tenant;
+/// `None` lets `az` use the user's default tenant.
+pub fn open_login(tenant: Option<&str>) {
+    let mut args = vec!["login"];
+    let tenant_str;
+    if let Some(t) = tenant.filter(|t| !t.is_empty()) {
+        tenant_str = t.to_string();
+        args.extend_from_slice(&["--tenant", &tenant_str]);
+    }
+    args.extend_from_slice(&["--scope", "https://management.core.windows.net//.default"]);
+    let _ = az_command(&args).spawn();
 }
 
 /// Signs out of the current az session.

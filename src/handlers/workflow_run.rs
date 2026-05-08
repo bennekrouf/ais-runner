@@ -210,13 +210,19 @@ pub fn handle_run(
             if let Ok(r) = workflows::list_runs(&wf).await {
                 let r = filter_cleared(r, cleared_at.as_deref());
                 if let Some(latest) = r.first() {
-                    let run_name = latest.name.clone();
+                    let run_name   = latest.name.clone();
+                    let run_status = latest.properties.status.to_lowercase();
+                    let run_done   = matches!(run_status.as_str(),
+                        "succeeded" | "failed" | "cancelled" | "timedout");
                     runs.set(r.clone());
                     if let Ok(a) = workflows::list_actions(&wf, &run_name).await {
-                        let all_terminal = !a.is_empty() && a.iter().all(|act| {
+                        let actions_terminal = a.iter().all(|act| {
                             matches!(act.properties.status.to_lowercase().as_str(),
                                 "succeeded" | "failed" | "skipped" | "timedout" | "cancelled")
                         });
+                        // Terminal when: run itself is done AND all actions are done
+                        // (a.is_empty() is valid — some workflows have no loggable actions)
+                        let all_terminal = run_done && actions_terminal;
                         actions.set(a.clone());
                         if all_terminal {
                             let ok  = a.iter().filter(|x| x.properties.status.to_lowercase() == "succeeded").count();
@@ -230,6 +236,8 @@ pub fn handle_run(
                             }
                             if err > 0 {
                                 push(format!("Run complete — {} ok, {} failed", ok, err), LogLevel::Error);
+                            } else if a.is_empty() {
+                                push(format!("Run complete — {}", run_status), LogLevel::Ok);
                             } else {
                                 push(
                                     format!("Run complete — {} actions in {:.1}s", ok,

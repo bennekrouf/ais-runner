@@ -8,9 +8,11 @@ const MAX_RECENT: usize = 5;
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct WorkspaceLink {
     pub subscription_id: String,
-    pub resource_group: String,
-    pub logic_app_name: Option<String>,
-    pub sb_namespace:   Option<String>,
+    pub resource_group:  String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id:       Option<String>,
+    pub logic_app_name:  Option<String>,
+    pub sb_namespace:    Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

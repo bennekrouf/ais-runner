@@ -497,6 +497,36 @@ body.light .az-block-out { border-color: #cf3030; }
 }
 .az-account-out { color: var(--text3); font-style: italic; }
 
+/* Tenant badge — shown next to account name when logged in */
+.az-tenant-badge {
+    font-size: 10px;
+    font-family: monospace;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--bg2);
+    color: var(--text3);
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+    cursor: default;
+}
+.az-tenant-default {
+    border-style: dashed;        /* no tenant configured — dashed = unpinned */
+}
+.az-tenant-mismatch {
+    background: rgba(224, 123, 57, 0.15);
+    color: #e07b39;
+    border-color: #e07b39;
+}
+
+/* Azure panel tenant notice */
+.az-tenant-notice {
+    padding: 6px 14px;
+    font-size: 11px;
+    color: var(--text3);
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+}
+
 .az-action-btn {
     font-size: 11px;
     color: var(--text3);
@@ -828,7 +858,23 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
 .wf-dot.healthy   { background: var(--green); }
 .wf-dot.unhealthy { background: var(--red); }
 
-.wf-trigger-icon { font-size: 12px; flex-shrink: 0; margin-right: 6px; opacity: 0.7; }
+.wf-trigger-icon { font-size: 12px; flex-shrink: 0; margin-right: 4px; opacity: 0.7; }
+
+.wf-connectors {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    flex-shrink: 0;
+    margin-right: 5px;
+}
+.wf-conn-icon {
+    font-size: 9px;
+    opacity: 0.55;
+    line-height: 1;
+    cursor: default;
+    transition: opacity 0.12s;
+}
+.wf-conn-icon:hover { opacity: 1; }
 
 .workflow-name {
     font-size: 13px;
@@ -1113,6 +1159,7 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
     display: flex;
     flex-direction: column;
     background: var(--bg0);
+    max-height: 33vh;
 }
 #log-header {
     display: flex;

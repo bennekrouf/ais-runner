@@ -9,9 +9,114 @@ pub struct WorkflowItem {
     pub name: String,
     pub healthy: bool,
     pub disabled: bool,
-    pub trigger_name: String, // JSON key — used in listCallbackUrl
-    pub trigger_type: String, // type field — used for display icon
+    pub trigger_name:     String,       // JSON key — used in listCallbackUrl
+    pub trigger_type:     String,       // type field — used for display icon
+    pub trigger_provider: Option<String>, // serviceProviderId for ServiceProvider triggers
     pub health_error: Option<String>,
+}
+
+// ── Connector detection ────────────────────────────────────────────────────
+
+/// A service a workflow depends on — shown as small icons in the workflow list.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ConnectorKind {
+    ServiceBus,
+    Blob,
+    CosmosDb,
+    Sql,
+    Sftp,
+    EventGrid,
+    Http,
+}
+
+impl ConnectorKind {
+    pub fn icon(&self) -> &'static str {
+        match self {
+            Self::ServiceBus => "📨",
+            Self::Blob       => "📦",
+            Self::CosmosDb   => "🌌",
+            Self::Sql        => "🗄",
+            Self::Sftp       => "📂",
+            Self::EventGrid  => "⚡",
+            Self::Http       => "🔗",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::ServiceBus => "Service Bus",
+            Self::Blob       => "Blob Storage",
+            Self::CosmosDb   => "Cosmos DB",
+            Self::Sql        => "SQL",
+            Self::Sftp       => "SFTP",
+            Self::EventGrid  => "Event Grid",
+            Self::Http       => "HTTP (outbound)",
+        }
+    }
+
+    fn from_provider_id(id: &str) -> Option<Self> {
+        let id = id.to_lowercase();
+        if id.contains("servicebus")            { return Some(Self::ServiceBus); }
+        if id.contains("azureblob") || id.contains("/blob") { return Some(Self::Blob); }
+        if id.contains("documentdb") || id.contains("cosmos") { return Some(Self::CosmosDb); }
+        if id.contains("/sql")                  { return Some(Self::Sql); }
+        if id.contains("sftp")                  { return Some(Self::Sftp); }
+        if id.contains("eventgrid")             { return Some(Self::EventGrid); }
+        None
+    }
+}
+
+/// Walk the entire workflow JSON tree and collect every connector the workflow uses.
+fn collect_connectors(v: &serde_json::Value, out: &mut std::collections::HashSet<ConnectorKind>) {
+    match v {
+        serde_json::Value::Object(map) => {
+            // serviceProviderConfiguration.serviceProviderId  (built-in connectors)
+            if let Some(cfg) = map.get("serviceProviderConfiguration") {
+                if let Some(id) = cfg["serviceProviderId"].as_str() {
+                    if let Some(k) = ConnectorKind::from_provider_id(id) {
+                        out.insert(k);
+                    }
+                }
+            }
+            // Outbound HTTP actions
+            if map.get("type").and_then(|t| t.as_str())
+                .map(|t| t.eq_ignore_ascii_case("http"))
+                .unwrap_or(false)
+            {
+                out.insert(ConnectorKind::Http);
+            }
+            for val in map.values() { collect_connectors(val, out); }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr { collect_connectors(item, out); }
+        }
+        _ => {}
+    }
+}
+
+/// Scans every workflow.json and returns the connector set for each workflow name.
+pub fn scan_all_connectors(logic_apps_dir: &str) -> std::collections::HashMap<String, Vec<ConnectorKind>> {
+    let dir = resolve_logic_apps_dir(logic_apps_dir);
+    let mut result = std::collections::HashMap::new();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return result,
+    };
+    for entry in entries.flatten() {
+        let wf_path = entry.path().join("workflow.json");
+        if !wf_path.exists() { continue; }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Ok(text) = std::fs::read_to_string(&wf_path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                let mut kinds = std::collections::HashSet::new();
+                collect_connectors(&v, &mut kinds);
+                let mut sorted: Vec<ConnectorKind> = kinds.into_iter().collect();
+                sorted.sort();
+                result.insert(name, sorted);
+            }
+        }
+    }
+    result
 }
 
 pub async fn list_workflows() -> Result<Vec<WorkflowItem>, String> {
@@ -59,16 +164,19 @@ pub async fn list_workflows() -> Result<Vec<WorkflowItem>, String> {
                 .and_then(|t| t.keys().next().map(|s| s.as_str()))
                 .unwrap_or("manual")
                 .to_string();
-            let trigger_type = triggers
-                .and_then(|t| t.values().next())
+            let trigger_entry = triggers.and_then(|t| t.values().next());
+            let trigger_type = trigger_entry
                 .and_then(|t| t["type"].as_str())
                 .unwrap_or("Unknown")
                 .to_string();
+            let trigger_provider = trigger_entry
+                .and_then(|t| t["inputs"]["serviceProviderConfiguration"]["serviceProviderId"].as_str())
+                .map(|s| s.to_string());
             let health_error = v["health"]["error"]["message"].as_str()
                 .or_else(|| v["health"]["error"].as_str())
                 .map(|s| s.to_string());
 
-            Some(WorkflowItem { name, healthy, disabled, trigger_name, trigger_type, health_error })
+            Some(WorkflowItem { name, healthy, disabled, trigger_name, trigger_type, trigger_provider, health_error })
         })
         .collect();
 
@@ -129,12 +237,15 @@ pub fn scan_local_workflows(logic_apps_dir: &str) -> Vec<WorkflowItem> {
         let trigger_name = triggers
             .and_then(|t| t.keys().next().map(|s| s.to_string()))
             .unwrap_or_else(|| "manual".to_string());
-        let trigger_type = triggers
-            .and_then(|t| t.values().next())
+        let trigger_entry = triggers.and_then(|t| t.values().next());
+        let trigger_type = trigger_entry
             .and_then(|t| t["type"].as_str())
             .unwrap_or("Unknown")
             .to_string();
-        items.push(WorkflowItem { name, healthy: true, disabled: false, trigger_name, trigger_type, health_error: None });
+        let trigger_provider = trigger_entry
+            .and_then(|t| t["inputs"]["serviceProviderConfiguration"]["serviceProviderId"].as_str())
+            .map(|s| s.to_string());
+        items.push(WorkflowItem { name, healthy: true, disabled: false, trigger_name, trigger_type, trigger_provider, health_error: None });
     }
     items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     items

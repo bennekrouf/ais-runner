@@ -2,7 +2,6 @@ use dioxus::prelude::*;
 use indexmap::IndexMap;
 use crate::services::{azure_cli, config, settings_file};
 
-const TENANT: &str = "68fac18b-9e76-4cef-b2b7-2c51b521cb94";
 const DEFAULT_SUBSCRIPTION: &str = "b4c0de7e-1fe0-4d3b-90c7-e3e9c9e4b9db";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -61,6 +60,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
     let mut fetching   = use_signal(|| String::new());
     let mut show_keys  = use_signal(|| std::collections::HashSet::<String>::new());
     let link = app_cfg.get_link(&props.logic_apps_dir);
+    let mut tenant_id     = use_signal(|| link.and_then(|l| l.tenant_id.clone()).unwrap_or_default());
     let mut sb_namespace  = use_signal(|| link.and_then(|l| l.sb_namespace.clone()).unwrap_or_default());
     let mut subscription  = use_signal(|| link.map(|l| l.subscription_id.clone()).unwrap_or_else(|| DEFAULT_SUBSCRIPTION.to_string()));
     let mut ns_options    = use_signal(|| Vec::<String>::new());
@@ -128,7 +128,8 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                         button {
                             class: "btn btn-warn btn-small",
                             onclick: move |_| {
-                                azure_cli::open_login(TENANT);
+                                let t = tenant_id.read().clone();
+                                azure_cli::open_login(if t.is_empty() { None } else { Some(t.as_str()) });
                                 az_expired.set(false);
                                 status.set("az login opened — re-run fetch after signing in.".to_string());
                                 is_err.set(false);
@@ -160,6 +161,27 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
 
             // ── Azure config ────────────────────────────────────────────
             div { class: "settings-azure-cfg",
+                label { class: "settings-cfg-label", "Tenant ID" }
+                div { class: "settings-cfg-ns-wrap",
+                    input {
+                        class: "settings-cfg-val",
+                        placeholder: "e.g. 00000000-0000-0000-0000-000000000000  (leave blank for default)",
+                        value: "{tenant_id}",
+                        oninput: {
+                            let dir = logic_apps_dir.clone();
+                            move |e: FormEvent| {
+                                let v = e.value();
+                                tenant_id.set(v.clone());
+                                let mut cfg = config::load();
+                                if let Some(l) = cfg.workspace_links.get_mut(&dir) {
+                                    l.tenant_id = if v.is_empty() { None } else { Some(v) };
+                                    config::save(&cfg);
+                                }
+                            }
+                        },
+                    }
+                }
+
                 label { class: "settings-cfg-label", "Subscription ID" }
                 div { class: "settings-cfg-ns-wrap",
                     input {

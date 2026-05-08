@@ -1,27 +1,33 @@
 use dioxus::prelude::*;
-use std::collections::HashSet;
-use crate::services::workflows::WorkflowItem;
+use std::collections::{HashSet, HashMap};
+use crate::services::workflows::{WorkflowItem, ConnectorKind};
 use crate::components::tooltip::Tooltip;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct WorkflowListProps {
-    pub workflows:  Vec<WorkflowItem>,
-    pub selected:   Option<String>,
-    pub traced:     HashSet<String>,
-    pub running:    HashSet<String>,
-    pub sql_wfs:    HashSet<String>,
-    pub on_select:  EventHandler<String>,
-    pub on_run:     EventHandler<(String, String, String)>,
+    pub workflows:   Vec<WorkflowItem>,
+    pub selected:    Option<String>,
+    pub traced:      HashSet<String>,
+    pub running:     HashSet<String>,
+    pub sql_wfs:     HashSet<String>,
+    pub connectors:  HashMap<String, Vec<ConnectorKind>>,
+    pub on_select:   EventHandler<String>,
+    pub on_run:      EventHandler<(String, String, String)>,
 }
 
-/// Classify a workflow into one of four Azure trigger categories.
+/// Classify a workflow by its trigger type.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum TriggerCategory {
-    Recurrence,  // Recurrence — schedulable, run on-demand via /run API
-    Http,        // Request / Http — triggerable via callback URL
-    ServiceBus,  // ServiceProvider → /serviceProviders/serviceBus
-    Blob,        // ServiceProvider → /serviceProviders/AzureBlob (or legacy Blob)
-    Other,       // EventGrid, ApiConnection, unknown
+    Recurrence,    // Recurrence / Schedule
+    Http,          // Request / Http — callback URL
+    ServiceBus,    // ServiceProvider → serviceBus  |  ServiceBusTrigger
+    Blob,          // ServiceProvider → AzureBlob   |  legacy Blob
+    EventGrid,     // ServiceProvider → eventGrid
+    CosmosDb,      // ServiceProvider → documentDb
+    Sql,           // ServiceProvider → sql
+    Sftp,          // ServiceProvider → sftp
+    ApiConnection, // Managed connector (Outlook, Teams, SharePoint …)
+    Unknown,       // Truly unrecognised type
 }
 
 impl TriggerCategory {
@@ -29,36 +35,51 @@ impl TriggerCategory {
         let t = trigger_type.to_lowercase();
         let p = trigger_provider.unwrap_or("").to_lowercase();
         match t.as_str() {
-            "recurrence"       => Self::Recurrence,
-            "request" | "http" => Self::Http,
-            "blob"             => Self::Blob,
-            "servicebustrigger" => Self::ServiceBus,
-            "serviceprovider"  => {
-                if p.contains("servicebus") { Self::ServiceBus }
-                else if p.contains("blob")  { Self::Blob }
-                else                         { Self::Other }
+            "recurrence" | "schedule" => Self::Recurrence,
+            "request" | "http"        => Self::Http,
+            "blob"                    => Self::Blob,
+            "servicebustrigger"       => Self::ServiceBus,
+            "apiconnection"           => Self::ApiConnection,
+            "serviceprovider" => {
+                if      p.contains("servicebus")                     { Self::ServiceBus }
+                else if p.contains("azureblob") || p.contains("/blob") { Self::Blob }
+                else if p.contains("eventgrid")                      { Self::EventGrid }
+                else if p.contains("documentdb") || p.contains("cosmos") { Self::CosmosDb }
+                else if p.contains("/sql")                           { Self::Sql }
+                else if p.contains("sftp")                           { Self::Sftp }
+                else                                                 { Self::Unknown }
             }
-            _ => Self::Other,
+            _ => Self::Unknown,
         }
     }
 
     fn icon(self) -> &'static str {
         match self {
-            Self::Recurrence => "⏱",
-            Self::Http       => "🌐",
-            Self::ServiceBus => "📨",
-            Self::Blob       => "📦",
-            Self::Other      => "◆",
+            Self::Recurrence    => "⏱",
+            Self::Http          => "🌐",
+            Self::ServiceBus    => "📨",
+            Self::Blob          => "📦",
+            Self::EventGrid     => "⚡",
+            Self::CosmosDb      => "🌌",
+            Self::Sql           => "🗄",
+            Self::Sftp          => "📂",
+            Self::ApiConnection => "🔌",
+            Self::Unknown       => "❓",
         }
     }
 
     fn label(self) -> &'static str {
         match self {
-            Self::Recurrence => "Recurrence",
-            Self::Http       => "HTTP / Request",
-            Self::ServiceBus => "Service Bus",
-            Self::Blob       => "Blob Storage",
-            Self::Other      => "Other",
+            Self::Recurrence    => "Recurrence",
+            Self::Http          => "HTTP / Request",
+            Self::ServiceBus    => "Service Bus",
+            Self::Blob          => "Blob Storage",
+            Self::EventGrid     => "Event Grid",
+            Self::CosmosDb      => "Cosmos DB",
+            Self::Sql           => "SQL",
+            Self::Sftp          => "SFTP",
+            Self::ApiConnection => "API Connection",
+            Self::Unknown       => "Unknown trigger",
         }
     }
 }
@@ -70,6 +91,12 @@ enum FilterMode {
     Http,
     ServiceBus,
     Blob,
+    EventGrid,
+    CosmosDb,
+    Sql,
+    Sftp,
+    ApiConnection,
+    Unknown,
     Unhealthy,
 }
 
@@ -81,17 +108,24 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
     let query = filter.read().to_lowercase();
     let total = props.workflows.len();
 
-    // Pre-compute category for each workflow once.
+    // Pre-compute category for each workflow once (now uses trigger_provider).
     let with_cat: Vec<(&WorkflowItem, TriggerCategory)> = props.workflows.iter()
-        .map(|wf| (wf, TriggerCategory::from(&wf.trigger_type, None)))
+        .map(|wf| (wf, TriggerCategory::from(&wf.trigger_type, wf.trigger_provider.as_deref())))
         .collect();
 
-    // Counts per filter bucket.
-    let count_recurrence = with_cat.iter().filter(|(wf, cat)| wf.healthy && *cat == TriggerCategory::Recurrence).count();
-    let count_http       = with_cat.iter().filter(|(wf, cat)| wf.healthy && *cat == TriggerCategory::Http).count();
-    let count_sb         = with_cat.iter().filter(|(wf, cat)| wf.healthy && *cat == TriggerCategory::ServiceBus).count();
-    let count_blob       = with_cat.iter().filter(|(wf, cat)| wf.healthy && *cat == TriggerCategory::Blob).count();
-    let count_unhealthy  = props.workflows.iter().filter(|wf| !wf.healthy).count();
+    // Counts per filter bucket — only non-zero ones get a filter button.
+    let cnt = |cat: TriggerCategory| with_cat.iter().filter(|(wf, c)| wf.healthy && *c == cat).count();
+    let count_recurrence    = cnt(TriggerCategory::Recurrence);
+    let count_http          = cnt(TriggerCategory::Http);
+    let count_sb            = cnt(TriggerCategory::ServiceBus);
+    let count_blob          = cnt(TriggerCategory::Blob);
+    let count_eventgrid     = cnt(TriggerCategory::EventGrid);
+    let count_cosmos        = cnt(TriggerCategory::CosmosDb);
+    let count_sql           = cnt(TriggerCategory::Sql);
+    let count_sftp          = cnt(TriggerCategory::Sftp);
+    let count_api           = cnt(TriggerCategory::ApiConnection);
+    let count_unknown       = cnt(TriggerCategory::Unknown);
+    let count_unhealthy     = props.workflows.iter().filter(|wf| !wf.healthy).count();
 
     let mode = *filter_mode.read();
 
@@ -101,12 +135,18 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
                 return false;
             }
             match mode {
-                FilterMode::All        => true,
-                FilterMode::Recurrence => wf.healthy && *cat == TriggerCategory::Recurrence,
-                FilterMode::Http       => wf.healthy && *cat == TriggerCategory::Http,
-                FilterMode::ServiceBus => wf.healthy && *cat == TriggerCategory::ServiceBus,
-                FilterMode::Blob       => wf.healthy && *cat == TriggerCategory::Blob,
-                FilterMode::Unhealthy  => !wf.healthy,
+                FilterMode::All           => true,
+                FilterMode::Recurrence    => wf.healthy && *cat == TriggerCategory::Recurrence,
+                FilterMode::Http          => wf.healthy && *cat == TriggerCategory::Http,
+                FilterMode::ServiceBus    => wf.healthy && *cat == TriggerCategory::ServiceBus,
+                FilterMode::Blob          => wf.healthy && *cat == TriggerCategory::Blob,
+                FilterMode::EventGrid     => wf.healthy && *cat == TriggerCategory::EventGrid,
+                FilterMode::CosmosDb      => wf.healthy && *cat == TriggerCategory::CosmosDb,
+                FilterMode::Sql           => wf.healthy && *cat == TriggerCategory::Sql,
+                FilterMode::Sftp          => wf.healthy && *cat == TriggerCategory::Sftp,
+                FilterMode::ApiConnection => wf.healthy && *cat == TriggerCategory::ApiConnection,
+                FilterMode::Unknown       => wf.healthy && *cat == TriggerCategory::Unknown,
+                FilterMode::Unhealthy     => !wf.healthy,
             }
         })
         .collect();
@@ -122,39 +162,36 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
                         else { "Workflows ({shown}/{total})" }
                     }
                     div { class: "wf-filter-group",
-                        Tooltip { text: "Recurrence ({count_recurrence})", direction: "bottom",
-                            button {
-                                class: if mode == FilterMode::Recurrence { "btn-filter active" } else { "btn-filter" },
-                                onclick: move |_| filter_mode.set(FilterMode::Recurrence),
-                                "⏱"
+                        // One button per category — only shown when count > 0.
+                        for (fmode, icon, label, count) in [
+                            (FilterMode::Recurrence,    "⏱", "Recurrence",      count_recurrence),
+                            (FilterMode::Http,          "🌐", "HTTP / Request",  count_http),
+                            (FilterMode::ServiceBus,    "📨", "Service Bus",     count_sb),
+                            (FilterMode::Blob,          "📦", "Blob Storage",    count_blob),
+                            (FilterMode::EventGrid,     "⚡", "Event Grid",      count_eventgrid),
+                            (FilterMode::CosmosDb,      "🌌", "Cosmos DB",       count_cosmos),
+                            (FilterMode::Sql,           "🗄", "SQL",             count_sql),
+                            (FilterMode::Sftp,          "📂", "SFTP",            count_sftp),
+                            (FilterMode::ApiConnection, "🔌", "API Connection",  count_api),
+                            (FilterMode::Unknown,       "❓", "Unknown trigger", count_unknown),
+                        ] {
+                            if count > 0 {
+                                Tooltip { text: "{label} ({count})", direction: "bottom",
+                                    button {
+                                        class: if mode == fmode { "btn-filter active" } else { "btn-filter" },
+                                        onclick: move |_| filter_mode.set(fmode),
+                                        "{icon}"
+                                    }
+                                }
                             }
                         }
-                        Tooltip { text: "HTTP / Request ({count_http})", direction: "bottom",
-                            button {
-                                class: if mode == FilterMode::Http { "btn-filter active" } else { "btn-filter" },
-                                onclick: move |_| filter_mode.set(FilterMode::Http),
-                                "🌐"
-                            }
-                        }
-                        Tooltip { text: "Service Bus ({count_sb})", direction: "bottom",
-                            button {
-                                class: if mode == FilterMode::ServiceBus { "btn-filter active" } else { "btn-filter" },
-                                onclick: move |_| filter_mode.set(FilterMode::ServiceBus),
-                                "📨"
-                            }
-                        }
-                        Tooltip { text: "Blob Storage ({count_blob})", direction: "bottom",
-                            button {
-                                class: if mode == FilterMode::Blob { "btn-filter active" } else { "btn-filter" },
-                                onclick: move |_| filter_mode.set(FilterMode::Blob),
-                                "📦"
-                            }
-                        }
-                        Tooltip { text: "Unhealthy / broken ({count_unhealthy})", direction: "bottom",
-                            button {
-                                class: if mode == FilterMode::Unhealthy { "btn-filter active" } else { "btn-filter" },
-                                onclick: move |_| filter_mode.set(FilterMode::Unhealthy),
-                                "🔴"
+                        if count_unhealthy > 0 {
+                            Tooltip { text: "Unhealthy / broken ({count_unhealthy})", direction: "bottom",
+                                button {
+                                    class: if mode == FilterMode::Unhealthy { "btn-filter active" } else { "btn-filter" },
+                                    onclick: move |_| filter_mode.set(FilterMode::Unhealthy),
+                                    "🔴"
+                                }
                             }
                         }
                         Tooltip { text: "All ({total})", direction: "bottom",
@@ -198,6 +235,10 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
                         let run_title  = if !wf.healthy { "Unhealthy — connection reference broken" }
                                          else if wf.disabled { "Workflow is disabled" }
                                          else { "Run workflow" };
+                        let conn_icons: Vec<ConnectorKind> = props.connectors
+                            .get(&name)
+                            .cloned()
+                            .unwrap_or_default();
                         rsx! {
                             div {
                                 class: if is_sel { "workflow-item selected" } else { "workflow-item" },
@@ -205,6 +246,20 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
 
                                 span { class: health_cls }
                                 span { class: "wf-trigger-icon", title: "{icon_title}", "{icon}" }
+
+                                // ── connector strip ───────────────────────
+                                if !conn_icons.is_empty() {
+                                    span { class: "wf-connectors",
+                                        for kind in conn_icons.iter() {
+                                            Tooltip {
+                                                text: kind.label().to_string(),
+                                                direction: "right",
+                                                span { class: "wf-conn-icon", "{kind.icon()}" }
+                                            }
+                                        }
+                                    }
+                                }
+
                                 span {
                                     class: if disabled { "workflow-name disabled" } else { "workflow-name" },
                                     "{name}"

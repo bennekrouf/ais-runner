@@ -45,7 +45,7 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
                                         error.set(None);
                                         fetching.set(true);
                                         spawn(async move {
-                                            azure_cli::launch_az_login(None);
+                                            azure_cli::launch_az_login(None, None);
                                         });
                                     },
                                     "🔐 Login"
@@ -66,6 +66,7 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
                                                 cfg.workspace_links.insert(dir.clone(), config::WorkspaceLink {
                                                     subscription_id: site.subscription.clone(),
                                                     resource_group:  site.resource_group.clone(),
+                                                    tenant_id:       None,
                                                     logic_app_name:  Some(site.name.clone()),
                                                     sb_namespace:    None,
                                                 });

@@ -38,6 +38,8 @@ pub struct AzurePanelProps {
     pub local_workflows: Vec<String>,
     /// Persistent diff cache owned by the parent — survives panel close/reopen.
     pub diff_cache:      Signal<HashMap<String, DiffStatus>>,
+    /// Azure AD tenant to target on login. None = use az default.
+    pub tenant_id:       Option<String>,
     pub on_close:        EventHandler<()>,
     pub on_pulled:       EventHandler<String>,
 }
@@ -276,8 +278,9 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                     button {
                         class: "btn btn-small btn-fetch",
                         onclick: {
-                            let sub = selected_sub.read().clone();
-                            move |_| azure_cli::launch_az_login(sub.clone())
+                            let sub    = selected_sub.read().clone();
+                            let tenant = props.tenant_id.clone();
+                            move |_| azure_cli::launch_az_login(sub.clone(), tenant.clone())
                         },
                         "🔐 Re-login"
                     }
@@ -292,6 +295,14 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
             // ── status bar ────────────────────────────────────────────────
             if let Some(msg) = status.read().as_ref() {
                 div { class: "az-panel-status", "{msg}" }
+            }
+
+            // ── tenant notice ─────────────────────────────────────────────
+            if props.tenant_id.as_ref().map(|t| t.is_empty()).unwrap_or(true) {
+                div { class: "az-tenant-notice",
+                    "ℹ No tenant pinned — using your active az session. \
+                     Set a Tenant ID in Settings to lock this workspace to a specific Azure AD tenant."
+                }
             }
 
             // ── body ──────────────────────────────────────────────────────

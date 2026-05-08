@@ -39,10 +39,11 @@ pub fn try_bootstrap_link(logic_apps_dir: &str) -> Option<config::WorkspaceLink>
         .or_else(|| v["Values"]["serviceBus_namespace"].as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
-    Some(config::WorkspaceLink { 
-        subscription_id: sub_id, 
-        resource_group: rg, 
-        logic_app_name: site_name,
-        sb_namespace: sb_ns,
+    Some(config::WorkspaceLink {
+        subscription_id: sub_id,
+        resource_group:  rg,
+        tenant_id:       None,
+        logic_app_name:  site_name,
+        sb_namespace:    sb_ns,
     })
 }

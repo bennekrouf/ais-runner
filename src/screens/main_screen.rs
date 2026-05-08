@@ -94,6 +94,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
     // ── Connection / SQL / SB signals ─────────────────────────────────────
     let mut sql_wfs          = use_signal(|| HashSet::<String>::new());
+    let mut wf_connectors    = use_signal(|| std::collections::HashMap::<String, Vec<workflows::ConnectorKind>>::new());
     let mut sql_conns        = use_signal(|| Vec::<sql_check::SqlConnection>::new());
     let mut db_panel_open    = use_signal(|| false);
     let mut azure_panel_open = use_signal(|| false);
@@ -112,7 +113,8 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // ── Tool check / Azure login ───────────────────────────────────────────
     let mut tool_statuses    = use_signal(|| Vec::<system_check::ToolStatus>::new());
     let mut tools_dismissed  = use_signal(|| false);
-    let mut az_status: Signal<Option<Result<String, azure_cli::AzError>>> = use_signal(|| None);
+    let mut az_status:     Signal<Option<Result<String, azure_cli::AzError>>> = use_signal(|| None);
+    let mut active_tenant: Signal<Option<String>>                          = use_signal(|| None);
 
     // ══ Effects ════════════════════════════════════════════════════════════
 
@@ -128,9 +130,13 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
     use_effect(move || {
         spawn(async move {
-            let result = tokio::task::spawn_blocking(azure_cli::check_login)
-                .await.unwrap_or(Err(azure_cli::AzError::Other("check failed".into())));
+            let (result, tenant) = tokio::task::spawn_blocking(|| {
+                let r = azure_cli::check_login();
+                let t = if r.is_ok() { azure_cli::get_active_tenant().ok() } else { None };
+                (r, t)
+            }).await.unwrap_or((Err(azure_cli::AzError::Other("check failed".into())), None));
             az_status.set(Some(result));
+            active_tenant.set(tenant);
         });
     });
 
@@ -173,6 +179,21 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     });
 
     use_effect(move || { document::eval(RESIZE_JS); });
+
+    // Re-scan connector usage whenever the workflow list is refreshed.
+    use_effect({
+        let dir = dir.clone();
+        move || {
+            let _ = workflows.read(); // reactive: re-runs when workflows changes
+            let d = dir.clone();
+            spawn(async move {
+                let map = tokio::task::spawn_blocking(move || {
+                    workflows::scan_all_connectors(&d)
+                }).await.unwrap_or_default();
+                wf_connectors.set(map);
+            });
+        }
+    });
 
     // ══ View ═══════════════════════════════════════════════════════════════
     let dir_label = dir.clone();
@@ -219,7 +240,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     on_stop: move |_| java::handle_stop(java_func_state, java_func_proc, log_lines),
                 }
 
-                {az_login_widget(az_status, &dir)}
+                {az_login_widget(az_status, active_tenant, workspace_link.as_ref().and_then(|l| l.tenant_id.clone()), &dir)}
                 {env_badge(setup_status, current_env)}
                 {connections_button(&dir, sql_wfs, sql_conns, sb_namespace, sb_queues,
                     sb_namespace_key, sb_conn_str, sftp_conns, blob_conns, cosmos_conns,
@@ -281,11 +302,12 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     SettingsEditor { logic_apps_dir: dir.clone() }
                 } else {
                     WorkflowList {
-                        workflows: workflows.read().clone(),
-                        selected:  selected_wf.read().clone(),
-                        traced:    traced_wfs.read().clone(),
-                        running:   running_wfs.read().clone(),
-                        sql_wfs:   sql_wfs.read().clone(),
+                        workflows:  workflows.read().clone(),
+                        selected:   selected_wf.read().clone(),
+                        traced:     traced_wfs.read().clone(),
+                        running:    running_wfs.read().clone(),
+                        sql_wfs:    sql_wfs.read().clone(),
+                        connectors: wf_connectors.read().clone(),
                         on_select: {
                             let dir = dir.clone();
                             move |name: String| workflow_select::handle_select(
@@ -381,6 +403,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                             logic_apps_dir:  dir.clone(),
                             local_workflows: workflows.read().iter().map(|w| w.name.clone()).collect(),
                             diff_cache:      az_diff_cache,
+                            tenant_id:       workspace_link.as_ref().and_then(|l| l.tenant_id.clone()),
                             on_close: move |_| azure_panel_open.set(false),
                             on_pulled: move |name: String| {
                                 push2(format!("⬇ {} pulled from Azure", name), LogLevel::Ok);
@@ -559,10 +582,36 @@ fn setup_banner(
 // ── Azure login widget ────────────────────────────────────────────────────────
 
 fn az_login_widget(
-    mut az_status: Signal<Option<Result<String, azure_cli::AzError>>>,
+    mut az_status:     Signal<Option<Result<String, azure_cli::AzError>>>,
+    mut active_tenant: Signal<Option<String>>,
+    configured_tenant: Option<String>,
     dir: &str,
 ) -> Element {
     let dir = dir.to_string();
+
+    // Tenant badge: (label, css_class, tooltip)
+    let tenant_badge: Option<(String, &'static str, String)> =
+        active_tenant.read().as_deref().map(|active| {
+            let short = &active[..active.len().min(8)];
+            match &configured_tenant {
+                Some(cfg) if !cfg.is_empty() => {
+                    let cfg_short = &cfg[..cfg.len().min(8)];
+                    if active.starts_with(cfg_short) || cfg.starts_with(short) {
+                        // match
+                        (format!("{}", short), "az-tenant-badge",
+                         format!("Active tenant: {}\nWorkspace tenant: {} ✓", active, cfg))
+                    } else {
+                        // mismatch
+                        (format!("⚠ {}", short), "az-tenant-badge az-tenant-mismatch",
+                         format!("Tenant mismatch!\nActive:     {}\nConfigured: {}\nClick ⟳ or re-login to fix.", active, cfg))
+                    }
+                }
+                // no workspace tenant configured — just show what's active
+                _ => (format!("{}", short), "az-tenant-badge az-tenant-default",
+                      format!("Active tenant: {}\nNo tenant pinned for this workspace — set one in Settings.", active)),
+            }
+        });
+
     rsx! {
         div { class: "az-status-wrap",
             match az_status.read().clone() {
@@ -576,15 +625,21 @@ fn az_login_widget(
                     div { class: "az-block az-block-ok",
                         span { class: "dot running" }
                         span { class: "az-account", title: "{name}", "{name}" }
+                        if let Some((label, cls, tip)) = tenant_badge {
+                            span { class: "{cls}", title: "{tip}", "{label}" }
+                        }
                         button {
                             class: "az-action-btn", title: "Re-check login status",
                             onclick: move |_| {
                                 az_status.set(None);
                                 spawn(async move {
-                                    az_status.set(Some(
-                                        tokio::task::spawn_blocking(azure_cli::check_login)
-                                            .await.unwrap_or(Err(azure_cli::AzError::Other("check failed".into())))
-                                    ));
+                                    let (result, tenant) = tokio::task::spawn_blocking(|| {
+                                        let r = azure_cli::check_login();
+                                        let t = if r.is_ok() { azure_cli::get_active_tenant().ok() } else { None };
+                                        (r, t)
+                                    }).await.unwrap_or((Err(azure_cli::AzError::Other("check failed".into())), None));
+                                    az_status.set(Some(result));
+                                    active_tenant.set(tenant);
                                 });
                             },
                             "⟳"
@@ -594,6 +649,7 @@ fn az_login_widget(
                             onclick: move |_| {
                                 azure_cli::logout();
                                 az_status.set(None);
+                                active_tenant.set(None);
                                 spawn(async move {
                                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                                     az_status.set(Some(Err(azure_cli::AzError::NotLoggedIn)));
@@ -610,16 +666,20 @@ fn az_login_widget(
                         button {
                             class: "az-login-btn", title: "Sign in with az login",
                             onclick: move |_| {
-                                azure_cli::open_login("68fac18b-9e76-4cef-b2b7-2c51b521cb94");
+                                azure_cli::open_login(configured_tenant.as_deref());
                                 az_status.set(None);
                                 let login_dir = dir.clone();
                                 spawn(async move {
                                     for _ in 0..24 {
                                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                                        let result = tokio::task::spawn_blocking(azure_cli::check_login)
-                                            .await.unwrap_or(Err(azure_cli::AzError::Other("check failed".into())));
+                                        let (result, tenant) = tokio::task::spawn_blocking(|| {
+                                            let r = azure_cli::check_login();
+                                            let t = if r.is_ok() { azure_cli::get_active_tenant().ok() } else { None };
+                                            (r, t)
+                                        }).await.unwrap_or((Err(azure_cli::AzError::Other("check failed".into())), None));
                                         let done = result.is_ok();
                                         az_status.set(Some(result));
+                                        active_tenant.set(tenant);
                                         if done {
                                             let d = login_dir.clone();
                                             let _ = tokio::task::spawn_blocking(move || {
@@ -723,7 +783,7 @@ const RESIZE_JS: &str = r#"
             var startY = e.clientY, startH = lp.getBoundingClientRect().height;
             target.classList.add('dragging');
             document.body.style.cursor = 'ns-resize'; document.body.style.userSelect = 'none'; document.body.style.webkitUserSelect = 'none';
-            var onMove = function(ev) { lp.style.height = Math.max(80, Math.min(600, startH + (startY - ev.clientY))) + 'px'; };
+            var onMove = function(ev) { lp.style.height = Math.max(80, Math.min(Math.floor(window.innerHeight / 3), startH + (startY - ev.clientY))) + 'px'; };
             var onUp   = function() {
                 var h = document.getElementById('log-resize-handle'); if (h) h.classList.remove('dragging');
                 document.body.style.cursor = ''; document.body.style.userSelect = ''; document.body.style.webkitUserSelect = '';
