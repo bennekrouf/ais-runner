@@ -199,6 +199,28 @@ pub async fn wait_for_workflows(timeout_secs: u64) -> Result<Vec<WorkflowItem>, 
     Err(last_err)
 }
 
+/// Reads every workflow.json and returns each workflow's trigger serviceProviderId.
+/// Used to enrich items returned by list_workflows(), which only gets type/kind from the API.
+pub fn scan_trigger_providers(logic_apps_dir: &str) -> std::collections::HashMap<String, String> {
+    let dir = resolve_logic_apps_dir(logic_apps_dir);
+    let mut map = std::collections::HashMap::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else { return map };
+    for entry in entries.flatten() {
+        let wf_path = entry.path().join("workflow.json");
+        let Ok(text) = std::fs::read_to_string(&wf_path) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(provider) = v["definition"]["triggers"]
+            .as_object()
+            .and_then(|t| t.values().next())
+            .and_then(|t| t["inputs"]["serviceProviderConfiguration"]["serviceProviderId"].as_str())
+        {
+            map.insert(name, provider.to_string());
+        }
+    }
+    map
+}
+
 /// Returns the actual directory containing the workflow folders.
 /// It checks if the provided `base_dir` contains `logic_apps` or `logic-apps` subfolders.
 pub fn resolve_logic_apps_dir(base_dir: &str) -> std::path::PathBuf {

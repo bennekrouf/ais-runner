@@ -123,12 +123,23 @@ pub fn handle_start(
                 let mut push4 = make_push(log_lines);
                 spawn(async move {
                     match workflows::wait_for_workflows(120).await {
-                        Ok(list) => {
+                        Ok(mut list) => {
                             let func_names: HashSet<String> = list.iter().map(|w| w.name.clone()).collect();
                             let la_dir2 = dir.clone();
                             let local_names = tokio::task::spawn_blocking(move || {
                                 workflows::scan_local_workflows(&la_dir2)
                             }).await.unwrap_or_default();
+
+                            // Enrich live list with trigger_provider from local files —
+                            // the management API only returns type/kind, not serviceProviderId.
+                            let providers: std::collections::HashMap<String, String> = local_names.iter()
+                                .filter_map(|w| w.trigger_provider.as_ref().map(|p| (w.name.clone(), p.clone())))
+                                .collect();
+                            for w in &mut list {
+                                if w.trigger_provider.is_none() {
+                                    w.trigger_provider = providers.get(&w.name).cloned();
+                                }
+                            }
 
                             let missing: Vec<String> = local_names.iter()
                                 .map(|w| w.name.clone())

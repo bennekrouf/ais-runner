@@ -554,21 +554,33 @@ body.light .az-block-out { border-color: #cf3030; }
 .az-login-btn:hover { opacity: 0.85; }
 
 /* ── AZURE PANEL ── */
-#az-panel-backdrop {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.45);
-    z-index: 200;
+
+/* Slot — flex sibling inside #main; controls how much space the panel takes */
+#az-panel-slot {
+    max-width: 0;
+    overflow: hidden;
+    flex-shrink: 0;
+    transition: max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1);
 }
+#az-panel-slot.open {
+    max-width: 560px;
+}
+
+/* Panel — always 560 px wide, right-aligned inside the slot */
 #az-panel {
-    position: fixed;
-    top: 0; right: 0; bottom: 0;
     width: 560px;
+    height: 100%;
     background: var(--bg1);
     border-left: 1px solid var(--border);
-    z-index: 201;
     display: flex;
     flex-direction: column;
-    box-shadow: -4px 0 24px rgba(0,0,0,0.35);
+    box-shadow: -4px 0 20px rgba(0,0,0,0.25);
+    /* Slide the content in from the right as the slot expands */
+    transform: translateX(100%);
+    transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+#az-panel-slot.open #az-panel {
+    transform: translateX(0);
 }
 .az-panel-header {
     display: flex;
@@ -1511,20 +1523,31 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
 /* ══════════════════════════════════════════════
    DB PANEL (SQL connections modal)
 ══════════════════════════════════════════════ */
+/* Slot — same pattern as #az-panel-slot */
+#db-panel-slot {
+    max-width: 0;
+    overflow: hidden;
+    flex-shrink: 0;
+    transition: max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+#db-panel-slot.open {
+    max-width: 600px;
+}
+
 .db-panel {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: min(720px, 94vw);
-    height: 80vh;
+    width: 600px;
+    height: 100%;
     background: var(--bg1);
-    border: 1px solid var(--border);
-    border-radius: 10px;
+    border-left: 1px solid var(--border);
+    border-radius: 0;
     display: flex;
     flex-direction: column;
-    z-index: 200;
-    box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+    box-shadow: -4px 0 20px rgba(0,0,0,0.25);
+    transform: translateX(100%);
+    transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+#db-panel-slot.open .db-panel {
+    transform: translateX(0);
 }
 
 .db-panel-header {

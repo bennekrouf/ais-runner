@@ -40,7 +40,8 @@ pub struct AzurePanelProps {
     pub diff_cache:      Signal<HashMap<String, DiffStatus>>,
     /// Azure AD tenant to target on login. None = use az default.
     pub tenant_id:       Option<String>,
-    pub on_close:        EventHandler<()>,
+    /// Drives visibility; panel sets this to false when the × button is clicked.
+    pub is_open:         Signal<bool>,
     pub on_pulled:       EventHandler<String>,
 }
 
@@ -195,9 +196,11 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
     };
 
     use_effect({
-        let link   = workspace_link.clone();
-        let mut fw = fetch_workflows.clone();
+        let link    = workspace_link.clone();
+        let mut fw  = fetch_workflows.clone();
+        let is_open = props.is_open;
         move || {
+            if !*is_open.read() { return; } // reactive — re-runs when panel opens
             let Some(link) = link.clone() else { return };
             status.set(None);
 
@@ -253,11 +256,6 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
     };
 
     rsx! {
-        div {
-            id: "az-panel-backdrop",
-            onclick: move |_| props.on_close.call(()),
-        }
-
         div { id: "az-panel",
             // ── header ────────────────────────────────────────────────────
             div { class: "az-panel-header",
@@ -284,10 +282,15 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                         },
                         "🔐 Re-login"
                     }
-                    button {
-                        class: "btn-icon",
-                        onclick: move |_| props.on_close.call(()),
-                        "×"
+                    {
+                        let mut is_open = props.is_open;
+                        rsx! {
+                            button {
+                                class: "btn-icon",
+                                onclick: move |_| is_open.set(false),
+                                "×"
+                            }
+                        }
                     }
                 }
             }

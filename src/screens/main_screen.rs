@@ -244,7 +244,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 {env_badge(setup_status, current_env)}
                 {connections_button(&dir, sql_wfs, sql_conns, sb_namespace, sb_queues,
                     sb_namespace_key, sb_conn_str, sftp_conns, blob_conns, cosmos_conns,
-                    webjobs_storage, db_panel_open)}
+                    webjobs_storage, db_panel_open, azure_panel_open)}
 
                 button {
                     class: "btn btn-run btn-small",
@@ -256,9 +256,13 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     if *current_view.read() == "Settings" { "Workflows" } else { "⚙️ Settings" }
                 }
                 button {
-                    class: "btn btn-run btn-small",
+                    class: if *azure_panel_open.read() { "btn btn-run btn-small active" } else { "btn btn-run btn-small" },
                     title: "Compare local workflows with Azure",
-                    onclick: move |_| azure_panel_open.set(true),
+                    onclick: move |_| {
+                        let next = !*azure_panel_open.read();
+                        azure_panel_open.set(next);
+                        if next { db_panel_open.set(false); }
+                    },
                     "☁ Azure"
                 }
                 button {
@@ -301,7 +305,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 if *current_view.read() == "Settings" {
                     SettingsEditor { logic_apps_dir: dir.clone() }
                 } else {
-                    WorkflowList {
+                    WorkflowList { // always-rendered content block
                         workflows:  workflows.read().clone(),
                         selected:   selected_wf.read().clone(),
                         traced:     traced_wfs.read().clone(),
@@ -366,6 +370,118 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         },
                     }
                 }
+
+                // Azure panel — always in DOM as flex sibling; CSS drives the slide
+                {
+                    let mut push2  = make_push(log_lines);
+                    let dir_reload = dir.clone();
+                    rsx! {
+                        div {
+                            id: "az-panel-slot",
+                            class: if *azure_panel_open.read() { "open" } else { "" },
+                            AzurePanel {
+                                logic_apps_dir:  dir.clone(),
+                                local_workflows: workflows.read().iter().map(|w| w.name.clone()).collect(),
+                                diff_cache:      az_diff_cache,
+                                tenant_id:       workspace_link.as_ref().and_then(|l| l.tenant_id.clone()),
+                                is_open:         azure_panel_open,
+                                on_pulled: move |name: String| {
+                                    push2(format!("⬇ {} pulled from Azure", name), LogLevel::Ok);
+                                    let is_running = matches!(*func_state.read(), ServiceState::Running);
+                                    let dir_c = dir_reload.clone();
+                                    spawn(async move {
+                                        if is_running {
+                                            if let Ok(mut list) = workflows::list_workflows().await {
+                                                let dir_e = dir_c.clone();
+                                                if let Ok(providers) = tokio::task::spawn_blocking(move || {
+                                                    workflows::scan_trigger_providers(&dir_e)
+                                                }).await {
+                                                    for w in &mut list {
+                                                        if w.trigger_provider.is_none() {
+                                                            w.trigger_provider = providers.get(&w.name).cloned();
+                                                        }
+                                                    }
+                                                }
+                                                workflows.set(list);
+                                            }
+                                        } else {
+                                            let list = tokio::task::spawn_blocking(move || {
+                                                workflows::scan_local_workflows(&dir_c)
+                                            }).await.unwrap_or_default();
+                                            if !list.is_empty() { workflows.set(list); }
+                                        }
+                                    });
+                                },
+                            }
+                        }
+                    }
+                }
+
+                // Connections panel — same slot pattern
+                {
+                    let dir_db = dir.clone(); // keep `dir` available for RunDialog below
+                    let d1 = dir_db.clone();
+                    let d2 = dir_db.clone();
+                    let mut push = make_push(log_lines);
+                    rsx! {
+                        div {
+                            id: "db-panel-slot",
+                            class: if *db_panel_open.read() { "open" } else { "" },
+                            DbPanel {
+                                logic_apps_dir:     dir.clone(),
+                                connections:        sql_conns.read().clone(),
+                                sb_namespace:       sb_namespace.read().clone(),
+                                sb_namespace_key:   sb_namespace_key.read().clone(),
+                                sb_conn_str:        sb_conn_str.read().clone(),
+                                sb_queues:          sb_queues.read().clone(),
+                                sftp_connections:   sftp_conns.read().clone(),
+                                blob_connections:   blob_conns.read().clone(),
+                                webjobs_storage:    webjobs_storage.read().clone(),
+                                cosmos_connections: cosmos_conns.read().clone(),
+                                env_mode:           current_env.read().clone(),
+                                azurite_running:    *azurite_state.read() == ServiceState::Running,
+                                is_open:            db_panel_open,
+                                on_env_changed: move |_| {
+                                    let d  = d1.clone();
+                                    let d2 = d2.clone();
+                                    spawn(async move {
+                                        current_env.set(
+                                            tokio::task::spawn_blocking(move || env_mode::detect_mode(&d))
+                                                .await.unwrap_or(EnvMode::Unknown)
+                                        );
+                                        blob_conns.set(
+                                            tokio::task::spawn_blocking(move || blob_check::detect_blob_connections(&d2))
+                                                .await.unwrap_or_default()
+                                        );
+                                    });
+                                },
+                                on_saved: move |msg: String| {
+                                    push(msg, LogLevel::Warn);
+                                    let d = dir_db.clone();
+                                    spawn(async move {
+                                        let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, sftp, blobs, cosmos, wjs) =
+                                            tokio::task::spawn_blocking(move || {
+                                                (sql_check::detect_sql_workflows(&d),
+                                                 sql_check::load_sql_connections(&d),
+                                                 sb_check::detect_sb_queues(&d),
+                                                 sb_check::detect_sb_namespace_key(&d),
+                                                 sb_check::detect_sb_conn_str_key(&d),
+                                                 sftp_check::detect_sftp_connections(&d),
+                                                 blob_check::detect_blob_connections(&d),
+                                                 cosmos_check::detect_cosmos_connections(&d),
+                                                 blob_check::read_webjobs_storage(&d))
+                                            }).await.unwrap_or_default();
+                                        sql_wfs.set(wfs); sql_conns.set(conns);
+                                        sb_namespace.set(sb_ns); sb_queues.set(sb_qs);
+                                        sb_namespace_key.set(sb_key); sb_conn_str.set(sb_cs_key);
+                                        sftp_conns.set(sftp); blob_conns.set(blobs);
+                                        cosmos_conns.set(cosmos); webjobs_storage.set(wjs);
+                                    });
+                                },
+                            }
+                        }
+                    }
+                }
             }
 
             div { id: "log-resize-handle" }
@@ -391,102 +507,6 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                             traced_wfs, cleared_wfs, run_dialog,
                         )
                     },
-                }
-            }
-
-            if *azure_panel_open.read() {
-                {
-                    let mut push2  = make_push(log_lines);
-                    let dir_reload = dir.clone();
-                    rsx! {
-                        AzurePanel {
-                            logic_apps_dir:  dir.clone(),
-                            local_workflows: workflows.read().iter().map(|w| w.name.clone()).collect(),
-                            diff_cache:      az_diff_cache,
-                            tenant_id:       workspace_link.as_ref().and_then(|l| l.tenant_id.clone()),
-                            on_close: move |_| azure_panel_open.set(false),
-                            on_pulled: move |name: String| {
-                                push2(format!("⬇ {} pulled from Azure", name), LogLevel::Ok);
-                                let is_running = matches!(*func_state.read(), ServiceState::Running);
-                                let dir_c = dir_reload.clone();
-                                spawn(async move {
-                                    if is_running {
-                                        if let Ok(list) = workflows::list_workflows().await {
-                                            workflows.set(list);
-                                        }
-                                    } else {
-                                        let list = tokio::task::spawn_blocking(move || {
-                                            workflows::scan_local_workflows(&dir_c)
-                                        }).await.unwrap_or_default();
-                                        if !list.is_empty() { workflows.set(list); }
-                                    }
-                                });
-                            },
-                        }
-                    }
-                }
-            }
-
-            if *db_panel_open.read() {
-                {
-                    let d1 = dir.clone();
-                    let d2 = dir.clone();
-                    let mut push = make_push(log_lines);
-                    rsx! {
-                        DbPanel {
-                            logic_apps_dir:     dir.clone(),
-                            connections:        sql_conns.read().clone(),
-                            sb_namespace:       sb_namespace.read().clone(),
-                            sb_namespace_key:   sb_namespace_key.read().clone(),
-                            sb_conn_str:        sb_conn_str.read().clone(),
-                            sb_queues:          sb_queues.read().clone(),
-                            sftp_connections:   sftp_conns.read().clone(),
-                            blob_connections:   blob_conns.read().clone(),
-                            webjobs_storage:    webjobs_storage.read().clone(),
-                            cosmos_connections: cosmos_conns.read().clone(),
-                            env_mode:           current_env.read().clone(),
-                            azurite_running:    *azurite_state.read() == ServiceState::Running,
-                            on_close: move |_| db_panel_open.set(false),
-                            on_env_changed: move |_| {
-                                let d  = d1.clone();
-                                let d2 = d2.clone();
-                                spawn(async move {
-                                    current_env.set(
-                                        tokio::task::spawn_blocking(move || env_mode::detect_mode(&d))
-                                            .await.unwrap_or(EnvMode::Unknown)
-                                    );
-                                    blob_conns.set(
-                                        tokio::task::spawn_blocking(move || blob_check::detect_blob_connections(&d2))
-                                            .await.unwrap_or_default()
-                                    );
-                                });
-                            },
-                            on_saved: move |msg: String| {
-                                push(msg, LogLevel::Warn);
-                                let d = dir.clone();
-                                spawn(async move {
-                                    let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, sftp, blobs, cosmos, wjs) =
-                                        tokio::task::spawn_blocking(move || {
-                                            let wfs       = sql_check::detect_sql_workflows(&d);
-                                            let conns     = sql_check::load_sql_connections(&d);
-                                            let sb        = sb_check::detect_sb_queues(&d);
-                                            let sb_key    = sb_check::detect_sb_namespace_key(&d);
-                                            let sb_cs_key = sb_check::detect_sb_conn_str_key(&d);
-                                            let sftp      = sftp_check::detect_sftp_connections(&d);
-                                            let blobs     = blob_check::detect_blob_connections(&d);
-                                            let cosmos    = cosmos_check::detect_cosmos_connections(&d);
-                                            let wjs       = blob_check::read_webjobs_storage(&d);
-                                            (wfs, conns, sb, sb_key, sb_cs_key, sftp, blobs, cosmos, wjs)
-                                        }).await.unwrap_or_default();
-                                    sql_wfs.set(wfs); sql_conns.set(conns);
-                                    sb_namespace.set(sb_ns); sb_queues.set(sb_qs);
-                                    sb_namespace_key.set(sb_key); sb_conn_str.set(sb_cs_key);
-                                    sftp_conns.set(sftp); blob_conns.set(blobs);
-                                    cosmos_conns.set(cosmos); webjobs_storage.set(wjs);
-                                });
-                            },
-                        }
-                    }
                 }
             }
         }
@@ -733,35 +753,40 @@ fn connections_button(
     mut cosmos_conns: Signal<Vec<cosmos_check::CosmosConnection>>,
     mut webjobs_storage: Signal<String>,
     mut db_panel_open: Signal<bool>,
+    mut azure_panel_open: Signal<bool>,
 ) -> Element {
     let dir = dir.to_string();
     rsx! {
         button {
-            class: "btn btn-run btn-small",
+            class: if *db_panel_open.read() { "btn btn-run btn-small active" } else { "btn btn-run btn-small" },
             style: "margin-left: 10px;",
             title: "SQL & Service Bus connections — test & configure",
             onclick: move |_| {
-                let d = dir.clone();
-                spawn(async move {
-                    let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, sftp, blobs, cosmos, wjs) =
-                        tokio::task::spawn_blocking(move || {
-                            (sql_check::detect_sql_workflows(&d),
-                             sql_check::load_sql_connections(&d),
-                             sb_check::detect_sb_queues(&d),
-                             sb_check::detect_sb_namespace_key(&d),
-                             sb_check::detect_sb_conn_str_key(&d),
-                             sftp_check::detect_sftp_connections(&d),
-                             blob_check::detect_blob_connections(&d),
-                             cosmos_check::detect_cosmos_connections(&d),
-                             blob_check::read_webjobs_storage(&d))
-                        }).await.unwrap_or_default();
-                    sql_wfs.set(wfs); sql_conns.set(conns);
-                    sb_namespace.set(sb_ns); sb_queues.set(sb_qs);
-                    sb_namespace_key.set(sb_key); sb_conn_str.set(sb_cs_key);
-                    sftp_conns.set(sftp); blob_conns.set(blobs);
-                    cosmos_conns.set(cosmos); webjobs_storage.set(wjs);
-                });
-                db_panel_open.set(true);
+                let opening = !*db_panel_open.read();
+                db_panel_open.set(opening);
+                if opening {
+                    azure_panel_open.set(false);
+                    let d = dir.clone();
+                    spawn(async move {
+                        let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, sftp, blobs, cosmos, wjs) =
+                            tokio::task::spawn_blocking(move || {
+                                (sql_check::detect_sql_workflows(&d),
+                                 sql_check::load_sql_connections(&d),
+                                 sb_check::detect_sb_queues(&d),
+                                 sb_check::detect_sb_namespace_key(&d),
+                                 sb_check::detect_sb_conn_str_key(&d),
+                                 sftp_check::detect_sftp_connections(&d),
+                                 blob_check::detect_blob_connections(&d),
+                                 cosmos_check::detect_cosmos_connections(&d),
+                                 blob_check::read_webjobs_storage(&d))
+                            }).await.unwrap_or_default();
+                        sql_wfs.set(wfs); sql_conns.set(conns);
+                        sb_namespace.set(sb_ns); sb_queues.set(sb_qs);
+                        sb_namespace_key.set(sb_key); sb_conn_str.set(sb_cs_key);
+                        sftp_conns.set(sftp); blob_conns.set(blobs);
+                        cosmos_conns.set(cosmos); webjobs_storage.set(wjs);
+                    });
+                }
             },
             "🔌 Connections"
         }

@@ -113,7 +113,7 @@ pub struct DbPanelProps {
     pub cosmos_connections: Vec<CosmosConnection>,
     pub env_mode:          EnvMode,
     pub azurite_running:   bool,
-    pub on_close:          EventHandler<()>,
+    pub is_open:           Signal<bool>,
     pub on_saved:          EventHandler<String>,
     pub on_env_changed:    EventHandler<()>,
 }
@@ -337,9 +337,8 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
         }
     };
 
+    let mut is_open = props.is_open;
     rsx! {
-        div { class: "dialog-backdrop", onclick: move |_| props.on_close.call(()) }
-
         div { class: "db-panel",
             // ── Header ──────────────────────────────────────────────────────
             div { class: "db-panel-header",
@@ -348,7 +347,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     if *active_tab.read() != "blob" || !props.blob_connections.is_empty() {
                         button { class: "btn btn-run btn-small", onclick: on_save, "💾 Save" }
                     }
-                    button { class: "btn-icon", onclick: move |_| props.on_close.call(()), "×" }
+                    button { class: "btn-icon", onclick: move |_| is_open.set(false), "×" }
                 }
             }
 
