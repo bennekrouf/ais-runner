@@ -598,6 +598,58 @@ body.light .az-block-out { border-color: #cf3030; }
 .az-sync-same     { color: #3dba6f; font-weight: 500; font-size: 12px; }
 .az-sync-differs  { color: #e07b39; font-weight: 600; font-size: 12px; }
 
+/* Computing spinner */
+.az-panel-computing {
+    padding: 32px 20px;
+    text-align: center;
+    color: var(--text2);
+    font-size: 13px;
+}
+.az-spinner {
+    display: inline-block;
+    animation: az-spin 1s linear infinite;
+    font-size: 16px;
+    margin-right: 4px;
+}
+@keyframes az-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+/* Stats bar */
+.az-stats-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    flex-wrap: wrap;
+}
+.az-stat             { font-weight: 500; }
+.az-stat-differs     { color: #e07b39; }
+.az-stat-remote      { color: var(--text2); }
+.az-stat-sync        { color: #3dba6f; }
+.az-stat-error       { color: #d94f4f; }
+.az-stat-total       { color: var(--text3); font-weight: 400; }
+
+/* Filter bar */
+.az-filter-bar {
+    padding: 6px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg2);
+}
+.az-filter-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text2);
+    cursor: pointer;
+    user-select: none;
+}
+.az-filter-label input[type="checkbox"] { cursor: pointer; }
+
 /* Highlight rows where remote differs from local */
 .az-wf-row.differs { background: rgba(224,123,57,0.07); }
 .az-wf-row.differs .az-wf-name { color: var(--text1); font-weight: 600; }

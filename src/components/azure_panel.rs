@@ -9,11 +9,9 @@ use crate::services::{
 fn fmt_az_error(e: &AzError) -> String {
     if let AzError::Other(msg) = e {
         if msg.contains("AuthorizationFailed") {
-            // Extract client email — between "client '" and "' with"
             let user = msg.split("client '").nth(1)
                 .and_then(|s| s.split("' with").next())
                 .unwrap_or("your account");
-            // Extract site name — last segment of the sites/ path
             let site = msg.split("/sites/").nth(1)
                 .and_then(|s| s.split(['\'', '"', ' ', '\\']).next())
                 .unwrap_or("the Logic App");
@@ -27,7 +25,7 @@ fn fmt_az_error(e: &AzError) -> String {
 }
 
 #[derive(Clone, PartialEq, Debug)]
-enum DiffStatus {
+pub enum DiffStatus {
     Checking,
     Same,
     Differs(usize),
@@ -36,21 +34,26 @@ enum DiffStatus {
 
 #[derive(Props, Clone, PartialEq)]
 pub struct AzurePanelProps {
-    pub logic_apps_dir: String,
+    pub logic_apps_dir:  String,
     pub local_workflows: Vec<String>,
-    pub on_close:    EventHandler<()>,
-    pub on_pulled:   EventHandler<String>,
+    /// Persistent diff cache owned by the parent — survives panel close/reopen.
+    pub diff_cache:      Signal<HashMap<String, DiffStatus>>,
+    pub on_close:        EventHandler<()>,
+    pub on_pulled:       EventHandler<String>,
 }
 
 #[component]
 pub fn AzurePanel(props: AzurePanelProps) -> Element {
-    let mut az_workflows:   Signal<Vec<AzureWorkflow>>   = use_signal(Vec::new);
-    let mut fetching_sites: Signal<bool>                 = use_signal(|| false);
-    let mut fetching_wfs:   Signal<bool>                 = use_signal(|| false);
-    let mut pulling:        Signal<HashSet<String>>      = use_signal(HashSet::new);
-    let mut status:         Signal<Option<String>>       = use_signal(|| None);
+    let mut az_workflows:   Signal<Vec<AzureWorkflow>>          = use_signal(Vec::new);
+    let mut fetching_sites: Signal<bool>                        = use_signal(|| false);
+    let mut fetching_wfs:   Signal<bool>                        = use_signal(|| false);
+    let mut pulling:        Signal<HashSet<String>>             = use_signal(HashSet::new);
+    let mut status:         Signal<Option<String>>              = use_signal(|| None);
     let mut diff_map:       Signal<HashMap<String, DiffStatus>> = use_signal(HashMap::new);
-    let mut confirm_pull:   Signal<Option<String>>       = use_signal(|| None);
+    let mut computing:      Signal<usize>                       = use_signal(|| 0);
+    let mut confirm_pull:   Signal<Option<String>>              = use_signal(|| None);
+    let mut show_all:       Signal<bool>                        = use_signal(|| false);
+    let mut diff_cache = props.diff_cache;
 
     let config = use_signal(config::load);
     let workspace_link = config.read().get_link(&props.logic_apps_dir).cloned();
@@ -63,16 +66,19 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
         }))
     });
 
-    let selected_sub: Signal<Option<String>> = use_signal(|| workspace_link.as_ref().map(|l| l.subscription_id.clone()));
+    let selected_sub: Signal<Option<String>> = use_signal(|| {
+        workspace_link.as_ref().map(|l| l.subscription_id.clone())
+    });
     let local_set: HashSet<String> = props.local_workflows.iter().cloned().collect();
 
     let fetch_workflows = {
-        let la_dir = props.logic_apps_dir.clone();
+        let la_dir        = props.logic_apps_dir.clone();
         let local_set_ref = local_set.clone();
         move |site: LogicAppSite| {
             fetching_wfs.set(true);
             az_workflows.set(vec![]);
             diff_map.write().clear();
+            computing.set(0);
             status.set(None);
             let sub  = site.subscription.clone();
             let rg   = site.resource_group.clone();
@@ -84,33 +90,46 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                 let (s, r, n) = (sub.clone(), rg.clone(), name.clone());
                 let result = tokio::task::spawn_blocking(move || {
                     azure_sync::list_azure_workflows(&s, &r, &n)
-                }).await.unwrap_or(Err(crate::services::azure_cli::AzError::Other("task failed".into())));
+                }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into())));
                 fetching_wfs.set(false);
                 match result {
                     Ok(wfs) => {
+                        // Populate from cache; collect workflows that still need computing.
+                        let mut to_compute: Vec<(usize, String)> = Vec::new();
                         for (i, wf) in wfs.iter().enumerate() {
                             if lset.contains(&wf.name) {
-                                diff_map.write().insert(wf.name.clone(), DiffStatus::Checking);
-                                let key             = wf.name.clone();
-                                let wf_nm           = wf.name.clone();
-                                let (sc, rc, nc, dc) = (sub.clone(), rg.clone(), name.clone(), dir.clone());
-                                spawn(async move {
-                                    if i > 0 {
-                                        let delay = std::cmp::min(200 * i as u64, 2_000);
-                                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                                    }
-                                    let ds = match tokio::task::spawn_blocking(move || {
-                                        azure_sync::diff_workflow_vs_local(&sc, &rc, &nc, &wf_nm, &dc)
-                                    }).await.unwrap_or(Err(crate::services::azure_cli::AzError::Other("task failed".into()))) {
-                                        Ok(0)   => DiffStatus::Same,
-                                        Ok(cnt) => DiffStatus::Differs(cnt),
-                                        Err(_)  => DiffStatus::Error,
-                                    };
-                                    diff_map.write().insert(key, ds);
-                                });
+                                if let Some(cached) = diff_cache.read().get(&wf.name).cloned() {
+                                    diff_map.write().insert(wf.name.clone(), cached);
+                                } else {
+                                    diff_map.write().insert(wf.name.clone(), DiffStatus::Checking);
+                                    to_compute.push((i, wf.name.clone()));
+                                }
                             }
                         }
+                        computing.set(to_compute.len());
                         az_workflows.set(wfs);
+
+                        for (i, wf_nm) in to_compute {
+                            let (sc, rc, nc, dc) = (sub.clone(), rg.clone(), name.clone(), dir.clone());
+                            let key = wf_nm.clone();
+                            spawn(async move {
+                                if i > 0 {
+                                    let delay = std::cmp::min(200 * i as u64, 2_000);
+                                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                                }
+                                let ds = match tokio::task::spawn_blocking(move || {
+                                    azure_sync::diff_workflow_vs_local(&sc, &rc, &nc, &wf_nm, &dc)
+                                }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into()))) {
+                                    Ok(0)   => DiffStatus::Same,
+                                    Ok(cnt) => DiffStatus::Differs(cnt),
+                                    Err(_)  => DiffStatus::Error,
+                                };
+                                diff_map.write().insert(key.clone(), ds.clone());
+                                diff_cache.write().insert(key, ds);
+                                let cur = *computing.read();
+                                computing.set(cur.saturating_sub(1));
+                            });
+                        }
                     }
                     Err(e) => status.set(Some(fmt_az_error(&e))),
                 }
@@ -119,7 +138,7 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
     };
 
     let pull_workflow = {
-        let la_dir = props.logic_apps_dir.clone();
+        let la_dir    = props.logic_apps_dir.clone();
         let on_pulled = props.on_pulled.clone();
         move |wf_name: String| {
             let site = match selected_site.read().clone() {
@@ -136,27 +155,25 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
             spawn(async move {
                 let result = tokio::task::spawn_blocking(move || {
                     azure_sync::download_workflow(&sub, &rg, &sitename, &wf)
-                }).await.unwrap_or(Err(crate::services::azure_cli::AzError::Other("task failed".into())));
+                }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into())));
 
                 pulling.write().remove(&wf_name);
 
                 match result {
-                    Err(e) => {
-                        status.set(Some(format!("❌ {wf_name}: {}", fmt_az_error(&e))));
-                    }
+                    Err(e) => status.set(Some(format!("❌ {wf_name}: {}", fmt_az_error(&e)))),
                     Ok(json) => {
                         let resolved = crate::services::workflows::resolve_logic_apps_dir(&dir);
-                        let wf_dir = resolved.join(&wf_name);
+                        let wf_dir   = resolved.join(&wf_name);
                         if let Err(e) = std::fs::create_dir_all(&wf_dir) {
                             status.set(Some(format!("❌ mkdir failed: {}", e)));
                             return;
                         }
-                        let wf_path = wf_dir.join("workflow.json");
-                        if let Err(e) = std::fs::write(&wf_path, &json) {
+                        if let Err(e) = std::fs::write(wf_dir.join("workflow.json"), &json) {
                             status.set(Some(format!("❌ write failed: {}", e)));
                             return;
                         }
                         diff_map.write().insert(wf_name.clone(), DiffStatus::Same);
+                        diff_cache.write().insert(wf_name.clone(), DiffStatus::Same);
                         status.set(Some(format!("✅ {} pulled", wf_name)));
                         on_pulled.call(wf_name);
                     }
@@ -165,20 +182,29 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
         }
     };
 
+    let do_refresh = {
+        let mut fw = fetch_workflows.clone();
+        move |_| {
+            diff_cache.write().clear();
+            if let Some(site) = selected_site.read().clone() {
+                fw(site);
+            }
+        }
+    };
+
     use_effect({
-        let link = workspace_link.clone();
+        let link   = workspace_link.clone();
         let mut fw = fetch_workflows.clone();
         move || {
             let Some(link) = link.clone() else { return };
             status.set(None);
 
             if let Some(site_name) = link.logic_app_name.clone() {
-                let site = azure_sync::LogicAppSite {
+                fw(LogicAppSite {
                     name:           site_name,
                     resource_group: link.resource_group.clone(),
                     subscription:   link.subscription_id.clone(),
-                };
-                fw(site);
+                });
                 return;
             }
 
@@ -192,16 +218,37 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                 }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into())));
                 fetching_sites.set(false);
                 match result {
-                    Ok(list) if !list.is_empty() => {
-                        let site = list.into_iter().next().unwrap();
-                        fw(site);
-                    }
-                    Ok(_) => status.set(Some("No Logic Apps Standard sites found in this resource group.".into())),
-                    Err(e) => status.set(Some(fmt_az_error(&e))),
+                    Ok(list) if !list.is_empty() => fw(list.into_iter().next().unwrap()),
+                    Ok(_)    => status.set(Some("No Logic Apps Standard sites found in this resource group.".into())),
+                    Err(e)   => status.set(Some(fmt_az_error(&e))),
                 }
             });
         }
     });
+
+    // ── derived state ──────────────────────────────────────────────────────
+    let is_loading  = *fetching_sites.read() || *fetching_wfs.read();
+    let is_computing = *computing.read() > 0;
+    let wf_count    = az_workflows.read().len();
+
+    // stats (computed only when done, cheap to compute always)
+    let in_sync   = diff_map.read().values().filter(|s| matches!(s, DiffStatus::Same)).count();
+    let differ    = diff_map.read().values().filter(|s| matches!(s, DiffStatus::Differs(_))).count();
+    let errors    = diff_map.read().values().filter(|s| matches!(s, DiffStatus::Error)).count();
+    let not_local = az_workflows.read().iter().filter(|w| !local_set.contains(&w.name)).count();
+
+    let synced_count = in_sync;
+    let visible: Vec<AzureWorkflow> = if !is_computing {
+        az_workflows.read().iter()
+            .filter(|wf| {
+                *show_all.read()
+                    || !matches!(diff_map.read().get(&wf.name), Some(DiffStatus::Same))
+            })
+            .cloned()
+            .collect()
+    } else {
+        vec![]
+    };
 
     rsx! {
         div {
@@ -210,6 +257,7 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
         }
 
         div { id: "az-panel",
+            // ── header ────────────────────────────────────────────────────
             div { class: "az-panel-header",
                 div {
                     h3 { "☁  Azure Workflows" }
@@ -220,11 +268,16 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                 div { style: "display:flex;gap:8px;align-items:center",
                     button {
                         class: "btn btn-small btn-fetch",
+                        disabled: is_loading || is_computing,
+                        title: "Clear cache and re-compare with Azure",
+                        onclick: do_refresh,
+                        "⟳ Refresh"
+                    }
+                    button {
+                        class: "btn btn-small btn-fetch",
                         onclick: {
                             let sub = selected_sub.read().clone();
-                            move |_| {
-                                azure_cli::launch_az_login(sub.clone());
-                            }
+                            move |_| azure_cli::launch_az_login(sub.clone())
                         },
                         "🔐 Re-login"
                     }
@@ -236,70 +289,117 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                 }
             }
 
+            // ── status bar ────────────────────────────────────────────────
             if let Some(msg) = status.read().as_ref() {
                 div { class: "az-panel-status", "{msg}" }
             }
 
+            // ── body ──────────────────────────────────────────────────────
             div { class: "az-panel-body",
-                if *fetching_sites.read() || *fetching_wfs.read() {
-                    div { class: "az-panel-loading", "Connecting to Azure..." }
-                } else if !az_workflows.read().is_empty() {
-                    table { class: "az-wf-table",
-                        thead {
-                            tr {
-                                th { "Workflow" }
-                                th { "Health" }
-                                th { "Sync" }
-                                th { "" }
+                if is_loading {
+                    div { class: "az-panel-loading", "Connecting to Azure…" }
+                } else if is_computing {
+                    div { class: "az-panel-computing",
+                        span { class: "az-spinner", "⟳" }
+                        " Computing diffs… ({computing} remaining)"
+                    }
+                } else if wf_count > 0 {
+                    // ── stats bar ──────────────────────────────────────────
+                    div { class: "az-stats-bar",
+                        if differ > 0 {
+                            span { class: "az-stat az-stat-differs", "≠ {differ} differ" }
+                        }
+                        if not_local > 0 {
+                            span { class: "az-stat az-stat-remote", "↓ {not_local} not local" }
+                        }
+                        if in_sync > 0 {
+                            span { class: "az-stat az-stat-sync", "✅ {in_sync} in sync" }
+                        }
+                        if errors > 0 {
+                            span { class: "az-stat az-stat-error", "⚠ {errors} error" }
+                        }
+                        span { class: "az-stat az-stat-total", "· {wf_count} total" }
+                    }
+
+                    // ── filter bar ─────────────────────────────────────────
+                    div { class: "az-filter-bar",
+                        label { class: "az-filter-label",
+                            input {
+                                r#type: "checkbox",
+                                checked: *show_all.read(),
+                                onchange: move |_| { let v = *show_all.read(); show_all.set(!v); },
+                            }
+                            if synced_count > 0 {
+                                " Show synchronized ({synced_count})"
+                            } else {
+                                " Show synchronized"
                             }
                         }
-                        tbody {
-                            for wf in az_workflows.read().clone() {
-                                {
-                                    let wf2        = wf.clone();
-                                    let is_local   = local_set.contains(&wf.name);
-                                    let is_pulling = pulling.read().contains(&wf.name);
-                                    let diff_st    = diff_map.read().get(&wf.name).cloned();
-                                    let mut pw     = pull_workflow.clone();
+                    }
 
-                                    let (sync_label, sync_cls) = if !is_local {
-                                        ("—".to_string(), "az-sync-none")
-                                    } else {
-                                        match &diff_st {
-                                            Some(DiffStatus::Checking)    => ("⋯".to_string(),          "az-sync-checking"),
-                                            Some(DiffStatus::Same)        => ("≡ in sync".to_string(),  "az-sync-same"),
-                                            Some(DiffStatus::Differs(n))  => (format!("≠ {} lines", n), "az-sync-differs"),
-                                            _                             => ("✅ local".to_string(),  "az-sync-local"),
-                                        }
-                                    };
+                    // ── table ──────────────────────────────────────────────
+                    if visible.is_empty() {
+                        div { class: "az-panel-loading",
+                            "✅ All {wf_count} workflows are in sync."
+                        }
+                    } else {
+                        table { class: "az-wf-table",
+                            thead {
+                                tr {
+                                    th { "Workflow" }
+                                    th { "Health" }
+                                    th { "Sync" }
+                                    th { "" }
+                                }
+                            }
+                            tbody {
+                                for wf in visible {
+                                    {
+                                        let wf2        = wf.clone();
+                                        let is_local   = local_set.contains(&wf.name);
+                                        let is_pulling = pulling.read().contains(&wf.name);
+                                        let diff_st    = diff_map.read().get(&wf.name).cloned();
+                                        let mut pw     = pull_workflow.clone();
 
-                                    rsx! {
-                                        tr { class: "az-wf-row",
-                                            td { class: "az-wf-name", "{wf.name}" }
-                                            td { class: "az-wf-health",
-                                                if wf.healthy { "✅" } else { "⚠" }
+                                        let (sync_label, sync_cls) = if !is_local {
+                                            ("—".to_string(), "az-sync-none")
+                                        } else {
+                                            match &diff_st {
+                                                Some(DiffStatus::Same)       => ("≡ in sync".to_string(),  "az-sync-same"),
+                                                Some(DiffStatus::Differs(n)) => (format!("≠ {} lines", n), "az-sync-differs"),
+                                                Some(DiffStatus::Error)      => ("⚠ error".to_string(),    "az-sync-error"),
+                                                _                            => ("✅ local".to_string(),    "az-sync-local"),
                                             }
-                                            td { class: "az-wf-sync",
-                                                span { class: sync_cls, "{sync_label}" }
-                                            }
-                                            td { class: "az-wf-action",
-                                                if is_pulling {
-                                                    span { class: "az-pulling", "pulling…" }
-                                                } else {
-                                                    button {
-                                                        class: "btn btn-small az-pull-btn",
-                                                        onclick: {
-                                                            let wf_name_btn = wf2.name.clone();
-                                                            let needs_confirm = matches!(&diff_st, Some(DiffStatus::Differs(_)));
-                                                            move |_| {
-                                                                if needs_confirm {
-                                                                    confirm_pull.set(Some(wf_name_btn.clone()));
-                                                                } else {
-                                                                    pw(wf_name_btn.clone());
+                                        };
+
+                                        rsx! {
+                                            tr { class: "az-wf-row",
+                                                td { class: "az-wf-name", "{wf.name}" }
+                                                td { class: "az-wf-health",
+                                                    if wf.healthy { "✅" } else { "⚠" }
+                                                }
+                                                td { class: "az-wf-sync",
+                                                    span { class: sync_cls, "{sync_label}" }
+                                                }
+                                                td { class: "az-wf-action",
+                                                    if is_pulling {
+                                                        span { class: "az-pulling", "pulling…" }
+                                                    } else {
+                                                        button {
+                                                            class: "btn btn-small az-pull-btn",
+                                                            onclick: {
+                                                                let wf_name_btn  = wf2.name.clone();
+                                                                let needs_confirm = matches!(&diff_st, Some(DiffStatus::Differs(_)));
+                                                                move |_| {
+                                                                    if needs_confirm {
+                                                                        confirm_pull.set(Some(wf_name_btn.clone()));
+                                                                    } else {
+                                                                        pw(wf_name_btn.clone());
+                                                                    }
                                                                 }
-                                                            }
-                                                        },
-                                                        if is_local { {"⟳ Re-pull"} } else { {"\u{2B07} Pull"} }
+                                                            },
+                                                            if is_local { {"⟳ Re-pull"} } else { {"\u{2B07} Pull"} }
+                                                        }
                                                     }
                                                 }
                                             }
@@ -314,24 +414,27 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                 }
             }
 
+            // ── confirm overwrite modal ────────────────────────────────────
             if let Some(wf_name) = confirm_pull.read().clone() {
                 div { class: "az-confirm-backdrop", onclick: move |_| confirm_pull.set(None) }
                 div { class: "az-confirm-modal",
                     div { class: "az-confirm-title", {"⚠ Overwrite local changes?"} }
                     div { class: "az-confirm-body",
-                        "The workflow " strong { "{wf_name}" } " has local changes. Pulling will overwrite your local copy."
+                        "The workflow " strong { "{wf_name}" }
+                        " has local changes. Pulling will overwrite your local copy."
                     }
                     div { class: "az-confirm-actions",
-                        button { class: "btn btn-small", onclick: move |_| confirm_pull.set(None), "Cancel" }
+                        button {
+                            class: "btn btn-small",
+                            onclick: move |_| confirm_pull.set(None),
+                            "Cancel"
+                        }
                         button {
                             class: "btn btn-small az-confirm-overwrite",
                             onclick: {
                                 let mut pw = pull_workflow.clone();
                                 let wf = wf_name.clone();
-                                move |_| {
-                                    confirm_pull.set(None);
-                                    pw(wf.clone());
-                                }
+                                move |_| { confirm_pull.set(None); pw(wf.clone()); }
                             },
                             {"\u{2B07} Overwrite & Pull"}
                         }

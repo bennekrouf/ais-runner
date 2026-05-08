@@ -1,7 +1,7 @@
 use super::*;
 
-// Open test/fixtures/hello-world/ in AIS Runner to manually exercise these workflows.
-const FIXTURE:        &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test/fixtures/hello-world");
+// Open test/logic-apps/ in AIS Runner to manually exercise all sample workflows.
+const FIXTURE:        &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test/logic-apps");
 const FIXTURE_NESTED: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test/fixtures/nested");
 
 // ── helpers ───────────────────────────────────────────────────────────────

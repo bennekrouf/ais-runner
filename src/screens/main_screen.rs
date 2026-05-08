@@ -97,6 +97,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut sql_conns        = use_signal(|| Vec::<sql_check::SqlConnection>::new());
     let mut db_panel_open    = use_signal(|| false);
     let mut azure_panel_open = use_signal(|| false);
+    let az_diff_cache = use_signal(|| std::collections::HashMap::<String, crate::components::azure_panel::DiffStatus>::new());
     let mut sftp_conns       = use_signal(|| Vec::<sftp_check::SftpConnection>::new());
     let mut blob_conns       = use_signal(|| Vec::<blob_check::BlobConnection>::new());
     let mut cosmos_conns     = use_signal(|| Vec::<cosmos_check::CosmosConnection>::new());
@@ -379,6 +380,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         AzurePanel {
                             logic_apps_dir:  dir.clone(),
                             local_workflows: workflows.read().iter().map(|w| w.name.clone()).collect(),
+                            diff_cache:      az_diff_cache,
                             on_close: move |_| azure_panel_open.set(false),
                             on_pulled: move |name: String| {
                                 push2(format!("⬇ {} pulled from Azure", name), LogLevel::Ok);
