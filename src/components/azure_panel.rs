@@ -145,7 +145,8 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                         status.set(Some(format!("❌ {wf_name}: {}", fmt_az_error(&e))));
                     }
                     Ok(json) => {
-                        let wf_dir = std::path::Path::new(&dir).join(&wf_name);
+                        let resolved = crate::services::workflows::resolve_logic_apps_dir(&dir);
+                        let wf_dir = resolved.join(&wf_name);
                         if let Err(e) = std::fs::create_dir_all(&wf_dir) {
                             status.set(Some(format!("❌ mkdir failed: {}", e)));
                             return;

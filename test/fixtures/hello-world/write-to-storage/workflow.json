@@ -1,0 +1,44 @@
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "triggers": {
+      "manual": {
+        "type": "Request",
+        "kind": "Http",
+        "inputs": {
+          "method": "POST",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "content":  { "type": "string" },
+              "blobName": { "type": "string" }
+            },
+            "required": ["content", "blobName"]
+          }
+        }
+      }
+    },
+    "actions": {
+      "Upload_blob": {
+        "type": "ServiceProvider",
+        "runAfter": {},
+        "inputs": {
+          "parameters": {
+            "containerName": "test-container",
+            "blobName": "@triggerBody()?['blobName']",
+            "content": "@triggerBody()?['content']",
+            "overwrite": true
+          },
+          "serviceProviderConfiguration": {
+            "connectionName": "AzureBlob",
+            "operationId": "uploadBlob",
+            "serviceProviderId": "/serviceProviders/AzureBlob"
+          }
+        }
+      }
+    },
+    "outputs": {}
+  },
+  "kind": "Stateful"
+}

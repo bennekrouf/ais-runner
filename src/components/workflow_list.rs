@@ -14,99 +14,154 @@ pub struct WorkflowListProps {
     pub on_run:     EventHandler<(String, String, String)>,
 }
 
-fn trigger_icon(trigger: &str) -> &'static str {
-    match trigger.to_lowercase().as_str() {
-        "recurrence"         => "⏱",
-        "request" | "http"   => "🌐",
-        "manual"             => "▶",
-        "eventgridtrigger"   => "⚡",
-        "blob"               => "📦",
-        "servicebustrigger"  => "📨",
-        _                    => "◆",
+/// Classify a workflow into one of four Azure trigger categories.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum TriggerCategory {
+    Recurrence,  // Recurrence — schedulable, run on-demand via /run API
+    Http,        // Request / Http — triggerable via callback URL
+    ServiceBus,  // ServiceProvider → /serviceProviders/serviceBus
+    Blob,        // ServiceProvider → /serviceProviders/AzureBlob (or legacy Blob)
+    Other,       // EventGrid, ApiConnection, unknown
+}
+
+impl TriggerCategory {
+    fn from(trigger_type: &str, trigger_provider: Option<&str>) -> Self {
+        let t = trigger_type.to_lowercase();
+        let p = trigger_provider.unwrap_or("").to_lowercase();
+        match t.as_str() {
+            "recurrence"       => Self::Recurrence,
+            "request" | "http" => Self::Http,
+            "blob"             => Self::Blob,
+            "servicebustrigger" => Self::ServiceBus,
+            "serviceprovider"  => {
+                if p.contains("servicebus") { Self::ServiceBus }
+                else if p.contains("blob")  { Self::Blob }
+                else                         { Self::Other }
+            }
+            _ => Self::Other,
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Recurrence => "⏱",
+            Self::Http       => "🌐",
+            Self::ServiceBus => "📨",
+            Self::Blob       => "📦",
+            Self::Other      => "◆",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Recurrence => "Recurrence",
+            Self::Http       => "HTTP / Request",
+            Self::ServiceBus => "Service Bus",
+            Self::Blob       => "Blob Storage",
+            Self::Other      => "Other",
+        }
     }
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum FilterMode {
-    Healthy,   // 💻 (Runnable locally)
-    Unhealthy, // 🔴 (Connection issues)
-    Azure,     // ☁️ (Passive triggers like Event Grid)
-    All,       // 🌐 (Show everything)
+    All,
+    Recurrence,
+    Http,
+    ServiceBus,
+    Blob,
+    Unhealthy,
 }
 
 #[component]
 pub fn WorkflowList(props: WorkflowListProps) -> Element {
     let mut filter      = use_signal(|| String::new());
-    let mut filter_mode = use_signal(|| FilterMode::Healthy);
+    let mut filter_mode = use_signal(|| FilterMode::All);
 
     let query = filter.read().to_lowercase();
     let total = props.workflows.len();
 
-    let is_azure_type = |ttype: &str| -> bool {
-        let t = ttype.to_lowercase();
-        t.contains("eventgrid") || t.contains("servicebus") || t.contains("blob") || t.contains("serviceprovider") || t.contains("apiconnection")
-    };
+    // Pre-compute category for each workflow once.
+    let with_cat: Vec<(&WorkflowItem, TriggerCategory)> = props.workflows.iter()
+        .map(|wf| (wf, TriggerCategory::from(&wf.trigger_type, None)))
+        .collect();
 
-    let visible: Vec<_> = props.workflows.iter()
-        .filter(|wf| {
+    // Counts per filter bucket.
+    let count_recurrence = with_cat.iter().filter(|(wf, cat)| wf.healthy && *cat == TriggerCategory::Recurrence).count();
+    let count_http       = with_cat.iter().filter(|(wf, cat)| wf.healthy && *cat == TriggerCategory::Http).count();
+    let count_sb         = with_cat.iter().filter(|(wf, cat)| wf.healthy && *cat == TriggerCategory::ServiceBus).count();
+    let count_blob       = with_cat.iter().filter(|(wf, cat)| wf.healthy && *cat == TriggerCategory::Blob).count();
+    let count_unhealthy  = props.workflows.iter().filter(|wf| !wf.healthy).count();
+
+    let mode = *filter_mode.read();
+
+    let visible: Vec<_> = with_cat.iter()
+        .filter(|(wf, cat)| {
             if !query.is_empty() && !wf.name.to_lowercase().contains(&query) {
                 return false;
             }
-            match *filter_mode.read() {
-                FilterMode::Healthy => wf.healthy && !wf.disabled && !is_azure_type(&wf.trigger_type),
-                FilterMode::Unhealthy => !wf.healthy,
-                FilterMode::Azure => wf.healthy && is_azure_type(&wf.trigger_type),
-                FilterMode::All => true,
+            match mode {
+                FilterMode::All        => true,
+                FilterMode::Recurrence => wf.healthy && *cat == TriggerCategory::Recurrence,
+                FilterMode::Http       => wf.healthy && *cat == TriggerCategory::Http,
+                FilterMode::ServiceBus => wf.healthy && *cat == TriggerCategory::ServiceBus,
+                FilterMode::Blob       => wf.healthy && *cat == TriggerCategory::Blob,
+                FilterMode::Unhealthy  => !wf.healthy,
             }
         })
         .collect();
 
-    let count_healthy = props.workflows.iter().filter(|wf| wf.healthy && !wf.disabled && !is_azure_type(&wf.trigger_type)).count();
-    let count_unhealthy = props.workflows.iter().filter(|wf| !wf.healthy).count();
-    let count_azure = props.workflows.iter().filter(|wf| wf.healthy && is_azure_type(&wf.trigger_type)).count();
-
-    let (current_count, show_total) = match *filter_mode.read() {
-        FilterMode::Healthy   => (count_healthy, true),
-        FilterMode::Unhealthy => (count_unhealthy, true),
-        FilterMode::Azure     => (count_azure, true),
-        FilterMode::All       => (total, false),
-    };
+    let shown = visible.len();
 
     rsx! {
         div { id: "workflows",
             div { id: "wf-header",
                 div { id: "wf-title-row",
                     h2 {
-                        if show_total { "Workflows ({current_count}/{total})" }
-                        else { "Workflows ({total})" }
+                        if mode == FilterMode::All { "Workflows ({total})" }
+                        else { "Workflows ({shown}/{total})" }
                     }
                     div { class: "wf-filter-group",
-                        Tooltip { text: "Local / Healthy ({count_healthy})", direction: "bottom",
+                        Tooltip { text: "Recurrence ({count_recurrence})", direction: "bottom",
                             button {
-                                class: if *filter_mode.read() == FilterMode::Healthy { "btn-filter active" } else { "btn-filter" },
-                                onclick: move |_| filter_mode.set(FilterMode::Healthy),
-                                "💻"
+                                class: if mode == FilterMode::Recurrence { "btn-filter active" } else { "btn-filter" },
+                                onclick: move |_| filter_mode.set(FilterMode::Recurrence),
+                                "⏱"
                             }
                         }
-                        Tooltip { text: "Unhealthy / Errors ({count_unhealthy})", direction: "bottom",
+                        Tooltip { text: "HTTP / Request ({count_http})", direction: "bottom",
                             button {
-                                class: if *filter_mode.read() == FilterMode::Unhealthy { "btn-filter active" } else { "btn-filter" },
+                                class: if mode == FilterMode::Http { "btn-filter active" } else { "btn-filter" },
+                                onclick: move |_| filter_mode.set(FilterMode::Http),
+                                "🌐"
+                            }
+                        }
+                        Tooltip { text: "Service Bus ({count_sb})", direction: "bottom",
+                            button {
+                                class: if mode == FilterMode::ServiceBus { "btn-filter active" } else { "btn-filter" },
+                                onclick: move |_| filter_mode.set(FilterMode::ServiceBus),
+                                "📨"
+                            }
+                        }
+                        Tooltip { text: "Blob Storage ({count_blob})", direction: "bottom",
+                            button {
+                                class: if mode == FilterMode::Blob { "btn-filter active" } else { "btn-filter" },
+                                onclick: move |_| filter_mode.set(FilterMode::Blob),
+                                "📦"
+                            }
+                        }
+                        Tooltip { text: "Unhealthy / broken ({count_unhealthy})", direction: "bottom",
+                            button {
+                                class: if mode == FilterMode::Unhealthy { "btn-filter active" } else { "btn-filter" },
                                 onclick: move |_| filter_mode.set(FilterMode::Unhealthy),
                                 "🔴"
                             }
                         }
-                        Tooltip { text: "Azure Only / Passive ({count_azure})", direction: "bottom",
+                        Tooltip { text: "All ({total})", direction: "bottom",
                             button {
-                                class: if *filter_mode.read() == FilterMode::Azure { "btn-filter active" } else { "btn-filter" },
-                                onclick: move |_| filter_mode.set(FilterMode::Azure),
-                                "☁️"
-                            }
-                        }
-                        Tooltip { text: "Show All ({total})", direction: "bottom",
-                            button {
-                                class: if *filter_mode.read() == FilterMode::All { "btn-filter active" } else { "btn-filter" },
+                                class: if mode == FilterMode::All { "btn-filter active" } else { "btn-filter" },
                                 onclick: move |_| filter_mode.set(FilterMode::All),
-                                "🌐"
+                                "·"
                             }
                         }
                     }
@@ -122,33 +177,34 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
                 if props.workflows.is_empty() {
                     div { class: "empty-state", "No workflows found.\nIs func start running?" }
                 } else if visible.is_empty() {
-                    div { class: "empty-state", "No match for "{query}"" }
+                    div { class: "empty-state", "No match" }
                 }
-                for wf in visible.iter() {
+                for (wf, cat) in visible.iter() {
                     {
-                        let name      = wf.name.clone();
-                        let name_run  = name.clone();
-                        let name_sel  = name.clone();
-                        let trigger   = wf.trigger_name.clone();
-                        let ttype     = wf.trigger_type.clone();
-                        let is_sel    = props.selected.as_deref() == Some(&name);
-                        let has_trace = props.traced.contains(&name);
+                        let name       = wf.name.clone();
+                        let name_run   = name.clone();
+                        let name_sel   = name.clone();
+                        let trigger    = wf.trigger_name.clone();
+                        let ttype      = wf.trigger_type.clone();
+                        let is_sel     = props.selected.as_deref() == Some(&name);
+                        let has_trace  = props.traced.contains(&name);
                         let is_running = props.running.contains(&name);
                         let has_sql    = props.sql_wfs.contains(&name);
                         let health_cls = if wf.healthy { "wf-dot healthy" } else { "wf-dot unhealthy" };
-                        let icon      = trigger_icon(&wf.trigger_type);
-                        let disabled  = wf.disabled;
-                        let runnable  = wf.healthy && !wf.disabled;
-                        let run_title = if !wf.healthy { "Unhealthy — connection reference broken" }
-                                        else if wf.disabled { "Workflow is disabled" }
-                                        else { "Run workflow" };
+                        let icon       = cat.icon();
+                        let icon_title = cat.label();
+                        let disabled   = wf.disabled;
+                        let runnable   = wf.healthy && !wf.disabled;
+                        let run_title  = if !wf.healthy { "Unhealthy — connection reference broken" }
+                                         else if wf.disabled { "Workflow is disabled" }
+                                         else { "Run workflow" };
                         rsx! {
                             div {
                                 class: if is_sel { "workflow-item selected" } else { "workflow-item" },
                                 onclick: move |_| props.on_select.call(name_sel.clone()),
 
                                 span { class: health_cls }
-                                span { class: "wf-trigger-icon", title: "{wf.trigger_type}", "{icon}" }
+                                span { class: "wf-trigger-icon", title: "{icon_title}", "{icon}" }
                                 span {
                                     class: if disabled { "workflow-name disabled" } else { "workflow-name" },
                                     "{name}"

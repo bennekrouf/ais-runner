@@ -1358,6 +1358,33 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
     font-size: 12px;
     text-align: center;
 }
+.dialog-blob-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-radius: 5px;
+    background: var(--bg1);
+    border: 1px solid var(--border2);
+    margin-bottom: 4px;
+}
+.dialog-blob-container {
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 12px;
+    color: var(--accent);
+}
+#run-dialog-blobname {
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 12px;
+    background: var(--bg0);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text1);
+    padding: 6px 10px;
+    width: 100%;
+    outline: none;
+}
+#run-dialog-blobname:focus { border-color: var(--accent); }
 #run-dialog-textarea {
     font-family: 'SF Mono', 'Menlo', 'Monaco', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
     font-size: 12px;

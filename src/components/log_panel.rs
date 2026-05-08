@@ -32,9 +32,24 @@ fn az_line_class(line: &str) -> &'static str {
     else { "log-msg info" }
 }
 
+/// Split an Azurite debug.log line into (time, rest).
+/// Lines look like: `2024-01-01T12:00:00.123Z [Queue]  message…`
+/// We show only the HH:MM:SS part to match the Console time style.
+fn az_split(line: &str) -> (&str, &str) {
+    // The timestamp is always the first token before the first space.
+    if let Some(sp) = line.find(' ') {
+        let ts = &line[..sp];
+        // Extract HH:MM:SS from the ISO-8601 string (positions 11..19).
+        let time = if ts.len() >= 19 { &ts[11..19] } else { ts };
+        (time, line[sp..].trim_start())
+    } else {
+        ("", line)
+    }
+}
+
 #[derive(Props, Clone, PartialEq)]
 pub struct LogPanelProps {
-    pub lines: Vec<LogLine>,
+    pub lines: Signal<Vec<LogLine>>,
     pub on_clear: EventHandler<()>,
 }
 
@@ -43,20 +58,15 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     let mut active_tab = use_signal(|| "console");
     let mut az_lines: Signal<Vec<String>> = use_signal(Vec::new);
 
-    // MutationObserver: auto-scroll both containers on any DOM change.
+    // Reactive auto-scroll: re-runs whenever the line count changes.
+    // Reading the Signal inside use_effect registers it as a reactive dependency.
     use_effect(move || {
-        document::eval(
-            "(function(){\
-                ['log-scroll','az-log-scroll'].forEach(function(id){\
-                    var el = document.getElementById(id);\
-                    if (!el || el._aisObs) return;\
-                    el._aisObs = new MutationObserver(function(){\
-                        if (el.style.display !== 'none') el.scrollTop = el.scrollHeight;\
-                    });\
-                    el._aisObs.observe(el, { childList: true, subtree: true });\
-                });\
-            })()"
-        );
+        let _n = props.lines.read().len();
+        document::eval("var e=document.getElementById('log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+    });
+    use_effect(move || {
+        let _n = az_lines.read().len();
+        document::eval("var e=document.getElementById('az-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
     });
 
     // tail -f /tmp/azurite/debug.log  (polls every 500 ms)
@@ -153,7 +163,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
             div {
                 id: "log-scroll",
                 style: if tab == "console" { "" } else { "display:none" },
-                for line in props.lines.iter() {
+                for line in props.lines.read().iter() {
                     div { class: "log-line",
                         span { class: "log-time", "{line.time}" }
                         span { class: line.level.css_class(), "{line.msg}" }
@@ -179,8 +189,15 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                     } else {
                         rsx! {
                             for line in lines.iter() {
-                                div { class: "log-line",
-                                    span { class: az_line_class(line), "{line}" }
+                                {
+                                    let (time, msg) = az_split(line);
+                                    let cls = az_line_class(line);
+                                    rsx! {
+                                        div { class: "log-line",
+                                            span { class: "log-time", "{time}" }
+                                            span { class: cls, "{msg}" }
+                                        }
+                                    }
                                 }
                             }
                         }

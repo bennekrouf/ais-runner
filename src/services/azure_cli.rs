@@ -115,17 +115,6 @@ pub fn list_all_servicebus_namespaces(subscription: &str) -> Result<Vec<String>,
     Ok(out.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
 }
 
-/// Lists all Resource Groups in a subscription.
-pub fn list_resource_groups(subscription: &str) -> Result<Vec<String>, AzError> {
-    let out = run(&[
-        "group", "list",
-        "--subscription", subscription,
-        "--query", "[].name",
-        "-o", "tsv",
-    ])?;
-    Ok(out.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
-}
-
 
 /// Fetches the Subscription ID that a given Resource Group belongs to.
 /// Useful for "self-healing" when a user enters a broken sub ID but has the right RG.

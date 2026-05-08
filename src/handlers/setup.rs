@@ -37,7 +37,12 @@ pub fn handle_initialize_default(
                 if let Some(l) = workspace_link {
                     push(format!("Auto-detecting resources in {}...", l.resource_group), LogLevel::Info);
                     match tokio::task::spawn_blocking(move || {
-                        setup_manager::auto_detect_resources(&d3, Some(&l.subscription_id), &l.resource_group)
+                        setup_manager::auto_detect_resources(
+                            &d3,
+                            Some(&l.subscription_id),
+                            &l.resource_group,
+                            l.logic_app_name.as_deref(),
+                        )
                     }).await.unwrap() {
                         Ok(msg) => push(msg, LogLevel::Ok),
                         Err(e)  => push(format!("Auto-detect failed: {}", e), LogLevel::Error),
@@ -64,8 +69,9 @@ pub fn handle_auto_detect(
     let mut push = make_push(log_lines);
     spawn(async move {
         push(format!("Auto-detecting resources in {}...", rg), LogLevel::Info);
+        let app_name = l.logic_app_name.clone();
         match tokio::task::spawn_blocking(move || {
-            setup_manager::auto_detect_resources(&d, Some(&sub_id), &rg)
+            setup_manager::auto_detect_resources(&d, Some(&sub_id), &rg, app_name.as_deref())
         }).await.unwrap() {
             Ok(msg) => push(msg, LogLevel::Ok),
             Err(e)  => push(format!("Auto-detect failed: {}", e), LogLevel::Error),

@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::PathBuf;
 use crate::services::config;
 
 pub fn read_local_settings(logic_apps_dir: &str) -> Result<String, String> {
@@ -22,14 +21,6 @@ pub fn write_local_settings(logic_apps_dir: &str, content: &str) -> Result<(), S
     path.push("local.settings.json");
 
     fs::write(&path, content).map_err(|e| format!("Failed to write file: {}", e))
-}
-
-/// Reads WORKFLOWS_SUBSCRIPTION_ID from local.settings.json.
-pub fn read_subscription_id(logic_apps_dir: &str) -> Option<String> {
-    let text = read_local_settings(logic_apps_dir).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let id = v["Values"]["WORKFLOWS_SUBSCRIPTION_ID"].as_str()?.to_string();
-    if id.is_empty() { None } else { Some(id) }
 }
 
 /// Reads WORKFLOWS_SUBSCRIPTION_ID, WORKFLOWS_RESOURCE_GROUP_NAME, and WEBSITE_SITE_NAME

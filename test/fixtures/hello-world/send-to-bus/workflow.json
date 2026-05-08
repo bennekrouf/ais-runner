@@ -1,0 +1,47 @@
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "triggers": {
+      "manual": {
+        "type": "Request",
+        "kind": "Http",
+        "inputs": {
+          "method": "POST",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "body":        { "type": "string" },
+              "messageType": { "type": "string" }
+            },
+            "required": ["body", "messageType"]
+          }
+        }
+      }
+    },
+    "actions": {
+      "Send_message": {
+        "type": "ServiceProvider",
+        "runAfter": {},
+        "inputs": {
+          "parameters": {
+            "entityName": "test-queue",
+            "message": {
+              "contentData": "@triggerBody()?['body']",
+              "userProperties": {
+                "messageType": "@triggerBody()?['messageType']"
+              }
+            }
+          },
+          "serviceProviderConfiguration": {
+            "connectionName": "serviceBus",
+            "operationId": "sendMessage",
+            "serviceProviderId": "/serviceProviders/serviceBus"
+          }
+        }
+      }
+    },
+    "outputs": {}
+  },
+  "kind": "Stateful"
+}

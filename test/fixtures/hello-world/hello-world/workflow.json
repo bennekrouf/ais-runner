@@ -1,0 +1,39 @@
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "triggers": {
+      "manual": {
+        "type": "Request",
+        "kind": "Http",
+        "inputs": {
+          "method": "POST",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "message": { "type": "string" },
+              "id":      { "type": "string" }
+            },
+            "required": ["message", "id"]
+          }
+        }
+      }
+    },
+    "actions": {
+      "Response": {
+        "type": "Response",
+        "kind": "Http",
+        "runAfter": {},
+        "inputs": {
+          "statusCode": 200,
+          "body": {
+            "received": "@triggerBody()?['message']",
+            "id":       "@triggerBody()?['id']"
+          }
+        }
+      }
+    },
+    "outputs": {}
+  },
+  "kind": "Stateful"
+}

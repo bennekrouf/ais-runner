@@ -51,20 +51,20 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // ── Data signals ───────────────────────────────────────────────────────
     let mut workflows   = use_signal(|| Vec::<WorkflowItem>::new());
     let selected_wf     = use_signal(|| Option::<String>::None);
-    let mut source_text = use_signal(String::new);
+    let source_text = use_signal(String::new);
     let mut runs        = use_signal(|| Vec::<workflows::RunItem>::new());
     let mut actions     = use_signal(|| Vec::<workflows::ActionItem>::new());
     let running_wfs     = use_signal(|| HashSet::<String>::new());
     let current_view    = use_signal(|| "Workflows".to_string());
     let system_light    = dark_light::detect() != dark_light::Mode::Dark;
     let mut is_light    = use_signal(|| system_light);
-    let mut active_tab  = use_signal(|| "Source".to_string());
-    let mut run_dialog  = use_signal(|| Option::<(String, String, String, String)>::None);
+    let active_tab  = use_signal(|| "Source".to_string());
+    let mut run_dialog  = use_signal(|| Option::<(String, String, String, String, Option<String>)>::None);
     let mut traced_wfs  = use_signal(|| HashSet::<String>::new());
     let mut cleared_wfs = use_signal(|| HashMap::<String, String>::new());
 
     // ── Log ────────────────────────────────────────────────────────────────
-    let log_lines = use_signal(|| Vec::<LogLine>::new());
+    let mut log_lines = use_signal(|| Vec::<LogLine>::new());
 
     // ── Setup ──────────────────────────────────────────────────────────────
     let dir_for_setup = dir.clone();
@@ -296,7 +296,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                             let dir = dir.clone();
                             move |(name, trigger_name, trigger_type): (String, String, String)| {
                                 workflow_run::handle_open_dialog(
-                                    name, trigger_name, trigger_type, &dir,
+                                    name, trigger_name, trigger_type, None, &dir,
                                     selected_wf, source_text, active_tab,
                                     az_status, run_dialog, log_lines,
                                 )
@@ -348,20 +348,22 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
             div { id: "log-resize-handle" }
 
             LogPanel {
-                lines:    log_lines.read().clone(),
-                on_clear: move |_| { let mut ll = log_lines; ll.write().clear(); },
+                lines:    log_lines,
+                on_clear: move |_| { log_lines.write().clear(); },
             }
 
-            if let Some((wf_name, trigger_name, trigger_type, suggested)) = run_dialog.read().clone() {
+            if let Some((wf_name, trigger_name, trigger_type, suggested, blob_container)) = run_dialog.read().clone() {
                 RunDialog {
-                    workflow:     wf_name.clone(),
-                    trigger_type: trigger_type.clone(),
-                    payload:      suggested,
-                    on_cancel:    move |_| run_dialog.set(None),
+                    workflow:        wf_name.clone(),
+                    trigger_type:    trigger_type.clone(),
+                    payload:         suggested,
+                    blob_container:  blob_container,
+                    on_cancel:       move |_| run_dialog.set(None),
                     on_run: {
                         let dir = dir.clone();
-                        move |body: String| workflow_run::handle_run(
-                            wf_name.clone(), trigger_name.clone(), trigger_type.clone(), body, &dir,
+                        move |(blob_name, body): (String, String)| workflow_run::handle_run(
+                            wf_name.clone(), trigger_name.clone(), trigger_type.clone(),
+                            blob_name, body, &dir,
                             runs, actions, log_lines, running_wfs, active_tab,
                             traced_wfs, cleared_wfs, run_dialog,
                         )

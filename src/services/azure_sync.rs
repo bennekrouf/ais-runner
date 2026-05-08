@@ -196,13 +196,14 @@ pub fn download_workflow(subscription: &str, rg: &str, site: &str, workflow: &st
 
 // ── diff helpers ──────────────────────────────────────────────────────────────
 
-/// Compare the local `{local_dir}/{workflow}/workflow.json` with the live Azure version.
+/// Compare the local `{local_dir}/logic_apps/{workflow}/workflow.json` with the live Azure version.
 /// Returns `Ok(0)` when identical, `Ok(n)` with the number of changed lines when different,
 /// `Err` when the local file is missing or the Azure fetch fails.
 pub fn diff_workflow_vs_local(
     subscription: &str, rg: &str, site: &str, workflow: &str, local_dir: &str,
 ) -> Result<usize, AzError> {
-    let local_path = std::path::Path::new(local_dir).join(workflow).join("workflow.json");
+    let resolved   = crate::services::workflows::resolve_logic_apps_dir(local_dir);
+    let local_path = resolved.join(workflow).join("workflow.json");
     let local_str  = std::fs::read_to_string(&local_path)
         .map_err(|e| AzError::Other(format!("read local: {}", e)))?;
 

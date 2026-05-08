@@ -9,16 +9,26 @@ use crate::services::{
 };
 use crate::utils::{filter_cleared, make_push, sweep_run_history};
 
+fn blob_container_for(dir: &str, name: &str, trigger_type: &str, trigger_provider: Option<&str>) -> Option<String> {
+    let t = trigger_type.to_lowercase();
+    let p = trigger_provider.unwrap_or("").to_lowercase();
+    if t != "serviceprovider" || !p.contains("blob") { return None; }
+    let src_path = workflows::resolve_logic_apps_dir(dir).join(name).join("workflow.json");
+    let json = std::fs::read_to_string(&src_path).ok()?;
+    workflows::read_blob_trigger_info(&json).map(|(container, _)| container)
+}
+
 pub fn handle_open_dialog(
     name: String,
     trigger_name: String,
     trigger_type: String,
+    trigger_provider: Option<String>,
     dir: &str,
     mut selected_wf: Signal<Option<String>>,
     mut source_text: Signal<String>,
     mut active_tab: Signal<String>,
     az_status: Signal<Option<Result<String, azure_cli::AzError>>>,
-    mut run_dialog: Signal<Option<(String, String, String, String)>>,
+    mut run_dialog: Signal<Option<(String, String, String, String, Option<String>)>>,
     log_lines: Signal<Vec<LogLine>>,
 ) {
     let mut push = make_push(log_lines);
@@ -32,12 +42,14 @@ pub fn handle_open_dialog(
     selected_wf.set(Some(name.clone()));
     active_tab.set("Run".into());
     let src_path = workflows::resolve_logic_apps_dir(dir).join(&name).join("workflow.json");
-    source_text.set(match std::fs::read_to_string(&src_path) {
+    let wf_text = match std::fs::read_to_string(&src_path) {
         Ok(txt) => txt,
         Err(e)  => format!("// could not read {}: {}", src_path.display(), e),
-    });
+    };
+    source_text.set(wf_text.clone());
+    let blob_container = blob_container_for(dir, &name, &trigger_type, trigger_provider.as_deref());
     let suggested = payload::suggest_payload(dir, &name);
-    run_dialog.set(Some((name, trigger_name, trigger_type, suggested)));
+    run_dialog.set(Some((name, trigger_name, trigger_type, suggested, blob_container)));
 }
 
 pub fn handle_trigger_from_detail(
@@ -45,7 +57,7 @@ pub fn handle_trigger_from_detail(
     workflows_sig: Signal<Vec<WorkflowItem>>,
     selected_wf: Signal<Option<String>>,
     az_status: Signal<Option<Result<String, azure_cli::AzError>>>,
-    mut run_dialog: Signal<Option<(String, String, String, String)>>,
+    mut run_dialog: Signal<Option<(String, String, String, String, Option<String>)>>,
     log_lines: Signal<Vec<LogLine>>,
 ) {
     let mut push = make_push(log_lines);
@@ -59,13 +71,14 @@ pub fn handle_trigger_from_detail(
     let Some(wf_name) = selected_wf.read().clone() else { return };
     let Some(wf) = workflows_sig.read().iter().find(|w| w.name == wf_name).cloned() else { return };
     let suggested = payload::suggest_payload(dir, &wf.name);
-    run_dialog.set(Some((wf.name, wf.trigger_name, wf.trigger_type, suggested)));
+    run_dialog.set(Some((wf.name, wf.trigger_name, wf.trigger_type, suggested, None)));
 }
 
 pub fn handle_run(
     name: String,
     trigger_name: String,
     trigger_type: String,
+    blob_name: String,   // non-empty only for blob triggers
     body: String,
     dir: &str,
     mut runs: Signal<Vec<RunItem>>,
@@ -75,7 +88,7 @@ pub fn handle_run(
     mut active_tab: Signal<String>,
     mut traced_wfs: Signal<HashSet<String>>,
     mut cleared_wfs: Signal<HashMap<String, String>>,
-    mut run_dialog: Signal<Option<(String, String, String, String)>>,
+    mut run_dialog: Signal<Option<(String, String, String, String, Option<String>)>>,
 ) {
     run_dialog.set(None);
     active_tab.set("Run".into());
@@ -89,10 +102,27 @@ pub fn handle_run(
     let dir_diag   = dir.to_string();
     let mut push   = make_push(log_lines);
     let cleared    = cleared_wfs;
-    let is_recurrence = !matches!(trigger_type.to_lowercase().as_str(), "request" | "http");
+
+    let t = trigger_type.to_lowercase();
+    let is_recurrence = t == "recurrence" || t == "schedule";
+    let is_http       = matches!(t.as_str(), "request" | "http");
+    let is_blob       = !blob_name.is_empty();
 
     push(format!("Triggering: {}", wf), LogLevel::Info);
     running_wfs.write().insert(wf.clone());
+
+    // For blob triggers, resolve endpoint + container from the workflow definition
+    let (blob_container, blob_endpoint) = if is_blob {
+        let src_path = workflows::resolve_logic_apps_dir(&dir_diag)
+            .join(&wf).join("workflow.json");
+        let wf_json = std::fs::read_to_string(&src_path).unwrap_or_default();
+        let (container, conn) = workflows::read_blob_trigger_info(&wf_json)
+            .unwrap_or_default();
+        let endpoint = workflows::resolve_blob_endpoint(&dir_diag, &conn);
+        (container, endpoint)
+    } else {
+        (String::new(), String::new())
+    };
 
     spawn(async move {
         let not_found_hints = |push: &mut dyn FnMut(String, LogLevel), dir: &str, wf: &str, hints: Vec<String>| {
@@ -106,7 +136,22 @@ pub fn handle_run(
         };
 
         // Fire
-        if is_recurrence {
+        if is_blob {
+            push(format!("Uploading blob '{}' → {}/{}", blob_name, blob_container, blob_name), LogLevel::Info);
+            match workflows::upload_blob_to_azurite(
+                &blob_endpoint,
+                &blob_container,
+                &blob_name,
+                body.as_bytes(),
+            ).await {
+                Ok(()) => push(format!("Blob uploaded — trigger will fire shortly"), LogLevel::Ok),
+                Err(e) => {
+                    push(format!("Upload error: {}", e), LogLevel::Error);
+                    running_wfs.write().remove(&wf);
+                    return;
+                }
+            }
+        } else if is_recurrence {
             match workflows::run_trigger_direct(&wf, &trigger_name, &body).await {
                 Ok(_)  => push(format!("Run triggered ({})", trigger_type), LogLevel::Ok),
                 Err(e) => {
@@ -120,7 +165,7 @@ pub fn handle_run(
                     return;
                 }
             }
-        } else {
+        } else if is_http {
             match workflows::get_callback_url(&wf, &trigger_name).await {
                 Ok(url) => {
                     push(format!("$ curl -X POST \"{}\"", url), LogLevel::Info);
@@ -149,6 +194,13 @@ pub fn handle_run(
                     return;
                 }
             }
+        } else {
+            push(
+                "This workflow is triggered by Service Bus — cannot run manually. Put a message on the input queue instead.".into(),
+                LogLevel::Warn,
+            );
+            running_wfs.write().remove(&wf);
+            return;
         }
 
         // Poll until terminal

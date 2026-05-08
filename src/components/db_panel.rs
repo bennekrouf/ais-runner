@@ -641,7 +641,6 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     for conn in props.cosmos_connections.clone() {
                         {
                             let conn_name  = conn.connection_name.clone();
-                            let conn_name2 = conn_name.clone();
                             let is_testing = cosmos_testing.read().contains(&conn.connection_name);
                             let test_result = cosmos_test_results.read().get(&conn.connection_name).cloned();
 
@@ -861,6 +860,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                         let l = link.unwrap();
                         let rg = l.resource_group.clone();
                         let sub_id = l.subscription_id.clone();
+                        let app_name = l.logic_app_name.clone();
                         let dir_auto = props.logic_apps_dir.clone();
                         rsx! {
                             div { class: "db-card", style: "background: var(--blue-bg); border: 1px solid var(--blue); padding: 15px; display: flex; flex-direction: column; gap: 10px;",
@@ -873,9 +873,10 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                         let d = dir_auto.clone();
                                         let rg2 = rg.clone();
                                         let sub2 = sub_id.clone();
+                                        let app2 = app_name.clone();
                                         spawn(async move {
                                             let _ = tokio::task::spawn_blocking(move || {
-                                                crate::services::setup_manager::auto_detect_resources(&d, Some(&sub2), &rg2)
+                                                crate::services::setup_manager::auto_detect_resources(&d, Some(&sub2), &rg2, app2.as_deref())
                                             }).await;
                                             props.on_saved.call("⚠ Settings saved — stop and restart func start to apply changes.".into());
                                         });
