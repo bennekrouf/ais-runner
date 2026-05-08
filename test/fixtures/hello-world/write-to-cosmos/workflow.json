@@ -1,0 +1,48 @@
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "triggers": {
+      "manual": {
+        "type": "Request",
+        "kind": "Http",
+        "inputs": {
+          "method": "POST",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "id":           { "type": "string" },
+              "partitionKey": { "type": "string" },
+              "data":         { "type": "string" }
+            },
+            "required": ["id", "partitionKey", "data"]
+          }
+        }
+      }
+    },
+    "actions": {
+      "Create_document": {
+        "type": "ServiceProvider",
+        "runAfter": {},
+        "inputs": {
+          "parameters": {
+            "databaseId":   "test-db",
+            "containerId":  "test-container",
+            "item": {
+              "id":           "@triggerBody()?['id']",
+              "partitionKey": "@triggerBody()?['partitionKey']",
+              "data":         "@triggerBody()?['data']"
+            }
+          },
+          "serviceProviderConfiguration": {
+            "connectionName":    "cosmos",
+            "operationId":       "createOrUpdateItem",
+            "serviceProviderId": "/serviceProviders/documentDb"
+          }
+        }
+      }
+    },
+    "outputs": {}
+  },
+  "kind": "Stateful"
+}

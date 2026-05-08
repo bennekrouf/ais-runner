@@ -17,6 +17,20 @@
         "id": "/serviceProviders/serviceBus"
       },
       "displayName": "serviceBus"
+    },
+    "cosmos": {
+      "parameterValues": {
+        "accountEndpoint": "@appsetting('COSMOS_ENDPOINT')",
+        "authenticationPolicy": {
+          "credential": {
+            "accountKey": "@appsetting('COSMOS_KEY')"
+          }
+        }
+      },
+      "serviceProvider": {
+        "id": "/serviceProviders/documentDb"
+      },
+      "displayName": "cosmos"
     }
   }
 }

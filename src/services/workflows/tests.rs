@@ -1,20 +1,28 @@
 use super::*;
 
-// Fixture project at test/fixtures/hello-world/ — open that folder in AIS Runner
-// to manually exercise the same workflows these tests cover.
-const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test/fixtures/hello-world");
+// Open test/fixtures/hello-world/ in AIS Runner to manually exercise these workflows.
+const FIXTURE:        &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test/fixtures/hello-world");
+const FIXTURE_NESTED: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test/fixtures/nested");
 
-// ── 1. all three workflows load from fixture ──────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────
+
+fn payload_json(workflow: &str) -> serde_json::Value {
+    let raw = crate::services::payload::suggest_payload(FIXTURE, workflow);
+    serde_json::from_str(&raw).expect("suggest_payload returned invalid JSON")
+}
+
+// ── scan / load ───────────────────────────────────────────────────────────
 
 #[test]
 fn load_all_workflows_from_fixture() {
     let items = scan_local_workflows(FIXTURE);
-    assert_eq!(items.len(), 3);
+    assert_eq!(items.len(), 4);
 
     let names: Vec<&str> = items.iter().map(|w| w.name.as_str()).collect();
-    assert!(names.contains(&"hello-world"),    "missing hello-world");
-    assert!(names.contains(&"write-to-storage"), "missing write-to-storage");
-    assert!(names.contains(&"send-to-bus"),    "missing send-to-bus");
+    assert!(names.contains(&"hello-world"));
+    assert!(names.contains(&"write-to-storage"));
+    assert!(names.contains(&"send-to-bus"));
+    assert!(names.contains(&"write-to-cosmos"));
 
     for wf in &items {
         assert_eq!(wf.trigger_name, "manual");
@@ -23,7 +31,39 @@ fn load_all_workflows_from_fixture() {
     }
 }
 
-// ── 2. payload skeletons match each workflow's trigger schema ─────────────
+#[test]
+fn resolve_logic_apps_dir_flat() {
+    // Flat fixture has no logic_apps/ subfolder — dir resolves to itself.
+    let resolved = resolve_logic_apps_dir(FIXTURE);
+    assert_eq!(resolved, std::path::Path::new(FIXTURE));
+}
+
+#[test]
+fn resolve_logic_apps_dir_nested() {
+    // Nested fixture has a logic_apps/ subfolder — dir resolves to it.
+    let resolved = resolve_logic_apps_dir(FIXTURE_NESTED);
+    assert_eq!(resolved, std::path::Path::new(FIXTURE_NESTED).join("logic_apps"));
+
+    // And scanning it finds the workflow inside.
+    let items = scan_local_workflows(FIXTURE_NESTED);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].name, "hello-world");
+}
+
+#[test]
+fn scan_broken_workflow_json() {
+    let dir = std::env::temp_dir().join("ais_test_broken");
+    let wf_dir = dir.join("bad-json");
+    std::fs::create_dir_all(&wf_dir).unwrap();
+    std::fs::write(wf_dir.join("workflow.json"), b"{ not valid json !!!").unwrap();
+
+    let broken = scan_broken_workflows(&dir.to_string_lossy());
+    assert_eq!(broken.len(), 1);
+    assert_eq!(broken[0].0, "bad-json");
+    assert!(broken[0].1.contains("JSON error"), "expected JSON error, got: {}", broken[0].1);
+}
+
+// ── payload suggestions ───────────────────────────────────────────────────
 
 #[test]
 fn suggest_payload_hello_world() {
@@ -46,33 +86,82 @@ fn suggest_payload_send_to_bus() {
     assert!(v["messageType"].is_string());
 }
 
-fn payload_json(workflow: &str) -> serde_json::Value {
-    let raw = crate::services::payload::suggest_payload(FIXTURE, workflow);
-    serde_json::from_str(&raw).expect("suggest_payload returned invalid JSON")
+#[test]
+fn suggest_payload_write_to_cosmos() {
+    let v = payload_json("write-to-cosmos");
+    assert!(v["id"].is_string());
+    assert!(v["partitionKey"].is_string());
+    assert!(v["data"].is_string());
 }
 
-// ── 3. az trigger command — verify args without running az ────────────────
+// ── Cosmos connection detection ───────────────────────────────────────────
+
+#[test]
+fn detect_cosmos_connection_from_fixture() {
+    let conns = crate::services::cosmos_check::detect_cosmos_connections(FIXTURE);
+    assert_eq!(conns.len(), 1);
+
+    let c = &conns[0];
+    assert_eq!(c.connection_name, "cosmos");
+    assert_eq!(c.endpoint_key.as_deref(), Some("COSMOS_ENDPOINT"));
+    assert_eq!(c.key_key.as_deref(),      Some("COSMOS_KEY"));
+    // Both are blank in local.settings.json — resolved values should be empty.
+    assert!(c.endpoint.is_empty());
+    assert!(c.account_key.is_empty());
+}
+
+// ── Connection diagnostics ────────────────────────────────────────────────
+
+#[test]
+fn missing_endpoint_flagged_for_send_to_bus() {
+    // SERVICE_BUS_CONNECTION_STRING is "" in local.settings.json.
+    let missing = crate::services::connection_diag::missing_endpoints_for_workflow(
+        FIXTURE, "send-to-bus",
+    );
+    assert_eq!(missing.len(), 1);
+    assert_eq!(missing[0].0, "serviceBus");
+    assert_eq!(missing[0].1, "SERVICE_BUS_CONNECTION_STRING");
+}
+
+#[test]
+fn no_missing_endpoint_for_write_to_storage() {
+    // AzureWebJobsStorage = "UseDevelopmentStorage=true" — should be clean.
+    let missing = crate::services::connection_diag::missing_endpoints_for_workflow(
+        FIXTURE, "write-to-storage",
+    );
+    assert!(missing.is_empty(), "unexpected missing: {:?}", missing);
+}
+
+// ── duration_ms helper ────────────────────────────────────────────────────
+
+#[test]
+fn duration_ms_calculates_correctly() {
+    let start = Some("2026-01-01T10:00:00Z".to_string());
+    let end   = Some("2026-01-01T10:00:01.5Z".to_string());
+    assert_eq!(duration_ms(&start, &end), Some(1500));
+}
+
+#[test]
+fn duration_ms_returns_none_for_missing_timestamps() {
+    assert_eq!(duration_ms(&None, &None), None);
+    assert_eq!(duration_ms(&Some("2026-01-01T10:00:00Z".to_string()), &None), None);
+}
+
+// ── az trigger commands ───────────────────────────────────────────────────
 //
 //  Equivalent manual commands (with func start running in the fixture dir):
 //
 //  az rest --method post \
-//    --url "http://localhost:7071/.../workflows/hello-world/triggers/manual/run" \
-//    --body '{"message":"hi","id":"T-1"}' --skip-authorization-header
-//
-//  az rest --method post \
-//    --url "http://localhost:7071/.../workflows/write-to-storage/triggers/manual/run" \
-//    --body '{"content":"hello","blobName":"test.txt"}' --skip-authorization-header
-//
-//  az rest --method post \
-//    --url "http://localhost:7071/.../workflows/send-to-bus/triggers/manual/run" \
-//    --body '{"body":"hello","messageType":"Test"}' --skip-authorization-header
+//    --url "http://localhost:7071/.../workflows/<name>/triggers/manual/run" \
+//    --body '<payload>' --skip-authorization-header
 
 #[test]
 fn az_trigger_command_args() {
     for (workflow, body) in [
-        ("hello-world",     r#"{"message":"hi","id":"T-1"}"#),
+        ("hello-world",      r#"{"message":"hi","id":"T-1"}"#),
         ("write-to-storage", r#"{"content":"hello","blobName":"test.txt"}"#),
         ("send-to-bus",      r#"{"body":"hello","messageType":"Test"}"#),
+        ("write-to-cosmos",  r#"{"id":"1","partitionKey":"pk","data":"hello"}"#),
     ] {
         let url = format!(
             "http://localhost:7071/runtime/webhooks/workflow/api/management\
@@ -96,7 +185,7 @@ fn az_trigger_command_args() {
     }
 }
 
-// ── 4. trigger via ais-runner code — mock HTTP server ────────────────────
+// ── ais-runner HTTP trigger ───────────────────────────────────────────────
 
 #[tokio::test]
 async fn trigger_workflow_via_ais_runner() {
