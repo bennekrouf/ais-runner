@@ -55,7 +55,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut runs        = use_signal(|| Vec::<workflows::RunItem>::new());
     let mut actions     = use_signal(|| Vec::<workflows::ActionItem>::new());
     let running_wfs     = use_signal(|| HashSet::<String>::new());
-    let current_view    = use_signal(|| "Workflows".to_string());
+    let mut current_view = use_signal(|| "Workflows".to_string());
     let system_light    = dark_light::detect() != dark_light::Mode::Dark;
     let mut is_light    = use_signal(|| system_light);
     let active_tab  = use_signal(|| "Source".to_string());
@@ -250,29 +250,43 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
                 {az_login_widget(az_status, active_tenant, workspace_link.as_ref().and_then(|l| l.tenant_id.clone()), &dir)}
                 {env_badge(setup_status, current_env)}
-                {connections_button(&dir, sql_wfs, sql_conns, sb_namespace, sb_queues,
-                    sb_namespace_key, sb_conn_str, sftp_conns, blob_conns, cosmos_conns,
-                    webjobs_storage, db_panel_open, azure_panel_open)}
 
-                button {
-                    class: "btn btn-run btn-small",
-                    style: "margin-left: 10px;",
-                    onclick: move |_| {
-                        let mut view = current_view;
-                        view.set(if *view.read() == "Workflows" { "Settings".into() } else { "Workflows".into() });
-                    },
-                    if *current_view.read() == "Settings" { "Workflows" } else { "⚙️ Settings" }
+                // ── spacer pushes the right group to the far edge ─────────────
+                div { style: "flex:1; min-width:0" }
+
+                // ── view switch: Workflows | Settings ─────────────────────────
+                div { class: "view-switch",
+                    button {
+                        class: if *current_view.read() != "Settings" { "view-btn active" } else { "view-btn" },
+                        title: "Workflow list and run detail",
+                        onclick: move |_| current_view.set("Workflows".into()),
+                        "Workflows"
+                    }
+                    button {
+                        class: if *current_view.read() == "Settings" { "view-btn active" } else { "view-btn" },
+                        title: "Edit local.settings.json",
+                        onclick: move |_| current_view.set("Settings".into()),
+                        "Settings"
+                    }
                 }
-                button {
-                    class: if *azure_panel_open.read() { "btn btn-run btn-small active" } else { "btn btn-run btn-small" },
-                    title: "Compare local workflows with Azure",
-                    onclick: move |_| {
-                        let next = !*azure_panel_open.read();
-                        azure_panel_open.set(next);
-                        if next { db_panel_open.set(false); }
-                    },
-                    "☁ Azure"
+
+                // ── panel toggles: Connections + Azure ────────────────────────
+                div { class: "toolbar-panels",
+                    {connections_button(&dir, sql_wfs, sql_conns, sb_namespace, sb_queues,
+                        sb_namespace_key, sb_conn_str, sftp_conns, blob_conns, cosmos_conns,
+                        webjobs_storage, db_panel_open, azure_panel_open)}
+                    button {
+                        class: if *azure_panel_open.read() { "btn btn-small btn-panel active" } else { "btn btn-small btn-panel" },
+                        title: "Compare local workflows with Azure",
+                        onclick: move |_| {
+                            let next = !*azure_panel_open.read();
+                            azure_panel_open.set(next);
+                            if next { db_panel_open.set(false); }
+                        },
+                        "☁ Azure"
+                    }
                 }
+
                 button {
                     class: "btn-theme",
                     title: if *is_light.read() { "Switch to dark mode" } else { "Switch to light mode" },
@@ -766,8 +780,7 @@ fn connections_button(
     let dir = dir.to_string();
     rsx! {
         button {
-            class: if *db_panel_open.read() { "btn btn-run btn-small active" } else { "btn btn-run btn-small" },
-            style: "margin-left: 10px;",
+            class: if *db_panel_open.read() { "btn btn-small btn-panel active" } else { "btn btn-small btn-panel" },
             title: "SQL & Service Bus connections — test & configure",
             onclick: move |_| {
                 let opening = !*db_panel_open.read();

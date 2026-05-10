@@ -28,7 +28,7 @@
             "containerName": "test-container",
             "blobName": "@triggerBody()?['blobName']",
             "content": "@triggerBody()?['content']",
-            "overwrite": true
+            "overrideIfExists": "true"
           },
           "serviceProviderConfiguration": {
             "connectionName": "AzureBlob",

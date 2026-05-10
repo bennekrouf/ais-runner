@@ -11,10 +11,11 @@
           "schema": {
             "type": "object",
             "properties": {
+              "queueName":   { "type": "string" },
               "body":        { "type": "string" },
               "messageType": { "type": "string" }
             },
-            "required": ["body", "messageType"]
+            "required": ["queueName", "body", "messageType"]
           }
         }
       }
@@ -25,7 +26,7 @@
         "runAfter": {},
         "inputs": {
           "parameters": {
-            "entityName": "test-queue",
+            "entityName": "@triggerBody()?['queueName']",
             "message": {
               "contentData": "@triggerBody()?['body']",
               "userProperties": {

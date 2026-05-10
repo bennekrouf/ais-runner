@@ -307,6 +307,17 @@ pub fn smart_default(key: &str) -> String {
         "FUNCTIONS_WORKER_RUNTIME" => "node".into(),
         "WORKFLOWS_LOCATION_NAME"  => "switzerlandnorth".into(),
 
+        // ── Service Bus ───────────────────────────────────────────────────────
+        // An empty connection string crashes table init for ALL workflows.
+        // A syntactically-valid but unreachable string lets func start cleanly —
+        // the workflow loads as unhealthy rather than corrupting Azurite state.
+        // Replace with a real connection string when SB is needed.
+        k if k.to_uppercase().contains("SERVICE_BUS") && k.to_uppercase().contains("CONNECTION") => {
+            "Endpoint=sb://placeholder.servicebus.windows.net/;\
+             SharedAccessKeyName=RootManageSharedAccessKey;\
+             SharedAccessKey=cGxhY2Vob2xkZXI=".into()
+        }
+
         // ── Java function connections ─────────────────────────────────────────
         // appKey MUST be non-empty ("placeholder") — empty string triggers a
         // functionConnections parse error that blocks ALL workflow registrations.

@@ -252,6 +252,72 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
         }
     });
 
+    // Auto-refresh expanded blob containers every 3 s while panel is open.
+    // Useful for live demos — blobs written by workflows appear without clicking ⟳.
+    // The closure body has no reactive reads so this spawns exactly once on mount.
+    use_effect(move || {
+        let is_open   = props.is_open;
+        spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+                // Skip when panel hidden, wrong tab, or nothing expanded
+                if !*is_open.read()
+                    || *active_tab.peek() != "blob"
+                    || blob_expanded.peek().is_empty()
+                {
+                    continue;
+                }
+
+                let expanded: Vec<String> = blob_expanded.peek().iter().cloned().collect();
+                for container in expanded {
+                    let c  = container.clone();
+                    let c2 = container.clone();
+                    if let Ok(Ok(updated)) = tokio::task::spawn_blocking(move || {
+                        azurite_client::list_blobs(&c)
+                    }).await {
+                        if let Some(ref mut list) = *blob_containers.write() {
+                            if let Some(entry) = list.iter_mut().find(|(n, _)| n == &c2) {
+                                entry.1 = updated;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    });
+
+    // Auto-refresh SB queue message counts every 3 s while panel is open on the SB tab.
+    // Only refreshes queues whose stats have already been loaded (avoids hammering Azure).
+    use_effect(move || {
+        let is_open = props.is_open;
+        spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+                if !*is_open.read() || *active_tab.peek() != "sb" {
+                    continue;
+                }
+                let queues: Vec<String> = sb_stats.peek().keys().cloned().collect();
+                if queues.is_empty() { continue; }
+
+                let ns  = sb_ns_edit.peek().clone();
+                let rg  = sb_rg.peek().clone();
+                if ns.is_empty() || rg.is_none() { continue; }
+                let rg = rg.unwrap();
+
+                for q in queues {
+                    let (ns2, rg2, q2) = (ns.clone(), rg.clone(), q.clone());
+                    if let Ok(Ok(stats)) = tokio::task::spawn_blocking(move || {
+                        azure_cli::sb_queue_stats(&rg2, &ns2, &q2)
+                    }).await {
+                        sb_stats.write().insert(q, stats);
+                    }
+                }
+            }
+        });
+    });
+
     // Auto-refresh SB queues when the SB tab becomes active
     use_effect(move || {
         if *active_tab.read() == "sb" && !sb_ns_edit.read().is_empty() && az_queues.read().is_none() && !*az_queues_loading.peek() {

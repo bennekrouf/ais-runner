@@ -107,7 +107,7 @@ pub fn handle_reset(
     let _ = az_proc.read().stop();
 
     let mut func_state2 = func_state;
-    let mut az_state2   = az_state;
+    let az_state2   = az_state;
     func_state2.set(ServiceState::Stopped);
 
     spawn(async move {

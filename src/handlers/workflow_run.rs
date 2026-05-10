@@ -247,10 +247,37 @@ pub fn handle_run(
                                 let err = a.iter().filter(|x| x.properties.status.to_lowercase() == "failed").count();
                                 for act in &a {
                                     let ms = workflows::duration_ms(&act.properties.start_time, &act.properties.end_time).unwrap_or(0);
-                                    let icon = match act.properties.status.to_lowercase().as_str() {
+                                    let status = act.properties.status.to_lowercase();
+                                    let icon = match status.as_str() {
                                         "succeeded" => "✅", "failed" => "❌", "skipped" => "⏭", _ => "⏳",
                                     };
                                     push(format!("  {} {}  {}ms", icon, act.name, ms), LogLevel::Info);
+                                    if status == "failed" {
+                                        // Try inline error first, fall back to get_action_detail
+                                        // (the list endpoint omits error body in some runtime versions)
+                                        let err_msg = match &act.properties.error {
+                                            Some(e) if e.message.is_some() || e.code.is_some() => {
+                                                let code = e.code.as_deref().unwrap_or("");
+                                                let msg  = e.message.as_deref().unwrap_or("(no message)");
+                                                if code.is_empty() { format!("{}", msg) }
+                                                else { format!("[{}] {}", code, msg) }
+                                            }
+                                            _ => {
+                                                // Fetch detail for richer error
+                                                if let Ok(detail) = workflows::get_action_detail(&wf, &run_name, &act.name).await {
+                                                    let code = detail["properties"]["error"]["code"].as_str().unwrap_or("");
+                                                    let msg  = detail["properties"]["error"]["message"].as_str()
+                                                        .or_else(|| detail["properties"]["code"].as_str())
+                                                        .unwrap_or("(no detail)");
+                                                    if code.is_empty() { format!("{}", msg) }
+                                                    else { format!("[{}] {}", code, msg) }
+                                                } else {
+                                                    "(no detail — check func start log)".into()
+                                                }
+                                            }
+                                        };
+                                        push(format!("     ↳ {}", err_msg), LogLevel::Error);
+                                    }
                                 }
                                 if err > 0 {
                                     push(format!("Run complete — {} ok, {} failed", ok, err), LogLevel::Error);

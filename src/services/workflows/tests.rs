@@ -78,6 +78,7 @@ fn suggest_payload_write_to_storage() {
 #[test]
 fn suggest_payload_send_to_bus() {
     let v = payload_json("send-to-bus");
+    assert!(v["queueName"].is_string());
     assert!(v["body"].is_string());
     assert!(v["messageType"].is_string());
 }
@@ -86,12 +87,54 @@ fn suggest_payload_send_to_bus() {
 
 #[test]
 fn missing_endpoint_flagged_for_send_to_bus() {
+    // Build an isolated fixture so the test is not affected by the pre-flight
+    // auto-stub that writes a placeholder into the real local.settings.json.
+    use std::fs;
+    let dir = std::env::temp_dir().join("ais_test_sb_missing");
+    let wf_dir = dir.join("send-to-bus");
+    fs::create_dir_all(&wf_dir).unwrap();
+
+    fs::write(wf_dir.join("workflow.json"), br#"{
+        "definition": {
+            "triggers": { "manual": { "type": "Request", "kind": "Http" } },
+            "actions": {
+                "Send": {
+                    "type": "ServiceProvider",
+                    "inputs": {
+                        "parameters": { "entityName": "q" },
+                        "serviceProviderConfiguration": {
+                            "connectionName": "sb",
+                            "operationId": "sendMessage",
+                            "serviceProviderId": "/serviceProviders/serviceBus"
+                        }
+                    }
+                }
+            }
+        }
+    }"#).unwrap();
+
+    fs::write(dir.join("connections.json"), br#"{
+        "serviceProviderConnections": {
+            "sb": {
+                "parameterValues": {
+                    "connectionString": "@appsetting('MY_SB_CONN_STR')"
+                },
+                "serviceProvider": { "id": "/serviceProviders/serviceBus" }
+            }
+        }
+    }"#).unwrap();
+
+    fs::write(dir.join("local.settings.json"), br#"{
+        "IsEncrypted": false,
+        "Values": { "MY_SB_CONN_STR": "" }
+    }"#).unwrap();
+
     let missing = crate::services::connection_diag::missing_endpoints_for_workflow(
-        FIXTURE, "send-to-bus",
+        &dir.to_string_lossy(), "send-to-bus",
     );
-    assert_eq!(missing.len(), 1);
-    assert_eq!(missing[0].0, "serviceBus");
-    assert_eq!(missing[0].1, "SERVICE_BUS_CONNECTION_STRING");
+    assert_eq!(missing.len(), 1, "expected one missing endpoint, got: {:?}", missing);
+    assert_eq!(missing[0].0, "sb");
+    assert_eq!(missing[0].1, "MY_SB_CONN_STR");
 }
 
 #[test]
