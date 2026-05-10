@@ -203,51 +203,83 @@ pub fn handle_run(
             return;
         }
 
-        // Poll until terminal
+        // Poll until terminal.
+        // If no run appears in history within ~12 s we stop immediately — the run
+        // completed (we got HTTP 200/202) but was never written to Azurite table
+        // storage, which means the tables were not initialised.  Polling further
+        // is pointless; tell the user exactly how to fix it.
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+        let deadline        = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+        let mut empty_ticks = 0u32;
+        let mut last_err    = String::new();
         loop {
-            if let Ok(r) = workflows::list_runs(&wf).await {
-                let r = filter_cleared(r, cleared_at.as_deref());
-                if let Some(latest) = r.first() {
-                    let run_name   = latest.name.clone();
-                    let run_status = latest.properties.status.to_lowercase();
-                    let run_done   = matches!(run_status.as_str(),
-                        "succeeded" | "failed" | "cancelled" | "timedout");
-                    runs.set(r.clone());
-                    if let Ok(a) = workflows::list_actions(&wf, &run_name).await {
-                        let actions_terminal = a.iter().all(|act| {
-                            matches!(act.properties.status.to_lowercase().as_str(),
-                                "succeeded" | "failed" | "skipped" | "timedout" | "cancelled")
-                        });
-                        // Terminal when: run itself is done AND all actions are done
-                        // (a.is_empty() is valid — some workflows have no loggable actions)
-                        let all_terminal = run_done && actions_terminal;
-                        actions.set(a.clone());
-                        if all_terminal {
-                            let ok  = a.iter().filter(|x| x.properties.status.to_lowercase() == "succeeded").count();
-                            let err = a.iter().filter(|x| x.properties.status.to_lowercase() == "failed").count();
-                            for act in &a {
-                                let ms = workflows::duration_ms(&act.properties.start_time, &act.properties.end_time).unwrap_or(0);
-                                let icon = match act.properties.status.to_lowercase().as_str() {
-                                    "succeeded" => "✅", "failed" => "❌", "skipped" => "⏭", _ => "⏳",
-                                };
-                                push(format!("  {} {}  {}ms", icon, act.name, ms), LogLevel::Info);
+            match workflows::list_runs(&wf).await {
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg != last_err {
+                        push(format!("  ⚠ run history error: {}", msg), LogLevel::Warn);
+                        for hint in workflows::not_found_hints(&wf).await {
+                            push(hint, LogLevel::Warn);
+                        }
+                        last_err = msg;
+                    }
+                    empty_ticks += 1;
+                }
+                Ok(r) => {
+                    last_err.clear();
+                    let r = filter_cleared(r, cleared_at.as_deref());
+                    if let Some(latest) = r.first() {
+                        empty_ticks = 0;
+                        let run_name   = latest.name.clone();
+                        let run_status = latest.properties.status.to_lowercase();
+                        let run_done   = matches!(run_status.as_str(),
+                            "succeeded" | "failed" | "cancelled" | "timedout");
+                        runs.set(r.clone());
+                        if let Ok(a) = workflows::list_actions(&wf, &run_name).await {
+                            let actions_terminal = a.iter().all(|act| {
+                                matches!(act.properties.status.to_lowercase().as_str(),
+                                    "succeeded" | "failed" | "skipped" | "timedout" | "cancelled")
+                            });
+                            let all_terminal = run_done && actions_terminal;
+                            actions.set(a.clone());
+                            if all_terminal {
+                                let ok  = a.iter().filter(|x| x.properties.status.to_lowercase() == "succeeded").count();
+                                let err = a.iter().filter(|x| x.properties.status.to_lowercase() == "failed").count();
+                                for act in &a {
+                                    let ms = workflows::duration_ms(&act.properties.start_time, &act.properties.end_time).unwrap_or(0);
+                                    let icon = match act.properties.status.to_lowercase().as_str() {
+                                        "succeeded" => "✅", "failed" => "❌", "skipped" => "⏭", _ => "⏳",
+                                    };
+                                    push(format!("  {} {}  {}ms", icon, act.name, ms), LogLevel::Info);
+                                }
+                                if err > 0 {
+                                    push(format!("Run complete — {} ok, {} failed", ok, err), LogLevel::Error);
+                                } else if a.is_empty() {
+                                    push(format!("Run complete — {}", run_status), LogLevel::Ok);
+                                } else {
+                                    push(
+                                        format!("Run complete — {} actions in {:.1}s", ok,
+                                            workflows::duration_ms(
+                                                &a.first().and_then(|x| x.properties.start_time.clone()),
+                                                &a.last().and_then(|x| x.properties.end_time.clone()),
+                                            ).unwrap_or(0) as f64 / 1000.0),
+                                        LogLevel::Ok,
+                                    );
+                                }
+                                break;
                             }
-                            if err > 0 {
-                                push(format!("Run complete — {} ok, {} failed", ok, err), LogLevel::Error);
-                            } else if a.is_empty() {
-                                push(format!("Run complete — {}", run_status), LogLevel::Ok);
-                            } else {
-                                push(
-                                    format!("Run complete — {} actions in {:.1}s", ok,
-                                        workflows::duration_ms(
-                                            &a.first().and_then(|x| x.properties.start_time.clone()),
-                                            &a.last().and_then(|x| x.properties.end_time.clone()),
-                                        ).unwrap_or(0) as f64 / 1000.0),
-                                    LogLevel::Ok,
-                                );
-                            }
+                        }
+                    } else {
+                        empty_ticks += 1;
+                        // ~12 s with empty history = Azurite tables not initialised.
+                        // Stop immediately instead of spinning for 5 more minutes.
+                        if empty_ticks >= 15 {
+                            push(
+                                "❌ Run not recorded after 12 s — Azurite table storage was not \
+                                 initialised (likely caused by an unhealthy workflow connection at startup). \
+                                 Fix: click ⟳ Reset Azurite next to the Azurite service, then restart func.".into(),
+                                LogLevel::Error,
+                            );
                             break;
                         }
                     }

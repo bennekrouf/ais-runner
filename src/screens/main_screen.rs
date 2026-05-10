@@ -216,6 +216,14 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     on_start: move |_| azurite::handle_start(azurite_state, azurite_proc, log_lines),
                     on_stop:  move |_| azurite::handle_stop(azurite_state, azurite_proc, log_lines),
                 }
+                button {
+                    class: "btn btn-warn btn-svc",
+                    title: "Stop func + Azurite, wipe storage, restart Azurite — fixes 'run not recording'",
+                    onclick: move |_| azurite::handle_reset(
+                        azurite_state, azurite_proc, func_state, func_proc, log_lines,
+                    ),
+                    "⟳ Reset"
+                }
                 ServiceBlock {
                     label: "func start".to_string(),
                     cmd:   "func start".to_string(),

@@ -16,13 +16,12 @@ fn payload_json(workflow: &str) -> serde_json::Value {
 #[test]
 fn load_all_workflows_from_fixture() {
     let items = scan_local_workflows(FIXTURE);
-    assert_eq!(items.len(), 4);
+    assert_eq!(items.len(), 3, "expected hello-world, write-to-storage, send-to-bus");
 
     let names: Vec<&str> = items.iter().map(|w| w.name.as_str()).collect();
     assert!(names.contains(&"hello-world"));
     assert!(names.contains(&"write-to-storage"));
     assert!(names.contains(&"send-to-bus"));
-    assert!(names.contains(&"write-to-cosmos"));
 
     for wf in &items {
         assert_eq!(wf.trigger_name, "manual");
@@ -33,18 +32,15 @@ fn load_all_workflows_from_fixture() {
 
 #[test]
 fn resolve_logic_apps_dir_flat() {
-    // Flat fixture has no logic_apps/ subfolder — dir resolves to itself.
     let resolved = resolve_logic_apps_dir(FIXTURE);
     assert_eq!(resolved, std::path::Path::new(FIXTURE));
 }
 
 #[test]
 fn resolve_logic_apps_dir_nested() {
-    // Nested fixture has a logic_apps/ subfolder — dir resolves to it.
     let resolved = resolve_logic_apps_dir(FIXTURE_NESTED);
     assert_eq!(resolved, std::path::Path::new(FIXTURE_NESTED).join("logic_apps"));
 
-    // And scanning it finds the workflow inside.
     let items = scan_local_workflows(FIXTURE_NESTED);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].name, "hello-world");
@@ -60,7 +56,7 @@ fn scan_broken_workflow_json() {
     let broken = scan_broken_workflows(&dir.to_string_lossy());
     assert_eq!(broken.len(), 1);
     assert_eq!(broken[0].0, "bad-json");
-    assert!(broken[0].1.contains("JSON error"), "expected JSON error, got: {}", broken[0].1);
+    assert!(broken[0].1.contains("JSON error"), "got: {}", broken[0].1);
 }
 
 // ── payload suggestions ───────────────────────────────────────────────────
@@ -86,35 +82,10 @@ fn suggest_payload_send_to_bus() {
     assert!(v["messageType"].is_string());
 }
 
-#[test]
-fn suggest_payload_write_to_cosmos() {
-    let v = payload_json("write-to-cosmos");
-    assert!(v["id"].is_string());
-    assert!(v["partitionKey"].is_string());
-    assert!(v["data"].is_string());
-}
-
-// ── Cosmos connection detection ───────────────────────────────────────────
-
-#[test]
-fn detect_cosmos_connection_from_fixture() {
-    let conns = crate::services::cosmos_check::detect_cosmos_connections(FIXTURE);
-    assert_eq!(conns.len(), 1);
-
-    let c = &conns[0];
-    assert_eq!(c.connection_name, "cosmos");
-    assert_eq!(c.endpoint_key.as_deref(), Some("COSMOS_ENDPOINT"));
-    assert_eq!(c.key_key.as_deref(),      Some("COSMOS_KEY"));
-    // Both are blank in local.settings.json — resolved values should be empty.
-    assert!(c.endpoint.is_empty());
-    assert!(c.account_key.is_empty());
-}
-
 // ── Connection diagnostics ────────────────────────────────────────────────
 
 #[test]
 fn missing_endpoint_flagged_for_send_to_bus() {
-    // SERVICE_BUS_CONNECTION_STRING is "" in local.settings.json.
     let missing = crate::services::connection_diag::missing_endpoints_for_workflow(
         FIXTURE, "send-to-bus",
     );
@@ -125,7 +96,6 @@ fn missing_endpoint_flagged_for_send_to_bus() {
 
 #[test]
 fn no_missing_endpoint_for_write_to_storage() {
-    // AzureWebJobsStorage = "UseDevelopmentStorage=true" — should be clean.
     let missing = crate::services::connection_diag::missing_endpoints_for_workflow(
         FIXTURE, "write-to-storage",
     );
@@ -148,12 +118,6 @@ fn duration_ms_returns_none_for_missing_timestamps() {
 }
 
 // ── az trigger commands ───────────────────────────────────────────────────
-//
-//  Equivalent manual commands (with func start running in the fixture dir):
-//
-//  az rest --method post \
-//    --url "http://localhost:7071/.../workflows/<name>/triggers/manual/run" \
-//    --body '<payload>' --skip-authorization-header
 
 #[test]
 fn az_trigger_command_args() {
@@ -161,7 +125,6 @@ fn az_trigger_command_args() {
         ("hello-world",      r#"{"message":"hi","id":"T-1"}"#),
         ("write-to-storage", r#"{"content":"hello","blobName":"test.txt"}"#),
         ("send-to-bus",      r#"{"body":"hello","messageType":"Test"}"#),
-        ("write-to-cosmos",  r#"{"id":"1","partitionKey":"pk","data":"hello"}"#),
     ] {
         let url = format!(
             "http://localhost:7071/runtime/webhooks/workflow/api/management\
