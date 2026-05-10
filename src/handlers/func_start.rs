@@ -4,7 +4,9 @@ use dioxus::prelude::*;
 
 use crate::components::log_panel::{LogLevel, LogLine};
 use crate::services::{
+    connection_diag,
     process::{ManagedProcess, ServiceState},
+    setup_manager,
     workflows::{self, WorkflowItem},
 };
 use crate::utils::{make_push, sweep_run_history};
@@ -43,6 +45,82 @@ pub fn handle_start(
             LogLevel::Warn,
         );
         return;
+    }
+
+    // ── Pre-flight: auto-fix what we can, warn about the rest ────────────
+    // One broken workflow silently blocks run-history for ALL others.
+    // Run fixes synchronously so everything is correct before func spawns.
+    {
+        let d = func_cwd.clone();
+        tokio::task::block_in_place(|| {
+            // 1. package.json — required by node worker runtime
+            let pkg = std::path::Path::new(&d).join("package.json");
+            if !pkg.exists() {
+                let _ = std::fs::write(&pkg, b"{\n  \"name\": \"logic-apps\",\n  \"version\": \"1.0.0\",\n  \"dependencies\": {}\n}\n");
+                push("  ✅ Created missing package.json".into(), LogLevel::Ok);
+            }
+
+            // 2. connections.json ARM syntax (@{appsetting} → @appsetting)
+            let conn_path = std::path::Path::new(&d).join("connections.json");
+            if conn_path.exists() {
+                if let Ok(raw) = std::fs::read_to_string(&conn_path) {
+                    let fixed = setup_manager::fix_connections_json(&raw);
+                    if fixed != raw {
+                        let _ = std::fs::write(&conn_path, fixed);
+                        push("  ✅ Fixed ARM template syntax in connections.json".into(), LogLevel::Ok);
+                    }
+                }
+            }
+
+            // 3. Settings with known safe defaults — stub silently, warn about the rest
+            let risks = connection_diag::scan_startup_risks(&d);
+            if !risks.is_empty() {
+                let mut auto_fixed: Vec<String> = Vec::new();
+                let mut needs_user: Vec<(String, String)> = Vec::new();
+
+                for (_wf, issues) in &risks {
+                    for issue in issues {
+                        // Extract setting key from "connection '…': setting '…' is empty"
+                        if let Some(key) = issue
+                            .split("setting '").nth(1)
+                            .and_then(|s| s.split('\'').next())
+                        {
+                            let default = setup_manager::smart_default(key);
+                            if !default.is_empty() {
+                                let _ = setup_manager::stub_missing_keys(&d, &[key.to_string()]);
+                                auto_fixed.push(key.to_string());
+                            } else {
+                                needs_user.push((_wf.clone(), key.to_string()));
+                            }
+                        }
+                    }
+                }
+
+                if !auto_fixed.is_empty() {
+                    push(
+                        format!("  ✅ Auto-stubbed settings with local defaults: {}", auto_fixed.join(", ")),
+                        LogLevel::Ok,
+                    );
+                }
+                if !needs_user.is_empty() {
+                    push(
+                        format!(
+                            "  ⚠ {} workflow(s) still have empty settings that require real values — \
+                             run history may fail for ALL workflows:",
+                            needs_user.len()
+                        ),
+                        LogLevel::Warn,
+                    );
+                    for (wf, key) in &needs_user {
+                        push(format!("     • '{}': set '{}' in local.settings.json", wf, key), LogLevel::Warn);
+                    }
+                    push(
+                        "     → Open Connections → set the values above, or remove the workflow folder.".into(),
+                        LogLevel::Warn,
+                    );
+                }
+            }
+        });
     }
 
     func_state.set(ServiceState::Starting);

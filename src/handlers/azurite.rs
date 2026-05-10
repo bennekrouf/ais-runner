@@ -26,7 +26,7 @@ pub fn handle_start(
             // Drain azurite pipes — dropping the read-ends causes SIGPIPE mid-startup,
             // killing the process between blob.start() and queue.start().
             let (az_tx, mut az_rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
-            crate::services::process::stream_output(az_stdout, az_stderr, az_tx, false);
+            crate::services::process::stream_output(az_stdout, az_stderr, az_tx, true);
             let mut push2 = make_push(log_lines);
             spawn(async move {
                 while let Some((line, _)) = az_rx.recv().await {
