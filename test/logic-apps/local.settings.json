@@ -3,10 +3,11 @@
   "Values": {
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "FUNCTIONS_WORKER_RUNTIME": "node",
-    "WORKFLOWS_SUBSCRIPTION_ID": "",
-    "WORKFLOWS_RESOURCE_GROUP_NAME": "",
+    "SERVICE_BUS_CONNECTION_STRING": "Endpoint=sb://placeholder.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=cGxhY2Vob2xkZXI=",
+    "WEBSITE_SITE_NAME": "logic-tom-dev-chn-001",
     "WORKFLOWS_LOCATION_NAME": "francecentral",
     "WORKFLOWS_MANAGEMENT_BASE_URI": "https://management.azure.com/",
-    "SERVICE_BUS_CONNECTION_STRING": ""
+    "WORKFLOWS_RESOURCE_GROUP_NAME": "rg-tom-dev-chn-001",
+    "WORKFLOWS_SUBSCRIPTION_ID": "b4c0de7e-1fe0-4d3b-90c7-e3e9c9e4b9db"
   }
 }
