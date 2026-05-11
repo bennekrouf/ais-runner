@@ -60,7 +60,8 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
     let mut fetching   = use_signal(|| String::new());
     let mut show_keys  = use_signal(|| std::collections::HashSet::<String>::new());
     let link = app_cfg.get_link(&props.logic_apps_dir);
-    let mut tenant_id     = use_signal(|| link.and_then(|l| l.tenant_id.clone()).unwrap_or_default());
+    let mut tenant_id          = use_signal(|| link.and_then(|l| l.tenant_id.clone()).unwrap_or_default());
+    let mut tenant_detecting   = use_signal(|| false);
     let mut sb_namespace  = use_signal(|| link.and_then(|l| l.sb_namespace.clone()).unwrap_or_default());
     let mut subscription  = use_signal(|| link.map(|l| l.subscription_id.clone()).unwrap_or_else(|| DEFAULT_SUBSCRIPTION.to_string()));
     let mut ns_options    = use_signal(|| Vec::<String>::new());
@@ -179,6 +180,33 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                 }
                             }
                         },
+                    }
+                    button {
+                        class: "btn btn-small",
+                        disabled: *tenant_detecting.read(),
+                        title: "Detect tenant from active az login",
+                        onclick: {
+                            let dir = logic_apps_dir.clone();
+                            move |_| {
+                                let dir2 = dir.clone();
+                                tenant_detecting.set(true);
+                                spawn(async move {
+                                    let result = tokio::task::spawn_blocking(
+                                        azure_cli::get_active_tenant
+                                    ).await.ok().and_then(|r| r.ok());
+                                    if let Some(t) = result {
+                                        tenant_id.set(t.clone());
+                                        let mut cfg = config::load();
+                                        if let Some(l) = cfg.workspace_links.get_mut(&dir2) {
+                                            l.tenant_id = Some(t);
+                                            config::save(&cfg);
+                                        }
+                                    }
+                                    tenant_detecting.set(false);
+                                });
+                            }
+                        },
+                        if *tenant_detecting.read() { "…" } else { "Detect" }
                     }
                 }
 
