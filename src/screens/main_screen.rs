@@ -68,88 +68,122 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut log_lines = use_signal(|| Vec::<LogLine>::new());
 
     // ── Auto blob-trigger watcher ──────────────────────────────────────────
-    // Polls Azurite every 2.5 s for new blobs in trigger containers.
-    // Simulates the Event Grid notifications Azure has locally.
-    use_coroutine({
-        let d = dir.clone();
-        move |_rx: dioxus::prelude::UnboundedReceiver<()>| {
-            let d = d.clone();   // clone per-invocation so FnMut stays valid
+    // All Azurite I/O runs on a dedicated OS thread (std::thread::spawn).
+    // The UI coroutine only drains the event channel — zero blocking on the
+    // Dioxus/tokio executor, so rendering is never stalled.
+    {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+
+        // Shared flags written by the UI, read by the OS thread.
+        let watch_flag = Arc::new(AtomicBool::new(true));
+        let func_flag  = Arc::new(AtomicBool::new(false));
+
+        // Keep Arc clones that the UI closures will update.
+        let wf_clone   = Arc::clone(&watch_flag);
+        let ff_clone   = Arc::clone(&func_flag);
+
+        // Sync the flags with Dioxus signals via a lightweight coroutine.
+        use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| {
+            let wf_clone = Arc::clone(&wf_clone);
+            let ff_clone = Arc::clone(&ff_clone);
             async move {
-            use std::collections::{HashMap, HashSet};
-
-            // Take an initial snapshot so pre-existing blobs don't fire.
-            let trigger_map = {
-                let d2 = d.clone();
-                tokio::task::spawn_blocking(move || workflows::scan_all_blob_triggers(&d2))
-                    .await.unwrap_or_default()
-            };
-
-            let mut seen: HashMap<String, HashSet<String>> = HashMap::new();
-            for (container, _) in &trigger_map {
-                let c = container.clone();
-                let blobs = tokio::task::spawn_blocking(move || {
-                    crate::services::azurite_client::list_blobs(&c)
-                }).await.ok().and_then(|r| r.ok()).unwrap_or_default();
-                seen.insert(container.clone(), blobs.into_iter()
-                    .filter(|b| !b.name.ends_with("/.keep"))
-                    .map(|b| b.name).collect());
-            }
-
-            loop {
-                tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
-
-                if !*auto_watch.read()
-                    || *func_state.read() != crate::services::process::ServiceState::Running
-                {
-                    continue;
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    wf_clone.store(*auto_watch.read(), Ordering::Relaxed);
+                    ff_clone.store(
+                        *func_state.read() == crate::services::process::ServiceState::Running,
+                        Ordering::Relaxed,
+                    );
                 }
+            }
+        });
 
-                for (container, wf_name) in &trigger_map {
-                    let c = container.clone();
-                    let blobs = tokio::task::spawn_blocking(move || {
-                        crate::services::azurite_client::list_blobs(&c)
-                    }).await.ok().and_then(|r| r.ok()).unwrap_or_default();
+        // Channel: OS thread → UI coroutine.
+        // Capacity 16 is plenty; we never burst more than a handful of events.
+        let (tx, rx) = tokio::sync::mpsc::channel::<(String, String)>(16);
 
-                    let current: HashSet<String> = blobs.into_iter()
-                        .filter(|b| !b.name.ends_with("/.keep"))
-                        .map(|b| b.name).collect();
+        // Dedicated OS thread — all blocking HTTP to Azurite happens here.
+        let bg_dir   = dir.clone();
+        let bg_watch = Arc::clone(&watch_flag);
+        let bg_func  = Arc::clone(&func_flag);
+        std::thread::Builder::new()
+            .name("ais-blob-watcher".into())
+            .spawn(move || {
+                use std::collections::{HashMap, HashSet};
 
-                    let prev = seen.entry(container.clone()).or_default();
-                    let new_blobs: Vec<_> = current.difference(prev).cloned().collect();
+                let trigger_map = workflows::scan_all_blob_triggers(&bg_dir);
 
-                    if !new_blobs.is_empty() {
+                // Initial snapshot — pre-existing blobs are ignored.
+                let mut seen: HashMap<String, HashSet<String>> = trigger_map.iter()
+                    .map(|(c, _)| {
+                        let names = crate::services::azurite_client::list_blobs(c)
+                            .unwrap_or_default().into_iter()
+                            .filter(|b| !b.name.ends_with("/.keep"))
+                            .map(|b| b.name).collect();
+                        (c.clone(), names)
+                    })
+                    .collect();
+
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+
+                    if !bg_watch.load(Ordering::Relaxed) || !bg_func.load(Ordering::Relaxed) {
+                        continue;
+                    }
+
+                    // One pass: list all containers sequentially on this thread.
+                    for (container, wf_name) in &trigger_map {
+                        let current: HashSet<String> =
+                            crate::services::azurite_client::list_blobs(container)
+                                .unwrap_or_default().into_iter()
+                                .filter(|b| !b.name.ends_with("/.keep"))
+                                .map(|b| b.name)
+                                .collect();
+
+                        let prev = seen.entry(container.clone()).or_default();
+                        let has_new = current.iter().any(|n| !prev.contains(n));
                         *prev = current;
 
-                        // Skip if this workflow is already being monitored
-                        if running_wfs.read().contains(wf_name) { continue; }
-
-                        let mut push = make_push(log_lines);
-                        push(
-                            format!("⚡ Auto: new blob in '{}' → watching {}…",
-                                container, wf_name),
-                            LogLevel::Info,
-                        );
-
-                        let trigger_ts = chrono::Utc::now().to_rfc3339();
-                        cleared_wfs.write().insert(wf_name.clone(), trigger_ts.clone());
-                        traced_wfs.write().insert(wf_name.clone());
-                        running_wfs.write().insert(wf_name.clone());
-
-                        let wf = wf_name.clone();
-                        let cleared = cleared_wfs;
-                        dioxus::prelude::spawn(workflow_run::poll_for_run(
-                            wf, Some(trigger_ts),
-                            runs, actions, log_lines,
-                            running_wfs, traced_wfs, cleared,
-                        ));
-                    } else {
-                        *prev = current;
+                        if has_new {
+                            // Non-blocking send — drop the event if channel is full.
+                            let _ = tx.try_send((container.clone(), wf_name.clone()));
+                        }
                     }
                 }
+            })
+            .ok(); // ignore spawn failure (non-critical background task)
+
+        // UI coroutine — only wakes when the OS thread found something new.
+        // rx is not Copy so we use Option to move it into the async block once.
+        let rx_opt = std::cell::Cell::new(Some(rx));
+        use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| {
+            let mut rx = rx_opt.take().expect("coroutine called twice");
+            async move {
+                while let Some((container, wf_name)) = rx.recv().await {
+                    if running_wfs.read().contains(&wf_name) { continue; }
+
+                    let mut push = make_push(log_lines);
+                    push(
+                        format!("⚡ Auto: new blob in '{}' → watching {}…", container, wf_name),
+                        LogLevel::Info,
+                    );
+
+                    let trigger_ts = chrono::Utc::now().to_rfc3339();
+                    cleared_wfs.write().insert(wf_name.clone(), trigger_ts.clone());
+                    traced_wfs.write().insert(wf_name.clone());
+                    running_wfs.write().insert(wf_name.clone());
+
+                    let wf     = wf_name.clone();
+                    let cleared = cleared_wfs;
+                    dioxus::prelude::spawn(workflow_run::poll_for_run(
+                        wf, Some(trigger_ts),
+                        runs, actions, log_lines,
+                        running_wfs, traced_wfs, cleared,
+                    ));
+                }
             }
-        } // end async move
-        } // end closure
-    });
+        });
+    }
 
     // ── Setup ──────────────────────────────────────────────────────────────
     let dir_for_setup = dir.clone();
