@@ -78,8 +78,8 @@ pub fn handle_run(
     trigger_type: String,
     body: String,
     dir: &str,
-    mut runs: Signal<Vec<RunItem>>,
-    mut actions: Signal<Vec<ActionItem>>,
+    runs: Signal<Vec<RunItem>>,
+    actions: Signal<Vec<ActionItem>>,
     log_lines: Signal<Vec<LogLine>>,
     mut running_wfs: Signal<HashSet<String>>,
     mut active_tab: Signal<String>,
@@ -226,10 +226,30 @@ pub fn handle_run(
             return;
         }
 
+        poll_for_run(
+            wf, cleared_at, runs, actions, log_lines, running_wfs, traced_wfs, cleared,
+        ).await;
+        return;
+    });
+}
+
+/// Shared polling loop used by both manual Watch and the auto-trigger watcher.
+/// Polls run history until the run reaches a terminal state or times out.
+pub async fn poll_for_run(
+    wf:          String,
+    cleared_at:  Option<String>,
+    mut runs:    Signal<Vec<workflows::RunItem>>,
+    mut actions: Signal<Vec<workflows::ActionItem>>,
+    log_lines:   Signal<Vec<LogLine>>,
+    mut running_wfs: Signal<HashSet<String>>,
+    mut traced_wfs:  Signal<HashSet<String>>,
+    cleared:         Signal<HashMap<String, String>>,
+) {
         // Poll until terminal.  Stop quickly if nothing appears — a working blob
         // trigger fires within a few seconds of the blob being added.
         let empty_tick_limit: u32 = 20; // ~16 s at 800 ms/tick
         let patience_secs         = 16u32;
+        let mut push = make_push(log_lines);
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
         let deadline        = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
         let mut empty_ticks = 0u32;
@@ -345,5 +365,4 @@ pub fn handle_run(
         running_wfs.write().remove(&wf);
         let names: Vec<String> = runs.read().iter().map(|r| r.name.clone()).collect();
         sweep_run_history(names, &mut traced_wfs, &cleared).await;
-    });
 }

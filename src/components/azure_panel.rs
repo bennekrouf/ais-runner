@@ -224,9 +224,11 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                 }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into())));
                 fetching_sites.set(false);
                 match result {
-                    Ok(list) => if let Some(first) = list.into_iter().next() { fw(first); },
-                    Ok(_)    => status.set(Some("No Logic Apps Standard sites found in this resource group.".into())),
-                    Err(e)   => status.set(Some(fmt_az_error(&e))),
+                    Ok(list) => match list.into_iter().next() {
+                        Some(first) => fw(first),
+                        None        => status.set(Some("No Logic Apps Standard sites found in this resource group.".into())),
+                    },
+                    Err(e) => status.set(Some(fmt_az_error(&e))),
                 }
             });
         }

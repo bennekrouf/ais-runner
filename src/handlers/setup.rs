@@ -13,7 +13,7 @@ pub fn handle_initialize(
     let d2 = dir.to_string();
     let mut push = make_push(log_lines);
     spawn(async move {
-        match tokio::task::spawn_blocking(move || setup_manager::initialize_from_template(&d)).await.unwrap() {
+        match tokio::task::spawn_blocking(move || setup_manager::initialize_from_template(&d)).await.unwrap_or(Err("task panicked".into())) {
             Ok(_)  => { push("Settings initialized from template.".into(), LogLevel::Ok); setup_status.set(setup_manager::check_setup(&d2)); }
             Err(e) => push(format!("Failed to initialize: {}", e), LogLevel::Error),
         }
@@ -31,7 +31,7 @@ pub fn handle_initialize_default(
     let d3   = dir.to_string();
     let mut push = make_push(log_lines);
     spawn(async move {
-        match tokio::task::spawn_blocking(move || setup_manager::initialize_default(&d)).await.unwrap() {
+        match tokio::task::spawn_blocking(move || setup_manager::initialize_default(&d)).await.unwrap_or(Err("task panicked".into())) {
             Ok(_) => {
                 push("Default local.settings.json created.".into(), LogLevel::Ok);
                 if let Some(l) = workspace_link {
@@ -43,7 +43,7 @@ pub fn handle_initialize_default(
                             &l.resource_group,
                             l.logic_app_name.as_deref(),
                         )
-                    }).await.unwrap() {
+                    }).await.unwrap_or(Err("task panicked".into())) {
                         Ok(msg) => push(msg, LogLevel::Ok),
                         Err(e)  => push(format!("Auto-detect failed: {}", e), LogLevel::Error),
                     }
@@ -72,7 +72,7 @@ pub fn handle_auto_detect(
         let app_name = l.logic_app_name.clone();
         match tokio::task::spawn_blocking(move || {
             setup_manager::auto_detect_resources(&d, Some(&sub_id), &rg, app_name.as_deref())
-        }).await.unwrap() {
+        }).await.unwrap_or(Err("task panicked".into())) {
             Ok(msg) => push(msg, LogLevel::Ok),
             Err(e)  => push(format!("Auto-detect failed: {}", e), LogLevel::Error),
         }

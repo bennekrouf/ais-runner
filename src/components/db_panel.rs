@@ -978,8 +978,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                         }
                     } else if props.sb_namespace.is_empty() && props.sb_conn_str.is_some() && link.is_none() {
                         rsx! { div { class: "empty-state", "No Service Bus connection found in connections.json" } }
-                    } else if props.sb_namespace.is_empty() && link.is_some() {
-                        let l = link.unwrap();
+                    } else if let Some(l) = link.filter(|_| props.sb_namespace.is_empty()) {
                         let rg = l.resource_group.clone();
                         let sub_id = l.subscription_id.clone();
                         let app_name = l.logic_app_name.clone();

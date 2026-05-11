@@ -108,7 +108,7 @@ fn extract_embedded_azurite() -> Result<String, String> {
                 fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o755)).ok();
             }
         }
-        return Ok(temp_path.to_str().unwrap().to_string());
+        return Ok(temp_path.to_string_lossy().into_owned());
     }
 
     #[cfg(not(feature = "bundle-azurite"))]

@@ -54,7 +54,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let source_text = use_signal(String::new);
     let mut runs        = use_signal(|| Vec::<workflows::RunItem>::new());
     let mut actions     = use_signal(|| Vec::<workflows::ActionItem>::new());
-    let running_wfs     = use_signal(|| HashSet::<String>::new());
+    let mut running_wfs = use_signal(|| HashSet::<String>::new());
     let mut current_view = use_signal(|| "Workflows".to_string());
     let system_light    = dark_light::detect() != dark_light::Mode::Dark;
     let mut is_light    = use_signal(|| system_light);
@@ -62,9 +62,94 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut run_dialog  = use_signal(|| Option::<(String, String, String, String, Option<String>)>::None);
     let mut traced_wfs  = use_signal(|| HashSet::<String>::new());
     let mut cleared_wfs = use_signal(|| HashMap::<String, String>::new());
+    let mut auto_watch  = use_signal(|| true);
 
     // ── Log ────────────────────────────────────────────────────────────────
     let mut log_lines = use_signal(|| Vec::<LogLine>::new());
+
+    // ── Auto blob-trigger watcher ──────────────────────────────────────────
+    // Polls Azurite every 2.5 s for new blobs in trigger containers.
+    // Simulates the Event Grid notifications Azure has locally.
+    use_coroutine({
+        let d = dir.clone();
+        move |_rx: dioxus::prelude::UnboundedReceiver<()>| {
+            let d = d.clone();   // clone per-invocation so FnMut stays valid
+            async move {
+            use std::collections::{HashMap, HashSet};
+
+            // Take an initial snapshot so pre-existing blobs don't fire.
+            let trigger_map = {
+                let d2 = d.clone();
+                tokio::task::spawn_blocking(move || workflows::scan_all_blob_triggers(&d2))
+                    .await.unwrap_or_default()
+            };
+
+            let mut seen: HashMap<String, HashSet<String>> = HashMap::new();
+            for (container, _) in &trigger_map {
+                let c = container.clone();
+                let blobs = tokio::task::spawn_blocking(move || {
+                    crate::services::azurite_client::list_blobs(&c)
+                }).await.ok().and_then(|r| r.ok()).unwrap_or_default();
+                seen.insert(container.clone(), blobs.into_iter()
+                    .filter(|b| !b.name.ends_with("/.keep"))
+                    .map(|b| b.name).collect());
+            }
+
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+
+                if !*auto_watch.read()
+                    || *func_state.read() != crate::services::process::ServiceState::Running
+                {
+                    continue;
+                }
+
+                for (container, wf_name) in &trigger_map {
+                    let c = container.clone();
+                    let blobs = tokio::task::spawn_blocking(move || {
+                        crate::services::azurite_client::list_blobs(&c)
+                    }).await.ok().and_then(|r| r.ok()).unwrap_or_default();
+
+                    let current: HashSet<String> = blobs.into_iter()
+                        .filter(|b| !b.name.ends_with("/.keep"))
+                        .map(|b| b.name).collect();
+
+                    let prev = seen.entry(container.clone()).or_default();
+                    let new_blobs: Vec<_> = current.difference(prev).cloned().collect();
+
+                    if !new_blobs.is_empty() {
+                        *prev = current;
+
+                        // Skip if this workflow is already being monitored
+                        if running_wfs.read().contains(wf_name) { continue; }
+
+                        let mut push = make_push(log_lines);
+                        push(
+                            format!("⚡ Auto: new blob in '{}' → watching {}…",
+                                container, wf_name),
+                            LogLevel::Info,
+                        );
+
+                        let trigger_ts = chrono::Utc::now().to_rfc3339();
+                        cleared_wfs.write().insert(wf_name.clone(), trigger_ts.clone());
+                        traced_wfs.write().insert(wf_name.clone());
+                        running_wfs.write().insert(wf_name.clone());
+
+                        let wf = wf_name.clone();
+                        let cleared = cleared_wfs;
+                        dioxus::prelude::spawn(workflow_run::poll_for_run(
+                            wf, Some(trigger_ts),
+                            runs, actions, log_lines,
+                            running_wfs, traced_wfs, cleared,
+                        ));
+                    } else {
+                        *prev = current;
+                    }
+                }
+            }
+        } // end async move
+        } // end closure
+    });
 
     // ── Setup ──────────────────────────────────────────────────────────────
     let dir_for_setup = dir.clone();
@@ -80,7 +165,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
             let u  = updates.read().clone();
             spawn(async move {
                 if tokio::task::spawn_blocking(move || setup_manager::apply_settings(&d, u))
-                    .await.unwrap().is_ok()
+                    .await.ok().and_then(|r| r.ok()).is_some()
                 {
                     status.set(setup_manager::check_setup(&d2));
                 }
@@ -238,6 +323,26 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         )
                     },
                     on_stop: move |_| func_start::handle_stop(func_state, func_proc, log_lines),
+                }
+                // Auto blob-trigger toggle
+                {
+                    let is_on   = *auto_watch.read();
+                    let lbl     = if is_on { "⚡ Auto" } else { "⚡ Off" };
+                    let cls     = if is_on { "btn btn-small auto-watch-btn on" }
+                                  else     { "btn btn-small auto-watch-btn off" };
+                    let tip     = if is_on {
+                        "Auto-trigger ON — watching Azurite for new blobs every 2.5 s. Click to pause."
+                    } else {
+                        "Auto-trigger OFF. Click to resume."
+                    };
+                    rsx! {
+                        button {
+                            class:   "{cls}",
+                            title:   "{tip}",
+                            onclick: move |_| auto_watch.set(!auto_watch()),
+                            "{lbl}"
+                        }
+                    }
                 }
                 ServiceBlock {
                     label: "Java Functions".to_string(),

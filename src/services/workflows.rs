@@ -593,6 +593,24 @@ pub fn duration_ms(start: &Option<String>, end: &Option<String>) -> Option<i64> 
 
 // ── Blob trigger support ───────────────────────────────────────────────────────
 
+/// Returns all (container_name, workflow_name) pairs for blob-triggered workflows
+/// found under logic_apps_dir. Used by the auto-trigger watcher.
+pub fn scan_all_blob_triggers(logic_apps_dir: &str) -> Vec<(String, String)> {
+    let dir = resolve_logic_apps_dir(logic_apps_dir);
+    let mut result = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else { return result };
+    for entry in entries.flatten() {
+        let wf_path = entry.path().join("workflow.json");
+        if !wf_path.exists() { continue; }
+        let Ok(json) = std::fs::read_to_string(&wf_path) else { continue };
+        if let Some((container, _)) = read_blob_trigger_info(&json) {
+            result.push((container, entry.file_name().to_string_lossy().into_owned()));
+        }
+    }
+    result.sort_by(|a, b| a.1.cmp(&b.1));
+    result
+}
+
 /// Returns every hardcoded blob container name referenced in the workflow JSON —
 /// trigger path, action containerName values, and parameter defaultValues that
 /// look like container names (lowercase + hyphens).

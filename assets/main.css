@@ -358,6 +358,30 @@ body.light .tool-banner-item code { background: #f0f3f6; color: #9a6700; }
     line-height: 1;
     flex-shrink: 0;
 }
+.auto-watch-btn {
+    font-size: 11px;
+    padding: 2px 9px;
+    height: 20px;
+    line-height: 1;
+    flex-shrink: 0;
+    border-radius: 10px;
+    transition: background 0.15s, color 0.15s;
+}
+.auto-watch-btn.on {
+    background: rgba(35, 134, 54, 0.18);
+    color: var(--green);
+    border-color: var(--green);
+    animation: auto-pulse 2s ease-in-out infinite;
+}
+.auto-watch-btn.off {
+    background: transparent;
+    color: var(--text3);
+    border-color: var(--border2);
+}
+@keyframes auto-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(35,134,54,0); }
+    50%       { box-shadow: 0 0 0 3px rgba(35,134,54,0.25); }
+}
 
 .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .dot.running  { background: var(--green);  box-shadow: 0 0 5px var(--green); }
