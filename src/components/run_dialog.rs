@@ -12,11 +12,7 @@ pub struct RunDialogProps {
 
 #[component]
 pub fn RunDialog(props: RunDialogProps) -> Element {
-    let mut body      = use_signal(|| props.payload.clone());
-    let mut blob_name = use_signal(|| {
-        // Pre-fill with a sensible default subfolder/name
-        format!("payments/test-{}.txt", chrono::Utc::now().format("%Y%m%d%H%M%S"))
-    });
+    let mut body = use_signal(|| props.payload.clone());
 
     let trigger_lower = props.trigger_type.to_lowercase();
     let is_http       = matches!(trigger_lower.as_str(), "request" | "http");
@@ -24,7 +20,7 @@ pub fn RunDialog(props: RunDialogProps) -> Element {
     let is_blob       = props.blob_container.is_some();
 
     let hint = if is_blob {
-        "Blob trigger — content will be uploaded to Azurite to fire the trigger."
+        "Blob trigger — upload a file to the container, then click Watch to poll for the run."
     } else if is_http {
         "HTTP Request trigger — body will be POSTed to the callback URL."
     } else if is_schedule {
@@ -56,28 +52,19 @@ pub fn RunDialog(props: RunDialogProps) -> Element {
             }
 
             if is_blob {
-                // ── Blob trigger UI ───────────────────────────────────
+                // ── Blob trigger: instruct user to upload manually ────
                 div { id: "run-dialog-body",
                     if let Some(container) = &props.blob_container {
                         div { class: "dialog-blob-info",
-                            span { class: "dialog-label", "Container" }
+                            span { class: "dialog-label", "Trigger container" }
                             span { class: "dialog-blob-container", "📦 {container}" }
                         }
-                    }
-                    div { class: "dialog-label", "Blob name (path within container)" }
-                    input {
-                        id: "run-dialog-blobname",
-                        spellcheck: false,
-                        value: "{blob_name}",
-                        placeholder: "payments/myfile.txt",
-                        oninput: move |e| blob_name.set(e.value()),
-                    }
-                    div { class: "dialog-label", "File content" }
-                    textarea {
-                        id: "run-dialog-textarea",
-                        spellcheck: false,
-                        value: "{body}",
-                        oninput: move |e| body.set(e.value()),
+                        div { class: "dialog-blob-instructions",
+                            "Upload a file to "
+                            strong { "{container}" }
+                            " via the DB panel → Blobs tab, then click Watch. \
+                             ais-runner will poll until the workflow run appears."
+                        }
                     }
                 }
             } else if is_schedule {
@@ -108,10 +95,10 @@ pub fn RunDialog(props: RunDialogProps) -> Element {
                 button {
                     class: "btn btn-run btn-small",
                     onclick: move |_| props.on_run.call((
-                        if is_blob { blob_name.read().clone() } else { String::new() },
+                        String::new(),
                         body.read().clone(),
                     )),
-                    if is_blob { "⬆  Upload & Run" } else { "▶  Run" }
+                    if is_blob { "👁 Watch" } else { "▶  Run" }
                 }
             }
         }

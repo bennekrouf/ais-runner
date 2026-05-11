@@ -119,6 +119,30 @@ pub fn handle_start(
                         LogLevel::Warn,
                     );
                 }
+
+                // MSI + local endpoint → trigger will silently never fire
+                let msi_affected = connection_diag::scan_msi_local_trigger_workflows(&d);
+                if !msi_affected.is_empty() {
+                    let mut names: Vec<_> = msi_affected.into_iter().collect();
+                    names.sort();
+                    push(
+                        format!(
+                            "  ⚠ {} workflow(s) have blob triggers using Managed Identity auth against Azurite — \
+                             the trigger poller cannot authenticate and will never fire:",
+                            names.len()
+                        ),
+                        LogLevel::Warn,
+                    );
+                    for name in &names {
+                        push(format!("     • {}", name), LogLevel::Warn);
+                    }
+                    push(
+                        "     Fix: in connections.json set parameterSetName: \"connectionString\" \
+                         for the blob connection, then add <Name>_connectionString = \
+                         \"UseDevelopmentStorage=true\" to local.settings.json.".into(),
+                        LogLevel::Warn,
+                    );
+                }
             }
         });
     }

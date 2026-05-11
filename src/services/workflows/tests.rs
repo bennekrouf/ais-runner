@@ -16,7 +16,8 @@ fn payload_json(workflow: &str) -> serde_json::Value {
 #[test]
 fn load_all_workflows_from_fixture() {
     let items = scan_local_workflows(FIXTURE);
-    assert_eq!(items.len(), 3, "expected hello-world, write-to-storage, send-to-bus");
+    // Count dynamically — optional workflows (write-to-cosmos etc.) may come and go.
+    assert!(items.len() >= 3, "expected at least hello-world, write-to-storage, send-to-bus");
 
     let names: Vec<&str> = items.iter().map(|w| w.name.as_str()).collect();
     assert!(names.contains(&"hello-world"));
@@ -167,7 +168,7 @@ fn az_trigger_command_args() {
     for (workflow, body) in [
         ("hello-world",      r#"{"message":"hi","id":"T-1"}"#),
         ("write-to-storage", r#"{"content":"hello","blobName":"test.txt"}"#),
-        ("send-to-bus",      r#"{"body":"hello","messageType":"Test"}"#),
+        ("send-to-bus",      r#"{"body":"hello","messageType":"Test","queueName":"q"}"#),
     ] {
         let url = format!(
             "http://localhost:7071/runtime/webhooks/workflow/api/management\
@@ -220,4 +221,58 @@ async fn trigger_workflow_via_ais_runner() {
         .await
         .unwrap();
     assert_eq!(run_id, "run-abc123");
+}
+
+// ── Integration: write-to-cosmos against local emulator ───────────────────
+//
+// Prerequisites (run manually, skip in CI):
+//   docker run -d -p 8081:8081 -e ACCEPT_EULA=Y mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator
+//   func start (in test/logic-apps/)
+//   create database "test-db" and container "test-container" (partitionKey: /partitionKey) in emulator
+//
+// Run with:  cargo test cosmos_emulator -- --ignored
+
+#[tokio::test]
+#[ignore = "requires Cosmos DB Emulator on :8081 and func start running in test/logic-apps/"]
+async fn write_to_cosmos_against_emulator() {
+    // Verify emulator is reachable
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)  // emulator uses self-signed cert
+        .timeout(std::time::Duration::from_secs(5))
+        .build().unwrap();
+    let ping = client.get("https://localhost:8081/").send().await;
+    assert!(ping.is_ok(), "Cosmos emulator not reachable on :8081 — start it first");
+
+    // Get callback URL from the running func host
+    let callback_url = get_callback_url("write-to-cosmos", "manual").await
+        .expect("func start must be running in test/logic-apps/");
+
+    // Trigger the workflow
+    let payload = r#"{"id":"test-001","partitionKey":"unit-test","data":"hello from ais-runner test"}"#;
+    let run_id = trigger_workflow(&callback_url, payload).await
+        .expect("trigger failed");
+    assert_ne!(run_id, "unknown", "run ID should be returned for a stateful workflow");
+
+    // Poll until terminal (max 30 s)
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        if let Ok(runs) = list_runs("write-to-cosmos").await {
+            if let Some(latest) = runs.first() {
+                let status = latest.properties.status.to_lowercase();
+                if status == "succeeded" { break; }
+                if status == "failed" {
+                    if let Ok(actions) = list_actions("write-to-cosmos", &latest.name).await {
+                        for act in &actions {
+                            if let Some(e) = &act.properties.error {
+                                panic!("Action '{}' failed: {:?}", act.name, e.message);
+                            }
+                        }
+                    }
+                    panic!("Run failed — check the ↳ error in the log panel");
+                }
+            }
+        }
+        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for run to complete");
+    }
 }

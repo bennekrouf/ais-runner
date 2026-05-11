@@ -301,6 +301,16 @@ pub fn smart_default(key: &str) -> String {
         // ── Blob endpoints ────────────────────────────────────────────────────
         "AzureBlob_blobStorageEndpoint"    => AZURITE.into(),
         "IgniteBlob_blobStorageEndpoint"   => AZURITE.into(),
+        "KyribaBlob_blobStorageEndpoint"   => AZURITE.into(),
+        "VentriksBlob_blobStorageEndpoint" => AZURITE.into(),
+        // Blob connection strings — used when parameterSetName is "connectionString".
+        // MSI (parameterSetName "ManagedServiceIdentity") cannot authenticate to Azurite
+        // locally because there is no Azure Instance Metadata Service endpoint.
+        // Connection string auth works in both Azurite and Azure.
+        "AzureBlob_connectionString"    => "UseDevelopmentStorage=true".into(),
+        "IgniteBlob_connectionString"   => "UseDevelopmentStorage=true".into(),
+        "KyribaBlob_connectionString"   => "UseDevelopmentStorage=true".into(),
+        "VentriksBlob_connectionString" => "UseDevelopmentStorage=true".into(),
 
         // ── Standard func-host settings ───────────────────────────────────────
         "AzureWebJobsStorage"      => "UseDevelopmentStorage=true".into(),
@@ -316,6 +326,16 @@ pub fn smart_default(key: &str) -> String {
             "Endpoint=sb://placeholder.servicebus.windows.net/;\
              SharedAccessKeyName=RootManageSharedAccessKey;\
              SharedAccessKey=cGxhY2Vob2xkZXI=".into()
+        }
+
+        // ── SQL Server ────────────────────────────────────────────────────────
+        // Same rule: empty connection string crashes table init.
+        // A syntactically-valid unreachable string lets the workflow load as
+        // unhealthy without corrupting Azurite state.
+        k if k.to_uppercase().contains("SQL") && k.to_uppercase().contains("CONNECTION") => {
+            "Server=tcp:placeholder.database.windows.net,1433;\
+             Initial Catalog=placeholder;User ID=placeholder;Password=placeholder;\
+             Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;".into()
         }
 
         // ── Java function connections ─────────────────────────────────────────
@@ -356,6 +376,17 @@ pub fn smart_default(key: &str) -> String {
             // Strip common suffixes to get the api name
             let api = api.strip_suffix("_url").unwrap_or(&api);
             format!("https://placeholder.azure-apim.net/apim/{}/{}-local/", api, api)
+        }
+
+        // ── Generic connection string catch-all ────────────────────────────────
+        // Any empty connection string (regardless of type) crashes Azurite table
+        // init for ALL workflows.  If we reach here no specific rule matched, so
+        // return a syntactically-valid placeholder that any connection string
+        // parser can tokenise without throwing.  The workflow will be unhealthy
+        // at runtime but it will NOT block unrelated workflows from recording runs.
+        k if k.to_lowercase().contains("connection") => {
+            "Server=tcp:placeholder.local;Initial Catalog=placeholder;\
+             User ID=placeholder;Password=placeholder;".into()
         }
 
         // ── Everything else ────────────────────────────────────────────────────

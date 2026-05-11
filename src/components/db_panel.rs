@@ -114,6 +114,8 @@ pub struct DbPanelProps {
     pub env_mode:          EnvMode,
     pub azurite_running:   bool,
     pub is_open:           Signal<bool>,
+    /// Shared az login state — updated when any panel operation discovers the token is expired.
+    pub az_status:         Signal<Option<Result<String, azure_cli::AzError>>>,
     pub on_saved:          EventHandler<String>,
     pub on_env_changed:    EventHandler<()>,
 }
@@ -215,6 +217,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     let mut blob_loading:     Signal<bool>              = use_signal(|| false);
     let mut blob_clearing:    Signal<HashSet<String>>   = use_signal(HashSet::new);
     let mut blob_uploading:   Signal<HashSet<String>>   = use_signal(HashSet::new);
+    let mut blob_downloading: Signal<HashSet<String>>   = use_signal(HashSet::new);
     let mut blob_creating:    Signal<bool>              = use_signal(|| false);
     // Which containers have their blob list expanded
     let mut blob_expanded:    Signal<HashSet<String>>   = use_signal(HashSet::new);
@@ -287,6 +290,34 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
         });
     });
 
+    // Re-check az login whenever the panel opens.
+    // az account show at startup can succeed from cache even when the real token has expired;
+    // actual Azure API calls in this panel discover the truth — sync it back to the header.
+    use_effect({
+        let is_open   = props.is_open;
+        let mut az_st = props.az_status;
+        move || {
+            if !*is_open.read() { return; }
+            spawn(async move {
+                let result = tokio::task::spawn_blocking(azure_cli::check_login)
+                    .await
+                    .unwrap_or(Err(azure_cli::AzError::Other("check failed".into())));
+                az_st.set(Some(result));
+            });
+        }
+    });
+
+    // Helper: if an Azure CLI error is NotLoggedIn, push that to the shared header state.
+    let sync_az_error = {
+        let mut az_st = props.az_status;
+        move |e: &azure_cli::AzError| {
+            if matches!(e, azure_cli::AzError::NotLoggedIn) {
+                az_st.set(Some(Err(azure_cli::AzError::NotLoggedIn)));
+            }
+        }
+    };
+    let _ = sync_az_error; // used in SB error handlers below
+
     // Auto-refresh SB queue message counts every 3 s while panel is open on the SB tab.
     // Only refreshes queues whose stats have already been loaded (avoids hammering Azure).
     use_effect(move || {
@@ -303,8 +334,8 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
 
                 let ns  = sb_ns_edit.peek().clone();
                 let rg  = sb_rg.peek().clone();
-                if ns.is_empty() || rg.is_none() { continue; }
-                let rg = rg.unwrap();
+                let Some(rg) = rg else { continue; };
+                if ns.is_empty() { continue; }
 
                 for q in queues {
                     let (ns2, rg2, q2) = (ns.clone(), rg.clone(), q.clone());
@@ -919,7 +950,33 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     let app_cfg = config::load();
                     let link = app_cfg.get_link(&props.logic_apps_dir);
 
-                    if props.sb_namespace.is_empty() && props.sb_namespace_key.is_none() && props.sb_conn_str.is_none() {
+                    // Determine whether Service Bus is usably configured.
+                    // An empty value OR the placeholder we auto-stub both mean "not ready".
+                    let conn_str_val = props.sb_conn_str.as_ref().map(|(_, v)| v.as_str()).unwrap_or("");
+                    let sb_is_real = !conn_str_val.is_empty()
+                        && !conn_str_val.contains("placeholder.servicebus.windows.net");
+
+                    if !sb_is_real && props.sb_namespace.is_empty() {
+                        rsx! {
+                            div { class: "sb-unavailable-card",
+                                div { class: "sb-unavail-title", "📨 Service Bus — not available locally" }
+                                div { class: "sb-unavail-body",
+                                    p { "Azure Service Bus has no local emulator (unlike Azurite for storage). \
+                                         To use Service Bus you need one of:" }
+                                    ul {
+                                        li { b { "Real Azure SB" } " — go to ⚙️ Settings, pick your namespace, click ↓ Azure to fill in the connection string." }
+                                        li { b { "Microsoft SB Emulator" } " — runs as a Docker container ("
+                                            code { "mcr.microsoft.com/azure-messaging/servicebus-emulator" }
+                                            "), then paste its connection string in Settings." }
+                                    }
+                                    p { style: "color: var(--text3); font-size: 12px; margin-top: 8px;",
+                                        "Workflows with 📨 triggers and the send-to-bus fixture are visible \
+                                         in the workflow list but will fail to run until a real connection string is set."
+                                    }
+                                }
+                            }
+                        }
+                    } else if props.sb_namespace.is_empty() && props.sb_conn_str.is_some() && link.is_none() {
                         rsx! { div { class: "empty-state", "No Service Bus connection found in connections.json" } }
                     } else if props.sb_namespace.is_empty() && link.is_some() {
                         let l = link.unwrap();
@@ -1780,6 +1837,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                         let is_expanded  = blob_expanded.read().contains(&cname);
                                         let is_clearing  = blob_clearing.read().contains(&cname);
                                         let is_uploading = blob_uploading.read().contains(&cname);
+                                        let is_empty     = blobs.iter().all(|b| b.name.ends_with("/.keep"));
                                         let confirm_pending = blob_clear_confirm.read().as_deref() == Some(&cname);
                                         let blob_count_label = if blobs.is_empty() {
                                             "empty".to_string()
@@ -1789,6 +1847,10 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                         };
                                         let expand_icon = if is_expanded { "▼" } else { "▶" };
                                         rsx! {
+                                            // Wrapper keeps the row + blob-list together as one
+                                            // DOM subtree so expanded content always sits directly
+                                            // below its container header (not after all headers).
+                                            div { class: "blob-container-wrapper",
                                             // Container row
                                             div { class: "blob-container-row",
                                                 // Expand / collapse toggle
@@ -1877,8 +1939,8 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                     } else {
                                                         button {
                                                             class: "btn btn-small",
-                                                            disabled: is_clearing || is_uploading,
-                                                            title: "Delete all blobs in this container",
+                                                            disabled: is_clearing || is_uploading || is_empty,
+                                                            title: if is_empty { "Container is empty" } else { "Delete all blobs in this container" },
                                                             onclick: move |_| {
                                                                 blob_clear_confirm.set(Some(cname4.clone()));
                                                             },
@@ -1942,13 +2004,45 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                                 // For folder rows: composite upload key = "container/folder"
                                                                 let upload_key = format!("{}/{}", cname, full);
                                                                 let is_folder_uploading = blob_uploading.read().contains(&upload_key);
+                                                                let download_key = format!("{}/{}", cname, full);
+                                                                let is_downloading = blob_downloading.read().contains(&download_key);
                                                                 let folder_prefix = full.clone();
                                                                 let ct_for_folder = cname.clone();
+                                                                let ct_for_dl = cname.clone();
+                                                                let blob_name_dl = full.clone();
+                                                                let display_dl = display.clone();
                                                                 rsx! {
                                                                     div { class: "{row_cls}", title: "{full}",
                                                                         span { class: "blob-row-icon", "{icon}" }
                                                                         span { class: "blob-name", "{display}" }
                                                                         span { class: "blob-size", "{size_str}" }
+                                                                        if !is_folder {
+                                                                            button {
+                                                                                class: "btn btn-small blob-dl-btn",
+                                                                                disabled: is_downloading,
+                                                                                title: "Download blob",
+                                                                                onclick: move |_| {
+                                                                                    let dk  = download_key.clone();
+                                                                                    let ct  = ct_for_dl.clone();
+                                                                                    let bn  = blob_name_dl.clone();
+                                                                                    let dn  = display_dl.clone();
+                                                                                    blob_downloading.write().insert(dk.clone());
+                                                                                    spawn(async move {
+                                                                                        if let Some(dest) = rfd::AsyncFileDialog::new()
+                                                                                            .set_file_name(&dn)
+                                                                                            .save_file().await
+                                                                                        {
+                                                                                            let path = dest.path().to_string_lossy().to_string();
+                                                                                            let _ = tokio::task::spawn_blocking(move || {
+                                                                                                azurite_client::download_blob(&ct, &bn, &path)
+                                                                                            }).await;
+                                                                                        }
+                                                                                        blob_downloading.write().remove(&dk);
+                                                                                    });
+                                                                                },
+                                                                                if is_downloading { "↓ …" } else { "↓" }
+                                                                            }
+                                                                        }
                                                                         if is_folder {
                                                                             button {
                                                                                 class: "btn btn-small blob-folder-upload-btn",
@@ -1992,6 +2086,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                     }
                                                 }
                                             }
+                                            } // end blob-container-wrapper
                                         }
                                     }
                                 }

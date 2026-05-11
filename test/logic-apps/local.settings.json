@@ -2,12 +2,15 @@
   "IsEncrypted": false,
   "Values": {
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "AzureWebJobsSecretStorageType": "Files",
     "FUNCTIONS_WORKER_RUNTIME": "node",
-    "SERVICE_BUS_CONNECTION_STRING": "Endpoint=sb://placeholder.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=cGxhY2Vob2xkZXI=",
+    "SERVICE_BUS_CONNECTION_STRING": "Endpoint=sb://sbns-tom-dev-chn-001.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=jJwLXOVF8ZaQ/l1vTeVxaBFk05fmyL3p0+ASbOquARs=",
     "WEBSITE_SITE_NAME": "logic-tom-dev-chn-001",
     "WORKFLOWS_LOCATION_NAME": "francecentral",
     "WORKFLOWS_MANAGEMENT_BASE_URI": "https://management.azure.com/",
     "WORKFLOWS_RESOURCE_GROUP_NAME": "rg-tom-dev-chn-001",
-    "WORKFLOWS_SUBSCRIPTION_ID": "b4c0de7e-1fe0-4d3b-90c7-e3e9c9e4b9db"
+    "WORKFLOWS_SUBSCRIPTION_ID": "b4c0de7e-1fe0-4d3b-90c7-e3e9c9e4b9db",
+    "COSMOS_ENDPOINT": "https://localhost:8081/",
+    "COSMOS_KEY": "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw=="
   }
 }

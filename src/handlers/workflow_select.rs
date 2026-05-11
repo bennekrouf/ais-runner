@@ -47,21 +47,26 @@ pub fn handle_select(
 }
 
 pub fn handle_refresh(
-    selected_wf: Signal<Option<String>>,
-    mut runs: Signal<Vec<RunItem>>,
-    mut actions: Signal<Vec<ActionItem>>,
-    log_lines: Signal<Vec<LogLine>>,
+    selected_wf:  Signal<Option<String>>,
+    mut runs:     Signal<Vec<RunItem>>,
+    mut actions:  Signal<Vec<ActionItem>>,
+    cleared_wfs:  Signal<std::collections::HashMap<String, String>>,
+    log_lines:    Signal<Vec<LogLine>>,
 ) {
     let Some(wf) = selected_wf.read().clone() else { return };
+    let cleared_at = cleared_wfs.read().get(&wf).cloned();
     let mut push = make_push(log_lines);
     spawn(async move {
         match workflows::list_runs(&wf).await {
             Ok(r) => {
+                let r = filter_cleared(r, cleared_at.as_deref());
                 if let Some(latest) = r.first() {
                     match workflows::list_actions(&wf, &latest.name).await {
                         Ok(a)  => actions.set(a),
                         Err(e) => push(format!("Actions error: {}", e), LogLevel::Error),
                     }
+                } else {
+                    actions.write().clear();
                 }
                 runs.set(r);
             }

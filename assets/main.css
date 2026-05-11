@@ -960,6 +960,19 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
 .wf-sql-icon::before { content: "🗄"; }
 .workflow-item.selected .wf-sql-icon { opacity: 1; }
 
+.wf-msi-warn {
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--orange, #f0883e);
+    background: rgba(240, 136, 62, 0.12);
+    border: 1px solid rgba(240, 136, 62, 0.35);
+    border-radius: 3px;
+    padding: 1px 4px;
+    flex-shrink: 0;
+    cursor: help;
+    white-space: nowrap;
+}
+
 @keyframes wf-spin {
     to { transform: rotate(360deg); }
 }
@@ -1643,6 +1656,31 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
     min-height: 0;
 }
 
+.sb-unavailable-card {
+    margin: 16px;
+    padding: 18px 20px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg2);
+}
+.sb-unavail-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text1);
+    margin-bottom: 12px;
+}
+.sb-unavail-body { font-size: 13px; color: var(--text2); line-height: 1.6; }
+.sb-unavail-body p  { margin: 0 0 8px; }
+.sb-unavail-body ul { margin: 0 0 4px; padding-left: 18px; }
+.sb-unavail-body li { margin-bottom: 6px; }
+.sb-unavail-body code {
+    font-family: monospace;
+    font-size: 11px;
+    background: var(--bg3);
+    padding: 1px 4px;
+    border-radius: 3px;
+}
+
 .db-card {
     background: var(--bg2);
     border: 1px solid var(--border);
@@ -1874,6 +1912,9 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
     display: flex;
     flex-direction: column;
 }
+.blob-container-wrapper {
+    display: contents;
+}
 .blob-container-row {
     display: flex;
     align-items: center;
@@ -1941,6 +1982,16 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
 .blob-row-icon { color: var(--text3); flex-shrink: 0; font-size: 11px; }
 .blob-folder-row .blob-name { color: var(--text1); font-style: italic; }
 .blob-nested-row { padding-left: 20px; }
+.blob-dl-btn {
+    font-size: 10px;
+    padding: 1px 5px;
+    opacity: 0;
+    flex-shrink: 0;
+    margin-left: auto;
+    transition: opacity 0.1s;
+}
+.blob-row:hover .blob-dl-btn,
+.blob-nested-row:hover .blob-dl-btn { opacity: 1; }
 .blob-folder-upload-btn {
     margin-left: auto;
     padding: 1px 7px;

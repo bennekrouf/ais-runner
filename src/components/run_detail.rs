@@ -78,11 +78,11 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                             "⟳ Refresh"
                         }
                     }
-                    Tooltip { text: "Clear run history", direction: "bottom",
+                    Tooltip { text: "Flush history — hides all existing runs. Only runs triggered after this point will appear.", direction: "bottom",
                         button {
                             class: "btn btn-small btn-clear",
                             onclick: move |_| props.on_clear_runs.call(()),
-                            "✕ Clear"
+                            "⊘ Flush"
                         }
                     }
                     if props.is_live {

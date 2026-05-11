@@ -46,9 +46,11 @@ pub fn detect_cosmos_connections(logic_apps_dir: &str) -> Vec<CosmosConnection> 
     let mut result = Vec::new();
     if let Some(providers) = conn_json["serviceProviderConnections"].as_object() {
         for (name, conn) in providers {
-            if conn["serviceProvider"]["id"].as_str() != Some("/serviceProviders/documentDb") {
-                continue;
-            }
+            let provider_id = conn["serviceProvider"]["id"].as_str().unwrap_or("");
+            let is_cosmos = provider_id == "/serviceProviders/documentDb"   // original (rejected by some runtimes)
+                         || provider_id == "/serviceProviders/cosmosDb"     // camelCase variant
+                         || provider_id == "/serviceProviders/documentDB";  // capital-DB variant
+            if !is_cosmos { continue; }
             let display = conn["displayName"].as_str().unwrap_or(name).to_string();
             let pv = &conn["parameterValues"];
 

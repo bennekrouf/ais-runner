@@ -32,14 +32,24 @@ fn az_line_class(line: &str) -> &'static str {
     else { "log-msg info" }
 }
 
+pub fn is_sb_noise(msg: &str) -> bool {
+    msg.contains("An unhandled exception occurred in the message batch receive loop") ||
+    msg.contains("aka.ms/azsdk/net/servicebus/exceptions/troubleshoot") ||
+    msg.contains("serviceBus.ServiceBusServiceOperationsProvider") ||
+    // Only filter ServiceProvider job errors that are specifically about Service Bus —
+    // the same patterns fire for blob and other service provider triggers/actions too.
+    (msg.contains("ServiceProviderRecurrenceTriggerJob") && msg.contains("serviceBus")) ||
+    (msg.contains("ServiceProviderActionJob") && msg.contains("serviceBus")) ||
+    msg.contains("onNewMessagesFromQueueSession") ||
+    (msg.contains("Outgoing HTTP request ends with server failure") && msg.contains("hostName='serviceBus'"))
+}
+
 /// Split an Azurite debug.log line into (time, rest).
 /// Lines look like: `2024-01-01T12:00:00.123Z [Queue]  message…`
 /// We show only the HH:MM:SS part to match the Console time style.
 fn az_split(line: &str) -> (&str, &str) {
-    // The timestamp is always the first token before the first space.
     if let Some(sp) = line.find(' ') {
         let ts = &line[..sp];
-        // Extract HH:MM:SS from the ISO-8601 string (positions 11..19).
         let time = if ts.len() >= 19 { &ts[11..19] } else { ts };
         (time, line[sp..].trim_start())
     } else {
@@ -58,8 +68,6 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     let mut active_tab = use_signal(|| "console");
     let mut az_lines: Signal<Vec<String>> = use_signal(Vec::new);
 
-    // Reactive auto-scroll: re-runs whenever the line count changes.
-    // Reading the Signal inside use_effect registers it as a reactive dependency.
     use_effect(move || {
         let _n = props.lines.read().len();
         document::eval("var e=document.getElementById('log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
@@ -78,7 +86,6 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                 Ok(meta) => {
                     let len = meta.len();
                     if len < offset {
-                        // Azurite restarted — file was truncated/replaced
                         offset = 0;
                         az_lines.write().clear();
                     }
@@ -97,7 +104,6 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                                     if !new.is_empty() {
                                         let mut w = az_lines.write();
                                         w.extend(new);
-                                        // keep last 500 lines to avoid unbounded growth
                                         let len = w.len();
                                         if len > 500 {
                                             let drain_to = len - 500;
@@ -110,7 +116,6 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                     }
                 }
                 Err(_) => {
-                    // File doesn't exist (Azurite not started or location changed)
                     if offset > 0 {
                         offset = 0;
                         az_lines.write().clear();
@@ -122,11 +127,11 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     });
 
     let tab = active_tab();
+    let sb_count = props.lines.read().iter().filter(|l| is_sb_noise(&l.msg)).count();
 
     rsx! {
         div { id: "log-panel",
             div { id: "log-header",
-                // Tab buttons
                 button {
                     class: if tab == "console" { "log-tab active" } else { "log-tab" },
                     onclick: move |_| {
@@ -143,27 +148,38 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                     },
                     "Azurite"
                 }
-                // Spacer + Clear — always in layout so header height stays fixed
+                button {
+                    class: if tab == "servicebus" { "log-tab active" } else { "log-tab" },
+                    onclick: move |_| {
+                        active_tab.set("servicebus");
+                        document::eval("var e=document.getElementById('sb-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+                    },
+                    if tab != "servicebus" && sb_count > 0 {
+                        "Service Bus ({sb_count})"
+                    } else {
+                        "Service Bus"
+                    }
+                }
                 div { style: "flex:1" }
                 button {
                     class: "btn btn-small",
                     style: "background:#21262d;color:#8b949e",
                     onclick: move |_| {
-                        if tab == "console" {
-                            props.on_clear.call(());
-                        } else {
+                        if tab == "azurite" {
                             az_lines.write().clear();
+                        } else {
+                            props.on_clear.call(());
                         }
                     },
                     "Clear"
                 }
             }
 
-            // ── Console tab ──────────────────────────────────────────────
+            // ── Console tab (SB noise excluded) ──────────────────────────
             div {
                 id: "log-scroll",
                 style: if tab == "console" { "" } else { "display:none" },
-                for line in props.lines.read().iter() {
+                for line in props.lines.read().iter().filter(|l| !is_sb_noise(&l.msg)) {
                     div { class: "log-line",
                         span { class: "log-time", "{line.time}" }
                         span { class: line.level.css_class(), "{line.msg}" }
@@ -171,7 +187,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                 }
             }
 
-            // ── Azurite tab ──────────────────────────────────────────────
+            // ── Azurite tab ───────────────────────────────────────────────
             div {
                 id: "az-log-scroll",
                 style: if tab == "azurite" { "" } else { "display:none" },
@@ -198,6 +214,37 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                                             span { class: cls, "{msg}" }
                                         }
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Service Bus tab ───────────────────────────────────────────
+            div {
+                id: "sb-log-scroll",
+                style: if tab == "servicebus" { "" } else { "display:none" },
+                {
+                    let sb_lines: Vec<_> = props.lines.read().iter()
+                        .filter(|l| is_sb_noise(&l.msg))
+                        .cloned()
+                        .collect();
+                    if sb_lines.is_empty() {
+                        rsx! {
+                            div { class: "log-line",
+                                span { class: "log-msg info",
+                                    style: "opacity:0.45;font-style:italic",
+                                    "No Service Bus errors captured yet."
+                                }
+                            }
+                        }
+                    } else {
+                        rsx! {
+                            for line in sb_lines.iter() {
+                                div { class: "log-line",
+                                    span { class: "log-time", "{line.time}" }
+                                    span { class: line.level.css_class(), "{line.msg}" }
                                 }
                             }
                         }

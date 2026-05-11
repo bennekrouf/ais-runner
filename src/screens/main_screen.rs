@@ -14,7 +14,7 @@ use crate::components::{
     azure_panel::AzurePanel,
 };
 use crate::services::{
-    azure_cli, azure_sync, blob_check, config, cosmos_check,
+    azure_cli, azure_sync, blob_check, config, connection_diag, cosmos_check,
     env_mode::{self, EnvMode},
     process::{ManagedProcess, ServiceState},
     setup_manager, sftp_check, sql_check, sb_check, system_check,
@@ -94,6 +94,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
     // ── Connection / SQL / SB signals ─────────────────────────────────────
     let mut sql_wfs          = use_signal(|| HashSet::<String>::new());
+    let mut msi_wfs          = use_signal(|| HashSet::<String>::new());
     let mut wf_connectors    = use_signal(|| std::collections::HashMap::<String, Vec<workflows::ConnectorKind>>::new());
     let mut sql_conns        = use_signal(|| Vec::<sql_check::SqlConnection>::new());
     let mut db_panel_open    = use_signal(|| false);
@@ -159,9 +160,10 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
         move || {
             let d = d.clone();
             spawn(async move {
-                let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, blobs, cosmos, wjs) =
+                let (wfs, msi, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, blobs, cosmos, wjs) =
                     tokio::task::spawn_blocking(move || {
                         let wfs       = sql_check::detect_sql_workflows(&d);
+                        let msi       = connection_diag::scan_msi_local_trigger_workflows(&d);
                         let conns     = sql_check::load_sql_connections(&d);
                         let sb        = sb_check::detect_sb_queues(&d);
                         let sb_key    = sb_check::detect_sb_namespace_key(&d);
@@ -169,9 +171,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         let blobs     = blob_check::detect_blob_connections(&d);
                         let cosmos    = cosmos_check::detect_cosmos_connections(&d);
                         let wjs       = blob_check::read_webjobs_storage(&d);
-                        (wfs, conns, sb, sb_key, sb_cs_key, blobs, cosmos, wjs)
+                        (wfs, msi, conns, sb, sb_key, sb_cs_key, blobs, cosmos, wjs)
                     }).await.unwrap_or_default();
-                sql_wfs.set(wfs); sql_conns.set(conns); sb_namespace.set(sb_ns);
+                sql_wfs.set(wfs); msi_wfs.set(msi); sql_conns.set(conns); sb_namespace.set(sb_ns);
                 sb_queues.set(sb_qs); sb_namespace_key.set(sb_key); sb_conn_str.set(sb_cs_key);
                 blob_conns.set(blobs); cosmos_conns.set(cosmos); webjobs_storage.set(wjs);
             });
@@ -272,7 +274,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
                 // ── panel toggles: Connections + Azure ────────────────────────
                 div { class: "toolbar-panels",
-                    {connections_button(&dir, sql_wfs, sql_conns, sb_namespace, sb_queues,
+                    {connections_button(&dir, sql_wfs, msi_wfs, sql_conns, sb_namespace, sb_queues,
                         sb_namespace_key, sb_conn_str, sftp_conns, blob_conns, cosmos_conns,
                         webjobs_storage, db_panel_open, azure_panel_open)}
                     button {
@@ -333,6 +335,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         traced:     traced_wfs.read().clone(),
                         running:    running_wfs.read().clone(),
                         sql_wfs:    sql_wfs.read().clone(),
+                        msi_wfs:    msi_wfs.read().clone(),
                         connectors: wf_connectors.read().clone(),
                         on_select: {
                             let dir = dir.clone();
@@ -345,7 +348,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                             let dir = dir.clone();
                             move |(name, trigger_name, trigger_type): (String, String, String)| {
                                 workflow_run::handle_open_dialog(
-                                    name, trigger_name, trigger_type, None, &dir,
+                                    name, trigger_name, trigger_type, &dir,
                                     selected_wf, source_text, active_tab,
                                     az_status, run_dialog, log_lines,
                                 )
@@ -378,7 +381,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                 &dir, workflows, selected_wf, az_status, run_dialog, log_lines,
                             )
                         },
-                        on_refresh:    move |_| workflow_select::handle_refresh(selected_wf, runs, actions, log_lines),
+                        on_refresh:    move |_| workflow_select::handle_refresh(selected_wf, runs, actions, cleared_wfs, log_lines),
                         on_clear_runs: move |_| {
                             runs.write().clear();
                             actions.write().clear();
@@ -463,6 +466,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                 env_mode:           current_env.read().clone(),
                                 azurite_running:    *azurite_state.read() == ServiceState::Running,
                                 is_open:            db_panel_open,
+                                az_status:          az_status,
                                 on_env_changed: move |_| {
                                     let d  = d1.clone();
                                     let d2 = d2.clone();
@@ -481,9 +485,10 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                     push(msg, LogLevel::Warn);
                                     let d = dir_db.clone();
                                     spawn(async move {
-                                        let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, sftp, blobs, cosmos, wjs) =
+                                        let (wfs, msi2, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, sftp, blobs, cosmos, wjs) =
                                             tokio::task::spawn_blocking(move || {
                                                 (sql_check::detect_sql_workflows(&d),
+                                                 connection_diag::scan_msi_local_trigger_workflows(&d),
                                                  sql_check::load_sql_connections(&d),
                                                  sb_check::detect_sb_queues(&d),
                                                  sb_check::detect_sb_namespace_key(&d),
@@ -493,7 +498,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                                  cosmos_check::detect_cosmos_connections(&d),
                                                  blob_check::read_webjobs_storage(&d))
                                             }).await.unwrap_or_default();
-                                        sql_wfs.set(wfs); sql_conns.set(conns);
+                                        sql_wfs.set(wfs); msi_wfs.set(msi2); sql_conns.set(conns);
                                         sb_namespace.set(sb_ns); sb_queues.set(sb_qs);
                                         sb_namespace_key.set(sb_key); sb_conn_str.set(sb_cs_key);
                                         sftp_conns.set(sftp); blob_conns.set(blobs);
@@ -522,9 +527,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     on_cancel:       move |_| run_dialog.set(None),
                     on_run: {
                         let dir = dir.clone();
-                        move |(blob_name, body): (String, String)| workflow_run::handle_run(
+                        move |(_blob_name, body): (String, String)| workflow_run::handle_run(
                             wf_name.clone(), trigger_name.clone(), trigger_type.clone(),
-                            blob_name, body, &dir,
+                            body, &dir,
                             runs, actions, log_lines, running_wfs, active_tab,
                             traced_wfs, cleared_wfs, run_dialog,
                         )
@@ -765,6 +770,7 @@ fn env_badge(
 fn connections_button(
     dir: &str,
     mut sql_wfs: Signal<HashSet<String>>,
+    mut msi_wfs: Signal<HashSet<String>>,
     mut sql_conns: Signal<Vec<sql_check::SqlConnection>>,
     mut sb_namespace: Signal<String>,
     mut sb_queues: Signal<Vec<sb_check::SbQueueInfo>>,
@@ -789,9 +795,10 @@ fn connections_button(
                     azure_panel_open.set(false);
                     let d = dir.clone();
                     spawn(async move {
-                        let (wfs, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, sftp, blobs, cosmos, wjs) =
+                        let (wfs, msi3, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, sftp, blobs, cosmos, wjs) =
                             tokio::task::spawn_blocking(move || {
                                 (sql_check::detect_sql_workflows(&d),
+                                 connection_diag::scan_msi_local_trigger_workflows(&d),
                                  sql_check::load_sql_connections(&d),
                                  sb_check::detect_sb_queues(&d),
                                  sb_check::detect_sb_namespace_key(&d),
@@ -801,7 +808,7 @@ fn connections_button(
                                  cosmos_check::detect_cosmos_connections(&d),
                                  blob_check::read_webjobs_storage(&d))
                             }).await.unwrap_or_default();
-                        sql_wfs.set(wfs); sql_conns.set(conns);
+                        sql_wfs.set(wfs); msi_wfs.set(msi3); sql_conns.set(conns);
                         sb_namespace.set(sb_ns); sb_queues.set(sb_qs);
                         sb_namespace_key.set(sb_key); sb_conn_str.set(sb_cs_key);
                         sftp_conns.set(sftp); blob_conns.set(blobs);

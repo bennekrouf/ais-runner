@@ -10,6 +10,7 @@ pub struct WorkflowListProps {
     pub traced:      HashSet<String>,
     pub running:     HashSet<String>,
     pub sql_wfs:     HashSet<String>,
+    pub msi_wfs:     HashSet<String>,
     pub connectors:  HashMap<String, Vec<ConnectorKind>>,
     pub on_select:   EventHandler<String>,
     pub on_run:      EventHandler<(String, String, String)>,
@@ -227,6 +228,7 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
                         let has_trace  = props.traced.contains(&name);
                         let is_running = props.running.contains(&name);
                         let has_sql    = props.sql_wfs.contains(&name);
+                        let has_msi    = props.msi_wfs.contains(&name);
                         let health_cls = if wf.healthy { "wf-dot healthy" } else { "wf-dot unhealthy" };
                         let icon       = cat.icon();
                         let icon_title = cat.label();
@@ -266,6 +268,16 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
                                 }
                                 if has_sql {
                                     span { class: "wf-sql-icon", title: "Uses SQL connection" }
+                                }
+                                if has_msi {
+                                    span {
+                                        class: "wf-msi-warn",
+                                        title: "Trigger uses Managed Identity auth against Azurite — \
+                                                trigger will never fire locally. \
+                                                Fix: change connections.json to parameterSetName: connectionString \
+                                                and add <Name>_connectionString = UseDevelopmentStorage=true",
+                                        "⚠ MSI"
+                                    }
                                 }
                                 if is_running {
                                     span { class: "wf-spinner", title: "Running…" }

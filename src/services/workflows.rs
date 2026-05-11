@@ -593,94 +593,76 @@ pub fn duration_ms(start: &Option<String>, end: &Option<String>) -> Option<i64> 
 
 // ── Blob trigger support ───────────────────────────────────────────────────────
 
+/// Returns every hardcoded blob container name referenced in the workflow JSON —
+/// trigger path, action containerName values, and parameter defaultValues that
+/// look like container names (lowercase + hyphens).
+/// Used to pre-flight check container existence before starting a test run.
+pub fn extract_all_blob_containers(workflow_json: &str) -> Vec<String> {
+    let v: serde_json::Value = match serde_json::from_str(workflow_json) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let mut out = std::collections::HashSet::new();
+
+    // Trigger path
+    if let Some(triggers) = v["definition"]["triggers"].as_object() {
+        for t in triggers.values() {
+            if let Some(p) = t["inputs"]["parameters"]["path"].as_str() {
+                if !p.is_empty() && !p.starts_with('@') { out.insert(p.to_string()); }
+            }
+        }
+    }
+
+    // Walk all action inputs for hardcoded containerName values
+    fn collect(val: &serde_json::Value, out: &mut std::collections::HashSet<String>) {
+        match val {
+            serde_json::Value::Object(map) => {
+                if let Some(name) = map.get("containerName").and_then(|v| v.as_str()) {
+                    if !name.is_empty() && !name.starts_with('@') { out.insert(name.to_string()); }
+                }
+                for v in map.values() { collect(v, out); }
+            }
+            serde_json::Value::Array(arr) => { for v in arr { collect(v, out); } }
+            _ => {}
+        }
+    }
+    collect(&v["definition"]["actions"], &mut out);
+
+    // Parameter defaultValues that look like container names
+    if let Some(params) = v["definition"]["parameters"].as_object() {
+        for param in params.values() {
+            if let Some(dv) = param["defaultValue"].as_str() {
+                if !dv.is_empty() && !dv.starts_with('@')
+                    && dv.len() >= 3 && dv.len() <= 63
+                    && dv.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                {
+                    out.insert(dv.to_string());
+                }
+            }
+        }
+    }
+
+    out.into_iter().collect()
+}
+
 /// Reads blob trigger configuration from workflow.json.
 /// Returns (container_name, connection_name) for ServiceProvider blob triggers.
 pub fn read_blob_trigger_info(workflow_json: &str) -> Option<(String, String)> {
     let v: serde_json::Value = serde_json::from_str(workflow_json).ok()?;
     let trigger = v["definition"]["triggers"].as_object()?.values().next()?;
 
-    let container = trigger["inputs"]["serviceProviderConfiguration"]["containerName"].as_str()?.to_string();
-    let conn = trigger["inputs"]["serviceProviderConfiguration"]["serviceProviderId"].as_str()?.to_string();
+    // Container lives at inputs.parameters.path for whenABlobIsAddedOrModified triggers
+    let container = trigger["inputs"]["parameters"]["path"]
+        .as_str()
+        .or_else(|| trigger["inputs"]["serviceProviderConfiguration"]["containerName"].as_str())?
+        .to_string();
+    let conn = trigger["inputs"]["serviceProviderConfiguration"]["connectionName"]
+        .as_str()
+        .unwrap_or("AzureBlob")
+        .to_string();
     Some((container, conn))
 }
 
-pub fn resolve_blob_endpoint(logic_apps_dir: &str, connection_name: &str) -> String {
-    let settings_path = std::path::Path::new(logic_apps_dir).join("local.settings.json");
-    if let Ok(text) = std::fs::read_to_string(&settings_path) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-            // Look for {ConnectionName}_blobStorageEndpoint
-            let key = format!("{}_blobStorageEndpoint", connection_name);
-            if let Some(ep) = v["Values"][&key].as_str() {
-                if !ep.is_empty() { return ep.to_string(); }
-            }
-        }
-    }
-    "http://127.0.0.1:10000/devstoreaccount1".to_string()
-}
-
-/// Upload a blob to Azurite using SharedKey auth with the well-known dev credentials.
-pub async fn upload_blob_to_azurite(
-    endpoint: &str,
-    container: &str,
-    blob_name: &str,
-    content: &[u8],
-) -> Result<(), String> {
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
-
-    // Azurite well-known dev account credentials
-    let account     = "devstoreaccount1";
-    let account_key = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
-
-    let now      = chrono::Utc::now();
-    let date_str = now.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
-    let version  = "2020-04-08";
-    let content_len = content.len().to_string();
-    let content_type = "application/octet-stream";
-
-    // Canonical headers (sorted, lowercase, trimmed values, newline-terminated)
-    let canon_headers = format!(
-        "x-ms-blob-type:BlockBlob\nx-ms-date:{}\nx-ms-version:{}\n",
-        date_str, version
-    );
-    // Canonical resource: /{account}/{container}/{blob}
-    let canon_resource = format!("/{}/{}/{}", account, container, blob_name);
-
-    // StringToSign per Azure Blob Service REST API
-    let string_to_sign = format!(
-        "PUT\n\n\n{}\n\n{}\n\n\n\n\n\n\n{}{}",
-        content_len, content_type, canon_headers, canon_resource
-    );
-
-    let key_bytes = B64.decode(account_key).map_err(|e| format!("key decode: {}", e))?;
-    let mut mac   = Hmac::<Sha256>::new_from_slice(&key_bytes).map_err(|e| format!("hmac init: {}", e))?;
-    mac.update(string_to_sign.as_bytes());
-    let sig = B64.encode(mac.finalize().into_bytes());
-
-    let url = format!("{}/{}/{}", endpoint.trim_end_matches('/'), container, blob_name);
-
-    let resp = reqwest::Client::new()
-        .put(&url)
-        .header("Authorization",   format!("SharedKey {}:{}", account, sig))
-        .header("x-ms-date",       &date_str)
-        .header("x-ms-version",    version)
-        .header("x-ms-blob-type",  "BlockBlob")
-        .header("Content-Type",    content_type)
-        .header("Content-Length",  &content_len)
-        .body(content.to_vec())
-        .send()
-        .await
-        .map_err(|e| format!("upload request failed: {}", e))?;
-
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        let status = resp.status();
-        let body   = resp.text().await.unwrap_or_default();
-        Err(format!("Azurite upload HTTP {}: {}", status, body))
-    }
-}
 
 #[cfg(test)]
 mod tests {

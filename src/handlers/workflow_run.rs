@@ -9,10 +9,8 @@ use crate::services::{
 };
 use crate::utils::{filter_cleared, make_push, sweep_run_history};
 
-fn blob_container_for(dir: &str, name: &str, trigger_type: &str, trigger_provider: Option<&str>) -> Option<String> {
-    let t = trigger_type.to_lowercase();
-    let p = trigger_provider.unwrap_or("").to_lowercase();
-    if t != "serviceprovider" || !p.contains("blob") { return None; }
+fn blob_container_for(dir: &str, name: &str, trigger_type: &str) -> Option<String> {
+    if trigger_type.to_lowercase() != "serviceprovider" { return None; }
     let src_path = workflows::resolve_logic_apps_dir(dir).join(name).join("workflow.json");
     let json = std::fs::read_to_string(&src_path).ok()?;
     workflows::read_blob_trigger_info(&json).map(|(container, _)| container)
@@ -22,7 +20,6 @@ pub fn handle_open_dialog(
     name: String,
     trigger_name: String,
     trigger_type: String,
-    trigger_provider: Option<String>,
     dir: &str,
     mut selected_wf: Signal<Option<String>>,
     mut source_text: Signal<String>,
@@ -47,7 +44,7 @@ pub fn handle_open_dialog(
         Err(e)  => format!("// could not read {}: {}", src_path.display(), e),
     };
     source_text.set(wf_text.clone());
-    let blob_container = blob_container_for(dir, &name, &trigger_type, trigger_provider.as_deref());
+    let blob_container = blob_container_for(dir, &name, &trigger_type);
     let suggested = payload::suggest_payload(dir, &name);
     run_dialog.set(Some((name, trigger_name, trigger_type, suggested, blob_container)));
 }
@@ -70,15 +67,15 @@ pub fn handle_trigger_from_detail(
     }
     let Some(wf_name) = selected_wf.read().clone() else { return };
     let Some(wf) = workflows_sig.read().iter().find(|w| w.name == wf_name).cloned() else { return };
+    let blob_container = blob_container_for(dir, &wf.name, &wf.trigger_type);
     let suggested = payload::suggest_payload(dir, &wf.name);
-    run_dialog.set(Some((wf.name, wf.trigger_name, wf.trigger_type, suggested, None)));
+    run_dialog.set(Some((wf.name, wf.trigger_name, wf.trigger_type, suggested, blob_container)));
 }
 
 pub fn handle_run(
     name: String,
     trigger_name: String,
     trigger_type: String,
-    blob_name: String,   // non-empty only for blob triggers
     body: String,
     dir: &str,
     mut runs: Signal<Vec<RunItem>>,
@@ -106,23 +103,15 @@ pub fn handle_run(
     let t = trigger_type.to_lowercase();
     let is_recurrence = t == "recurrence" || t == "schedule";
     let is_http       = matches!(t.as_str(), "request" | "http");
-    let is_blob       = !blob_name.is_empty();
+
+    // Derive blob trigger and container directly from the workflow JSON so this
+    // works regardless of whether the dialog passed a blob_name.
+    let blob_container = blob_container_for(&dir_diag, &wf, &trigger_type);
+    let is_blob        = blob_container.is_some();
+    let blob_container = blob_container.unwrap_or_default();
 
     push(format!("Triggering: {}", wf), LogLevel::Info);
     running_wfs.write().insert(wf.clone());
-
-    // For blob triggers, resolve endpoint + container from the workflow definition
-    let (blob_container, blob_endpoint) = if is_blob {
-        let src_path = workflows::resolve_logic_apps_dir(&dir_diag)
-            .join(&wf).join("workflow.json");
-        let wf_json = std::fs::read_to_string(&src_path).unwrap_or_default();
-        let (container, conn) = workflows::read_blob_trigger_info(&wf_json)
-            .unwrap_or_default();
-        let endpoint = workflows::resolve_blob_endpoint(&dir_diag, &conn);
-        (container, endpoint)
-    } else {
-        (String::new(), String::new())
-    };
 
     spawn(async move {
         let not_found_hints = |push: &mut dyn FnMut(String, LogLevel), dir: &str, wf: &str, hints: Vec<String>| {
@@ -137,20 +126,54 @@ pub fn handle_run(
 
         // Fire
         if is_blob {
-            push(format!("Uploading blob '{}' → {}/{}", blob_name, blob_container, blob_name), LogLevel::Info);
-            match workflows::upload_blob_to_azurite(
-                &blob_endpoint,
-                &blob_container,
-                &blob_name,
-                body.as_bytes(),
-            ).await {
-                Ok(()) => push(format!("Blob uploaded — trigger will fire shortly"), LogLevel::Ok),
-                Err(e) => {
-                    push(format!("Upload error: {}", e), LogLevel::Error);
+            let check_container = blob_container.clone();
+            let existing = tokio::task::spawn_blocking(move || {
+                crate::services::azurite_client::list_blobs(&check_container)
+            }).await.ok().and_then(|r| r.ok()).unwrap_or_default();
+
+            let pending: Vec<_> = existing.iter()
+                .filter(|b| !b.name.ends_with(".keep"))
+                .collect();
+
+            if pending.is_empty() {
+                push(
+                    format!("❌ Container '{}' is empty — upload a file first.", blob_container),
+                    LogLevel::Error,
+                );
+                running_wfs.write().remove(&wf);
+                return;
+            }
+
+            // Pre-flight: check every container the workflow references exists in Azurite.
+            // Missing containers would cause the workflow to fail mid-run, wasting a trigger.
+            let src_path2 = workflows::resolve_logic_apps_dir(&dir_diag).join(&wf).join("workflow.json");
+            if let Ok(wf_json) = std::fs::read_to_string(&src_path2) {
+                let needed  = workflows::extract_all_blob_containers(&wf_json);
+                let all_containers = tokio::task::spawn_blocking(|| {
+                    crate::services::azurite_client::list_containers()
+                }).await.ok().and_then(|r| r.ok()).unwrap_or_default();
+
+                let missing: Vec<_> = needed.iter()
+                    .filter(|c| !all_containers.contains(*c))
+                    .cloned()
+                    .collect();
+
+                if !missing.is_empty() {
+                    for c in &missing {
+                        push(
+                            format!("❌ Container '{}' does not exist in Azurite — create it first (DB panel → Blobs → + Create).", c),
+                            LogLevel::Error,
+                        );
+                    }
                     running_wfs.write().remove(&wf);
                     return;
                 }
             }
+
+            push(
+                format!("👁 Watching '{}' ({} file(s)) — polling for a run…", blob_container, pending.len()),
+                LogLevel::Info,
+            );
         } else if is_recurrence {
             match workflows::run_trigger_direct(&wf, &trigger_name, &body).await {
                 Ok(_)  => push(format!("Run triggered ({})", trigger_type), LogLevel::Ok),
@@ -203,11 +226,10 @@ pub fn handle_run(
             return;
         }
 
-        // Poll until terminal.
-        // If no run appears in history within ~12 s we stop immediately — the run
-        // completed (we got HTTP 200/202) but was never written to Azurite table
-        // storage, which means the tables were not initialised.  Polling further
-        // is pointless; tell the user exactly how to fix it.
+        // Poll until terminal.  Stop quickly if nothing appears — a working blob
+        // trigger fires within a few seconds of the blob being added.
+        let empty_tick_limit: u32 = 20; // ~16 s at 800 ms/tick
+        let patience_secs         = 16u32;
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
         let deadline        = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
         let mut empty_ticks = 0u32;
@@ -298,13 +320,15 @@ pub fn handle_run(
                         }
                     } else {
                         empty_ticks += 1;
-                        // ~12 s with empty history = Azurite tables not initialised.
-                        // Stop immediately instead of spinning for 5 more minutes.
-                        if empty_ticks >= 15 {
+                        if empty_ticks >= empty_tick_limit {
                             push(
-                                "❌ Run not recorded after 12 s — Azurite table storage was not \
-                                 initialised (likely caused by an unhealthy workflow connection at startup). \
-                                 Fix: click ⟳ Reset Azurite next to the Azurite service, then restart func.".into(),
+                                format!(
+                                    "❌ No run appeared after {} s. Possible causes: \
+                                     (1) workflow health error — check the workflow list for ⚠; \
+                                     (2) blob trigger didn't fire — re-upload the file to make it fresh; \
+                                     (3) Azurite table storage not initialised — click ⟳ Reset Azurite and restart func.",
+                                    patience_secs
+                                ),
                                 LogLevel::Error,
                             );
                             break;

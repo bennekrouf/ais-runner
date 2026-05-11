@@ -189,7 +189,8 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
         let mut fw = fetch_workflows.clone();
         move |_| {
             diff_cache.write().clear();
-            if let Some(site) = selected_site.read().clone() {
+            let site = selected_site.read().clone();
+            if let Some(site) = site {
                 fw(site);
             }
         }
@@ -223,7 +224,7 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                 }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into())));
                 fetching_sites.set(false);
                 match result {
-                    Ok(list) if !list.is_empty() => fw(list.into_iter().next().unwrap()),
+                    Ok(list) => if let Some(first) = list.into_iter().next() { fw(first); },
                     Ok(_)    => status.set(Some("No Logic Apps Standard sites found in this resource group.".into())),
                     Err(e)   => status.set(Some(fmt_az_error(&e))),
                 }

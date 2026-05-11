@@ -230,9 +230,38 @@ pub fn clear_container(container: &str) -> Result<u64, String> {
     Ok(n)
 }
 
+/// Download a blob and save it to a local file path.
+pub fn download_blob(container: &str, blob_name: &str, dest_path: &str) -> Result<(), String> {
+    let date = make_date();
+    let path = format!("/{}/{}", container, blob_name);
+    let auth = auth_header("GET", "", None, &date, &path, &[], &[]);
+    let url  = format!("{}/{}/{}", BLOB_ENDPOINT, container, percent_encode(blob_name));
+
+    let resp = client()
+        .get(&url)
+        .header("x-ms-date",     &date)
+        .header("x-ms-version",  API_VERSION)
+        .header("Authorization", auth)
+        .send()
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        return Err(format!("HTTP {}: {}", status, extract_error_message(&body)));
+    }
+    let bytes = resp.bytes().map_err(|e| e.to_string())?;
+    std::fs::write(dest_path, &bytes).map_err(|e| e.to_string())
+}
+
 /// Upload a local file as a BlockBlob (overwrites if it already exists).
 pub fn upload_blob(container: &str, file_path: &str, blob_name: &str) -> Result<(), String> {
-    let data           = std::fs::read(file_path).map_err(|e| e.to_string())?;
+    let data = std::fs::read(file_path).map_err(|e| e.to_string())?;
+    upload_blob_bytes_sync(container, blob_name, data)
+}
+
+/// Upload raw bytes as a BlockBlob. Used by the async trigger path.
+pub fn upload_blob_bytes_sync(container: &str, blob_name: &str, data: Vec<u8>) -> Result<(), String> {
     let content_length = data.len() as u64;
     let content_type   = "application/octet-stream";
     let date           = make_date();
