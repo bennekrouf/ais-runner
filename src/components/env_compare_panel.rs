@@ -241,7 +241,6 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                                 rsx! {
                                     button {
                                         class: "btn btn-small btn-fetch",
-                                        style: "font-size:10px;padding:1px 5px",
                                         disabled: st.is_loading(),
                                         onclick: fetch_azure,
                                         if st.is_loading() { "…" }
@@ -337,8 +336,19 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                                     let secret  = is_secret(&key);
                                     let visible = show_keys.read().contains(&key);
 
+                                    // Mark the whole row when any remote cell differs from local
+                                    let row_has_diff = az_vals.as_ref().map(|m| {
+                                        m.get(&key).map(|v| v.as_str()).unwrap_or("") != lv.as_str()
+                                    }).unwrap_or(false)
+                                    || col_maps.iter().any(|(_, vals)| {
+                                        vals.as_ref().map(|m| {
+                                            m.get(&key).map(|v| v.as_str()).unwrap_or("") != lv.as_str()
+                                        }).unwrap_or(false)
+                                    });
+                                    let row_class = if row_has_diff { "env-compare-row has-diff" } else { "env-compare-row" };
+
                                     rsx! {
-                                        tr { class: "env-compare-row",
+                                        tr { class: "{row_class}",
                                             td { class: "env-col-key",
                                                 span { title: "{key}", "{key}" }
                                                 if secret {
@@ -396,9 +406,13 @@ fn render_local(val: &str, masked: bool) -> Element {
 
 fn render_diff(local_val: &str, cell: Option<&str>, masked: bool) -> Element {
     match cell {
-        None    => rsx! { span { class: "env-val-missing", "—" } },
+        // Key absent from this environment entirely — muted dash
+        None => rsx! { span { class: "env-val-missing", title: "Key not present in this environment", "—" } },
+        // Values match — quiet confirmation
         Some(v) if v == local_val => rsx! { span { class: "env-val-same", "≡" } },
-        Some(_) if masked         => rsx! { span { class: "env-val-differs", "≠ •••" } },
+        // Value differs but masked (secret)
+        Some(_) if masked => rsx! { span { class: "env-val-differs", title: "Value differs", "≠ •••" } },
+        // Value differs — amber, show the remote value
         Some(v) => {
             let d = trunc(v, 38);
             rsx! { span { class: "env-val-differs", title: "{v}", "≠ {d}" } }
