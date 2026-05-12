@@ -101,8 +101,8 @@ pub fn handle_reset(
     let mut push = make_push(log_lines);
     push("⟳ Resetting Azurite — stopping func and Azurite…".into(), LogLevel::Warn);
 
-    // Kill both processes synchronously (kill() is non-blocking at the OS level,
-    // so we follow with an async wait for port-free before touching anything).
+    // stop() now calls wait() internally, so both processes are fully dead (and their
+    // ports released by the kernel) before these lines return.
     let _ = func_proc.read().stop();
     let _ = az_proc.read().stop();
 
@@ -113,20 +113,21 @@ pub fn handle_reset(
     spawn(async move {
         let mut push2 = make_push(log_lines);
 
-        // Wait for port 10000 to be RELEASED (not open) — this is the key fix.
-        // child.kill() sends SIGKILL but the port stays bound until the OS reclaims
-        // the process; trying to start a new Azurite immediately causes EADDRINUSE.
-        let mut freed = false;
-        for _ in 0..50 {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            if tokio::net::TcpStream::connect("127.0.0.1:10000").await.is_err() {
-                freed = true;
-                break;
+        // Port 10000 should be free immediately since stop() now reaps the child.
+        // A short check guards against an external Azurite process on the same port.
+        let mut freed = tokio::net::TcpStream::connect("127.0.0.1:10000").await.is_err();
+        if !freed {
+            for _ in 0..3 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if tokio::net::TcpStream::connect("127.0.0.1:10000").await.is_err() {
+                    freed = true;
+                    break;
+                }
             }
         }
         if !freed {
             push2(
-                "⚠ Port 10000 still in use after 5 s — another Azurite instance may be running. \
+                "⚠ Port 10000 still in use — another Azurite instance may be running. \
                  Kill it manually (lsof -i :10000), then click ⟳ Reset again.".into(),
                 LogLevel::Error,
             );

@@ -90,7 +90,8 @@ impl ManagedProcess {
     pub fn stop(&self) -> Result<(), String> {
         let mut guard = self.child.lock().map_err(|e| e.to_string())?;
         if let Some(mut child) = guard.take() {
-            child.kill().map_err(|e| e.to_string())?;
+            let _ = child.kill();
+            let _ = child.wait(); // reap exit status so the kernel doesn't zombie the process
         }
         Ok(())
     }
@@ -98,25 +99,42 @@ impl ManagedProcess {
 
 /// Spawn two background threads that read stdout/stderr line-by-line and send to `tx`.
 /// `stderr_only` filters stdout to lines with error/warning keywords to reduce noise.
+/// Returns the thread handles so callers can join them on shutdown if needed.
 pub fn stream_output(
     stdout: ChildStdout,
     stderr: ChildStderr,
     tx: tokio::sync::mpsc::UnboundedSender<(String, bool)>, // (line, is_err)
     stdout_filter: bool,
-) {
+) -> (std::thread::JoinHandle<()>, std::thread::JoinHandle<()>) {
     let tx_out = tx.clone();
-    std::thread::spawn(move || {
+    let h_out = std::thread::spawn(move || {
         for line in std::io::BufReader::new(stdout).lines().flatten() {
-            if !stdout_filter || line_is_notable(&line) {
+            if !line_is_suppressed(&line) && (!stdout_filter || line_is_notable(&line)) {
                 let _ = tx_out.send((line, false));
             }
         }
     });
-    std::thread::spawn(move || {
+    let h_err = std::thread::spawn(move || {
         for line in std::io::BufReader::new(stderr).lines().flatten() {
-            let _ = tx.send((line, true));
+            if !line_is_suppressed(&line) {
+                let _ = tx.send((line, true));
+            }
         }
     });
+    (h_out, h_err)
+}
+
+/// Returns true for lines that are never worth showing regardless of stream.
+fn line_is_suppressed(line: &str) -> bool {
+    // Strip optional [ISO-timestamp] prefix emitted by the func host.
+    let s = line.trim_start();
+    let s = if s.starts_with('[') {
+        s.find("] ").map(|i| s[i + 2..].trim_start()).unwrap_or(s)
+    } else {
+        s
+    };
+    // .NET stack-frame lines: "at Namespace.Class.Method(args)"
+    s.starts_with("at ") && s.contains('.') && s.contains('(')
 }
 
 fn line_is_notable(line: &str) -> bool {

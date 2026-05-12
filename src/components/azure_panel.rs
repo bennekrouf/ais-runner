@@ -53,7 +53,8 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
     let mut pulling:        Signal<HashSet<String>>             = use_signal(HashSet::new);
     let mut status:         Signal<Option<String>>              = use_signal(|| None);
     let mut diff_map:       Signal<HashMap<String, DiffStatus>> = use_signal(HashMap::new);
-    let mut computing:      Signal<usize>                       = use_signal(|| 0);
+    let mut computing:        Signal<usize> = use_signal(|| 0);
+    let mut config_computing: Signal<usize> = use_signal(|| 0);
     let mut confirm_pull:   Signal<Option<String>>              = use_signal(|| None);
     let mut show_all:       Signal<bool>                        = use_signal(|| false);
     let mut diff_cache = props.diff_cache;
@@ -74,6 +75,10 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
     });
     let local_set: HashSet<String> = props.local_workflows.iter().cloned().collect();
 
+    // Special diff_map keys for config files (not workflows).
+    const PARAM_KEY: &str = "__parameters.json__";
+    const CONN_KEY:  &str = "__connections.json__";
+
     let fetch_workflows = {
         let la_dir        = props.logic_apps_dir.clone();
         let local_set_ref = local_set.clone();
@@ -82,6 +87,7 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
             az_workflows.set(vec![]);
             diff_map.write().clear();
             computing.set(0);
+            config_computing.set(0);
             status.set(None);
             let sub  = site.subscription.clone();
             let rg   = site.resource_group.clone();
@@ -109,7 +115,25 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                                 }
                             }
                         }
+
+                        // Config file diffs: check cache, else schedule.
+                        let needs_params = diff_cache.read().get(PARAM_KEY).is_none();
+                        let needs_conns  = diff_cache.read().get(CONN_KEY).is_none();
+                        if needs_params {
+                            diff_map.write().insert(PARAM_KEY.to_string(), DiffStatus::Checking);
+                        } else if let Some(c) = diff_cache.read().get(PARAM_KEY).cloned() {
+                            diff_map.write().insert(PARAM_KEY.to_string(), c);
+                        }
+                        if needs_conns {
+                            diff_map.write().insert(CONN_KEY.to_string(), DiffStatus::Checking);
+                        } else if let Some(c) = diff_cache.read().get(CONN_KEY).cloned() {
+                            diff_map.write().insert(CONN_KEY.to_string(), c);
+                        }
+
+                        // Workflow counter (unchanged from original — config files are separate).
                         computing.set(to_compute.len());
+                        // Config file counter: 0, 1, or 2 tasks.
+                        config_computing.set(needs_params as usize + needs_conns as usize);
                         az_workflows.set(wfs);
 
                         for (i, wf_nm) in to_compute {
@@ -131,6 +155,40 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                                 diff_cache.write().insert(key, ds);
                                 let cur = *computing.read();
                                 computing.set(cur.saturating_sub(1));
+                            });
+                        }
+
+                        if needs_params {
+                            let (sc, rc, nc, dc) = (sub.clone(), rg.clone(), name.clone(), dir.clone());
+                            spawn(async move {
+                                let ds = match tokio::task::spawn_blocking(move || {
+                                    azure_sync::diff_parameters_vs_local(&sc, &rc, &nc, &dc)
+                                }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into()))) {
+                                    Ok(0)   => DiffStatus::Same,
+                                    Ok(cnt) => DiffStatus::Differs(cnt),
+                                    Err(_)  => DiffStatus::Error,
+                                };
+                                diff_map.write().insert(PARAM_KEY.to_string(), ds.clone());
+                                diff_cache.write().insert(PARAM_KEY.to_string(), ds);
+                                let cur = *config_computing.read();
+                                config_computing.set(cur.saturating_sub(1));
+                            });
+                        }
+
+                        if needs_conns {
+                            let (sc, rc, nc, dc) = (sub.clone(), rg.clone(), name.clone(), dir.clone());
+                            spawn(async move {
+                                let ds = match tokio::task::spawn_blocking(move || {
+                                    azure_sync::diff_connections_vs_local(&sc, &rc, &nc, &dc)
+                                }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into()))) {
+                                    Ok(0)   => DiffStatus::Same,
+                                    Ok(cnt) => DiffStatus::Differs(cnt),
+                                    Err(_)  => DiffStatus::Error,
+                                };
+                                diff_map.write().insert(CONN_KEY.to_string(), ds.clone());
+                                diff_cache.write().insert(CONN_KEY.to_string(), ds);
+                                let cur = *config_computing.read();
+                                config_computing.set(cur.saturating_sub(1));
                             });
                         }
                     }
@@ -179,6 +237,39 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                         diff_cache.write().insert(wf_name.clone(), DiffStatus::Same);
                         status.set(Some(format!("✅ {} pulled", wf_name)));
                         on_pulled.call(wf_name);
+                    }
+                }
+            });
+        }
+    };
+
+    let pull_config_file = {
+        let la_dir = props.logic_apps_dir.clone();
+        move |filename: &'static str, cache_key: &'static str| {
+            let site = match selected_site.read().clone() {
+                Some(s) => s,
+                None    => return,
+            };
+            status.set(None);
+            let dir      = la_dir.clone();
+            let sub      = site.subscription.clone();
+            let rg       = site.resource_group.clone();
+            let sitename = site.name.clone();
+            spawn(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    azure_sync::download_config_file(&sub, &rg, &sitename, filename)
+                }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into())));
+                match result {
+                    Err(e) => status.set(Some(format!("❌ {filename}: {}", fmt_az_error(&e)))),
+                    Ok(json) => {
+                        let resolved = crate::services::workflows::resolve_logic_apps_dir(&dir);
+                        if let Err(e) = std::fs::write(resolved.join(filename), &json) {
+                            status.set(Some(format!("❌ write failed: {}", e)));
+                            return;
+                        }
+                        diff_map.write().insert(cache_key.to_string(), DiffStatus::Same);
+                        diff_cache.write().insert(cache_key.to_string(), DiffStatus::Same);
+                        status.set(Some(format!("✅ {filename} pulled")));
                     }
                 }
             });
@@ -336,6 +427,57 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                             span { class: "az-stat az-stat-error", "⚠ {errors} error" }
                         }
                         span { class: "az-stat az-stat-total", "· {wf_count} total" }
+                    }
+
+                    // ── config files ───────────────────────────────────────
+                    div { class: "az-config-section",
+                        div { class: "az-config-header", "Config Files" }
+                        {
+                            let configs: &[(&str, &str, &str, bool)] = &[
+                                // (label, diff_map key, cache key, allow_pull)
+                                ("parameters.json", "__parameters.json__", "__parameters.json__", true),
+                                ("connections.json", "__connections.json__", "__connections.json__", false),
+                            ];
+                            let mut pcf = pull_config_file.clone();
+                            rsx! {
+                                for (label, map_key, cache_key, allow_pull) in configs.iter().copied() {
+                                    {
+                                        let st = diff_map.read().get(map_key).cloned();
+                                        let is_cfg_computing = *config_computing.read() > 0;
+                                        let (sync_label, sync_cls) = if is_cfg_computing && st.as_ref().map_or(true, |s| matches!(s, DiffStatus::Checking)) {
+                                            ("…".to_string(), "az-sync-checking")
+                                        } else {
+                                            match &st {
+                                                Some(DiffStatus::Same)       => ("≡ in sync".to_string(), "az-sync-same"),
+                                                Some(DiffStatus::Differs(n)) => (format!("≠ {} missing", n), "az-sync-differs"),
+                                                Some(DiffStatus::Error)      => ("⚠ error".to_string(),   "az-sync-error"),
+                                                _                            => ("…".to_string(),          "az-sync-checking"),
+                                            }
+                                        };
+                                        let mut pcf2 = pcf.clone();
+                                        rsx! {
+                                            div { class: "az-config-row",
+                                                span { class: "az-config-name", "{label}" }
+                                                span { class: sync_cls, "{sync_label}" }
+                                                if allow_pull {
+                                                    button {
+                                                        class: "btn btn-small az-pull-btn",
+                                                        onclick: move |_| pcf2(label, cache_key),
+                                                        "⟳ Pull"
+                                                    }
+                                                } else {
+                                                    span {
+                                                        class: "az-config-note",
+                                                        title: "Auth method differs locally (connectionString vs MSI) — only connection names are compared",
+                                                        "auth excluded"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // ── filter bar ─────────────────────────────────────────

@@ -241,6 +241,96 @@ fn line_diff_count(a: &str, b: &str) -> usize {
     diff
 }
 
+// ── config file diff helpers ──────────────────────────────────────────────────
+
+/// Download a file from the Logic Apps site's wwwroot via the ARM hostruntime VFS proxy.
+/// Works for parameters.json and connections.json.
+fn download_la_file(subscription: &str, rg: &str, site: &str, filename: &str)
+    -> Result<String, AzError>
+{
+    let url = format!(
+        "https://management.azure.com/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Web/sites/{}/hostruntime/admin/vfs/site/wwwroot/{}?api-version=2022-03-01",
+        subscription, rg, site, filename
+    );
+    let out = az_command(&["rest", "--method", "GET", "--url", &url])
+        .output()
+        .map_err(|e| AzError::Other(format!("az not found: {}", e)))?;
+    let raw    = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    if !out.status.success() {
+        if stderr.contains("AADSTS") || stderr.contains("az login") || stderr.contains("refresh token") {
+            return Err(AzError::NotLoggedIn);
+        }
+        return Err(AzError::Other(stderr.trim().to_string()));
+    }
+    Ok(raw)
+}
+
+/// Public wrapper: download a config file (parameters.json or connections.json) from Azure.
+pub fn download_config_file(subscription: &str, rg: &str, site: &str, filename: &str)
+    -> Result<String, AzError>
+{
+    download_la_file(subscription, rg, site, filename)
+}
+
+/// Count top-level keys present in one JSON object but not the other.
+fn key_diff_count(a: &Value, b: &Value) -> usize {
+    use std::collections::HashSet;
+    let ak: HashSet<&str> = a.as_object().map(|o| o.keys().map(|k| k.as_str()).collect()).unwrap_or_default();
+    let bk: HashSet<&str> = b.as_object().map(|o| o.keys().map(|k| k.as_str()).collect()).unwrap_or_default();
+    ak.symmetric_difference(&bk).count()
+}
+
+/// Compare local `parameters.json` with Azure by key set.
+/// Values are environment-specific (e.g. dev vs prod endpoints) so only structure is checked.
+pub fn diff_parameters_vs_local(
+    subscription: &str, rg: &str, site: &str, local_dir: &str,
+) -> Result<usize, AzError> {
+    let resolved   = crate::services::workflows::resolve_logic_apps_dir(local_dir);
+    let local_path = resolved.join("parameters.json");
+    if !local_path.exists() {
+        return Err(AzError::Other("No local parameters.json".into()));
+    }
+    let local_str  = std::fs::read_to_string(&local_path)
+        .map_err(|e| AzError::Other(format!("read local: {}", e)))?;
+    let remote_str = download_la_file(subscription, rg, site, "parameters.json")?;
+
+    let local_val: Value  = serde_json::from_str(&local_str)
+        .map_err(|e| AzError::Other(format!("parse local: {}", e)))?;
+    let remote_val: Value = serde_json::from_str(&remote_str)
+        .map_err(|e| AzError::Other(format!("parse remote: {}", e)))?;
+
+    if local_val == remote_val { return Ok(0); }
+    Ok(key_diff_count(&local_val, &remote_val).max(1))
+}
+
+/// Compare local `connections.json` with Azure, ignoring auth method differences.
+/// MSI (cloud) vs connectionString (local) is by design — only which connections
+/// exist per section is compared.
+pub fn diff_connections_vs_local(
+    subscription: &str, rg: &str, site: &str, local_dir: &str,
+) -> Result<usize, AzError> {
+    let resolved   = crate::services::workflows::resolve_logic_apps_dir(local_dir);
+    let local_path = resolved.join("connections.json");
+    if !local_path.exists() {
+        return Err(AzError::Other("No local connections.json".into()));
+    }
+    let local_str  = std::fs::read_to_string(&local_path)
+        .map_err(|e| AzError::Other(format!("read local: {}", e)))?;
+    let remote_str = download_la_file(subscription, rg, site, "connections.json")?;
+
+    let local_val: Value  = serde_json::from_str(&local_str)
+        .map_err(|e| AzError::Other(format!("parse local: {}", e)))?;
+    let remote_val: Value = serde_json::from_str(&remote_str)
+        .map_err(|e| AzError::Other(format!("parse remote: {}", e)))?;
+
+    let sections = ["functionConnections", "managedApiConnections", "serviceProviderConnections"];
+    let total: usize = sections.iter()
+        .map(|s| key_diff_count(&local_val[s], &remote_val[s]))
+        .sum();
+    Ok(total)
+}
+
 /// Read the subscription ID from local.settings.json (WORKFLOWS_SUBSCRIPTION_ID).
 pub fn detect_subscription(logic_apps_dir: &str) -> Option<String> {
     let sub = if let Ok(text) = std::fs::read_to_string(

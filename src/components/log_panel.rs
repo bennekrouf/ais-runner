@@ -32,6 +32,18 @@ fn az_line_class(line: &str) -> &'static str {
     else { "log-msg info" }
 }
 
+/// Returns true for .NET stack-frame lines that repeat every ~60 s and carry no
+/// actionable information (e.g. "at System.ArgumentNullException.Throw(String paramName)").
+pub fn is_stack_frame_noise(msg: &str) -> bool {
+    let s = msg.trim_start();
+    let s = if s.starts_with('[') {
+        s.find("] ").map(|i| s[i + 2..].trim_start()).unwrap_or(s)
+    } else {
+        s
+    };
+    s.starts_with("at ") && s.contains('.') && s.contains('(')
+}
+
 pub fn is_sb_noise(msg: &str) -> bool {
     msg.contains("An unhandled exception occurred in the message batch receive loop") ||
     msg.contains("aka.ms/azsdk/net/servicebus/exceptions/troubleshoot") ||
@@ -179,7 +191,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
             div {
                 id: "log-scroll",
                 style: if tab == "console" { "" } else { "display:none" },
-                for line in props.lines.read().iter().filter(|l| !is_sb_noise(&l.msg)) {
+                for line in props.lines.read().iter().filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg)) {
                     div { class: "log-line",
                         span { class: "log-time", "{line.time}" }
                         span { class: line.level.css_class(), "{line.msg}" }
