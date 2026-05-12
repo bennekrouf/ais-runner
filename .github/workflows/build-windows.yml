@@ -27,6 +27,33 @@ jobs:
         run: cargo build --release
 
       # ── Package: exe + setup script only ────────────────────────────────
+      - name: Write README
+        shell: pwsh
+        run: |
+          $readme = @(
+            "AIS Runner for Windows",
+            "======================",
+            "",
+            "FIRST TIME SETUP",
+            "----------------",
+            "1. Extract this ZIP anywhere.",
+            "2. Right-click setup-windows.ps1 and choose Run with PowerShell (needs internet + admin)",
+            "   Installs: Node.js 20.18.1, Azure CLI 2.65.0, Azurite 3.30.0, func 4.x",
+            "   Run once - already-installed tools are skipped automatically.",
+            "",
+            "LAUNCH",
+            "------",
+            "3. Run ais-runner.exe.",
+            "",
+            "DEPENDENCIES (installed by setup script, not bundled)",
+            "------------------------------------------------------",
+            "  Node.js    v20.18.1  https://nodejs.org",
+            "  Azure CLI  2.65.0    https://aka.ms/installazurecliwindows",
+            "  Azurite    3.30.0    npm install -g azurite@3.30.0",
+            "  func       4.x       npm install -g azure-functions-core-tools@4"
+          )
+          $readme | Out-File "README.txt" -Encoding UTF8
+
       - name: Package ZIP
         shell: pwsh
         run: |
@@ -35,29 +62,7 @@ jobs:
 
           Copy-Item "target\release\ais-runner.exe" $dist\
           Copy-Item "scripts\setup-windows.ps1"     $dist\
-
-          @"
-AIS Runner for Windows
-======================
-
-FIRST TIME SETUP
-----------------
-1. Extract this ZIP anywhere.
-2. Right-click setup-windows.ps1 → "Run with PowerShell"  (needs internet + admin)
-   This installs: Node.js 20.18.1, Azure CLI 2.65.0, Azurite 3.30.0, func 4.x
-   Run once — already-installed tools are skipped automatically.
-
-LAUNCH
-------
-3. Run ais-runner.exe.
-
-DEPENDENCIES (installed by setup script, not bundled)
-------------------------------------------------------
-  Node.js       v20.18.1   https://nodejs.org
-  Azure CLI     2.65.0     https://aka.ms/installazurecliwindows
-  Azurite       3.30.0     npm install -g azurite@3.30.0
-  func          4.x        npm install -g azure-functions-core-tools@4
-"@ | Out-File "$dist\README.txt" -Encoding UTF8
+          Copy-Item "README.txt"                     $dist\
 
           Compress-Archive -Path "$dist\*" -DestinationPath "ais-runner-windows.zip" -Force
 
