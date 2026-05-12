@@ -1498,6 +1498,13 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
 .env-val-empty   { color: var(--text3); font-style: italic; }
 .env-secret      { color: var(--text3); letter-spacing: 2px; }
 .env-secret-tog  { font-size: 10px; margin-left: 3px; opacity: .6; }
+/* Click-to-copy cells */
+.env-cell-copyable { cursor: pointer; }
+.env-cell-copyable:hover { background: var(--bg3) !important; }
+.env-cell-copyable:hover span { text-decoration: underline dotted var(--text3); }
+/* Flash green briefly after copy */
+.env-cell-copied { background: color-mix(in srgb, var(--green) 15%, transparent) !important; cursor: default; }
+.env-cell-copied span { color: var(--green) !important; font-style: normal !important; }
 
 .settings-header {
     display: flex;

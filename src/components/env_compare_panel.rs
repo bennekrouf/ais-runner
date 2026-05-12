@@ -51,6 +51,8 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
     let mut only_diff:  Signal<bool>                           = use_signal(|| false);
     // Secret key visibility
     let mut show_keys:  Signal<HashSet<String>>                = use_signal(HashSet::new);
+    // Clipboard flash: stores "key::col_index" of the last copied cell
+    let mut copied_cell: Signal<Option<String>>                = use_signal(|| None);
 
     // Auto-detect DevOps URL from git remote on mount
     use_effect({
@@ -347,6 +349,28 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                                     });
                                     let row_class = if row_has_diff { "env-compare-row has-diff" } else { "env-compare-row" };
 
+                                    // Helper: copy raw value to clipboard and flash the cell
+                                    let mut copy_val = move |cell_id: String, raw: String| {
+                                        if raw.is_empty() { return; }
+                                        std::thread::spawn(move || {
+                                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                                let _ = cb.set_text(raw);
+                                            }
+                                        });
+                                        copied_cell.set(Some(cell_id.clone()));
+                                        // Clear the flash after 1.2 s
+                                        spawn(async move {
+                                            tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+                                            if copied_cell.read().as_deref() == Some(&cell_id) {
+                                                copied_cell.set(None);
+                                            }
+                                        });
+                                    };
+
+                                    // Build cell IDs: "key::0" = local, "key::1" = azure, "key::2+" = groups
+                                    let cell_local_id = format!("{}::0", key);
+                                    let flashed_local = copied_cell.read().as_deref() == Some(&cell_local_id);
+
                                     rsx! {
                                         tr { class: "{row_class}",
                                             td { class: "env-col-key",
@@ -366,16 +390,62 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                                                     }
                                                 }
                                             }
-                                            td { class: "env-col-val", { render_local(&lv, secret && !visible) } }
+                                            // Local value cell
+                                            td {
+                                                class: if flashed_local { "env-col-val env-cell-copied" } else { "env-col-val env-cell-copyable" },
+                                                title: if secret && !visible { "Reveal to copy" } else { "Click to copy" },
+                                                onclick: {
+                                                    let id  = cell_local_id.clone();
+                                                    let raw = if secret && !visible { String::new() } else { lv.clone() };
+                                                    move |_| copy_val(id.clone(), raw.clone())
+                                                },
+                                                { render_local(&lv, secret && !visible) }
+                                            }
+                                            // Azure cloud column
                                             if az_vals.is_some() {
-                                                td { class: "env-col-val",
-                                                    { render_diff(&lv, az_vals.as_ref().and_then(|m| m.get(&key)).map(|s| s.as_str()), secret && !visible) }
+                                                {
+                                                    let cell_id  = format!("{}::1", key);
+                                                    let raw      = az_vals.as_ref().and_then(|m| m.get(&key)).cloned().unwrap_or_default();
+                                                    let flashed  = copied_cell.read().as_deref() == Some(&cell_id);
+                                                    let copyable = !raw.is_empty() && !(secret && !visible);
+                                                    let td_class: &str = if flashed { "env-col-val env-cell-copied" } else if copyable { "env-col-val env-cell-copyable" } else { "env-col-val" };
+                                                    let td_title: &str = if copyable { "Click to copy" } else { "" };
+                                                    rsx! {
+                                                        td {
+                                                            class: "{td_class}",
+                                                            title: "{td_title}",
+                                                            onclick: {
+                                                                let id  = cell_id.clone();
+                                                                let r   = if secret && !visible { String::new() } else { raw.clone() };
+                                                                move |_| copy_val(id.clone(), r.clone())
+                                                            },
+                                                            { render_diff(&lv, az_vals.as_ref().and_then(|m| m.get(&key)).map(|s| s.as_str()), secret && !visible) }
+                                                        }
+                                                    }
                                                 }
                                             }
-                                            for (_, vals) in &col_maps {
+                                            // DevOps group columns
+                                            for (col_idx, (_, vals)) in col_maps.iter().enumerate() {
                                                 if vals.is_some() || all_groups.iter().any(|g| order.contains(&g.name)) {
-                                                    td { class: "env-col-val",
-                                                        { render_diff(&lv, vals.as_ref().and_then(|m| m.get(&key)).map(|s| s.as_str()), secret && !visible) }
+                                                    {
+                                                        let cell_id  = format!("{}::{}", key, col_idx + 2);
+                                                        let raw      = vals.as_ref().and_then(|m| m.get(&key)).cloned().unwrap_or_default();
+                                                        let flashed  = copied_cell.read().as_deref() == Some(&cell_id);
+                                                        let copyable = !raw.is_empty() && !(secret && !visible);
+                                                        let td_class: &str = if flashed { "env-col-val env-cell-copied" } else if copyable { "env-col-val env-cell-copyable" } else { "env-col-val" };
+                                                        let td_title: &str = if copyable { "Click to copy" } else { "" };
+                                                        rsx! {
+                                                            td {
+                                                                class: "{td_class}",
+                                                                title: "{td_title}",
+                                                                onclick: {
+                                                                    let id = cell_id.clone();
+                                                                    let r  = if secret && !visible { String::new() } else { raw.clone() };
+                                                                    move |_| copy_val(id.clone(), r.clone())
+                                                                },
+                                                                { render_diff(&lv, vals.as_ref().and_then(|m| m.get(&key)).map(|s| s.as_str()), secret && !visible) }
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
