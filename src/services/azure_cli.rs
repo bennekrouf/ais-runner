@@ -7,10 +7,47 @@ pub enum AzError {
 }
 
 
+/// Resolve the full path to the `az` CLI on Windows.
+///
+/// Azure CLI on Windows installs as `az.cmd` (a batch wrapper) in a
+/// non-standard directory that is usually on the user PATH inside a terminal
+/// but missing from the minimal PATH that GUI apps inherit when launched from
+/// the desktop or Start Menu.
+///
+/// Common install locations (checked in order):
+///   %ProgramFiles(x86)%\Microsoft SDKs\Azure\CLI2\wbin   ← MSI default
+///   %ProgramFiles%\Microsoft SDKs\Azure\CLI2\wbin         ← 64-bit MSI
+///   %LOCALAPPDATA%\Programs\Azure CLI\wbin                 ← per-user install
+#[cfg(target_os = "windows")]
+fn resolve_az_windows() -> String {
+    let candidates: &[(&str, &str)] = &[
+        ("ProgramFiles(x86)", r"Microsoft SDKs\Azure\CLI2\wbin\az.cmd"),
+        ("ProgramFiles",      r"Microsoft SDKs\Azure\CLI2\wbin\az.cmd"),
+        ("LOCALAPPDATA",      r"Programs\Azure CLI\wbin\az.cmd"),
+    ];
+    for (env_var, suffix) in candidates {
+        if let Ok(base) = std::env::var(env_var) {
+            let full = std::path::Path::new(&base).join(suffix);
+            if full.is_file() {
+                return full.to_string_lossy().to_string();
+            }
+        }
+    }
+    // Last resort: hope it's on PATH
+    "az".to_string()
+}
+
 pub fn az_command(args: &[&str]) -> Command {
     if cfg!(target_os = "windows") {
+        // Use the resolved az.cmd path directly so GUI launches work even when
+        // the Azure CLI directory isn't in the inherited system PATH.
+        #[cfg(target_os = "windows")]
+        let az = resolve_az_windows();
+        #[cfg(not(target_os = "windows"))]
+        let az = "az".to_string();
+
         let mut cmd = Command::new("cmd");
-        cmd.args(["/c", "az"]).args(args);
+        cmd.args(["/c", &az]).args(args);
         cmd
     } else {
         let mut cmd = Command::new("az");

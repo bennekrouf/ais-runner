@@ -7,3 +7,4 @@ pub mod run_dialog;
 pub mod db_panel;
 pub mod azure_panel;
 pub mod tooltip;
+pub mod env_compare_panel;

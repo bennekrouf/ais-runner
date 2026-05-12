@@ -1344,6 +1344,120 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
     min-height: 0;
     background: var(--bg0);
 }
+
+/* ── Settings tabs ─────────────────────────────────────────────── */
+.settings-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 6px 14px 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg1);
+    flex-shrink: 0;
+}
+.settings-tab {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text2);
+    font-size: 12px;
+    padding: 4px 10px 6px;
+    cursor: pointer;
+    transition: color .15s;
+}
+.settings-tab:hover { color: var(--text1); }
+.settings-tab.active { color: var(--text1); border-bottom-color: var(--accent); font-weight: 500; }
+
+/* ── Env compare panel ─────────────────────────────────────────── */
+/* ── Env compare panel ─────────────────────────────────────────────────── */
+.env-compare-panel {
+    flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0;
+}
+.env-compare-topbar {
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg1);
+}
+
+/* DevOps URL row */
+.env-ado-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px 6px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+}
+.env-ado-label { font-size: 11px; color: var(--text3); white-space: nowrap; font-weight: 500; text-transform: uppercase; letter-spacing: .05em; }
+.env-ado-input { flex: 1; min-width: 220px; font-size: 12px; background: var(--bg2); border: 1px solid var(--border); color: var(--text1); border-radius: 4px; padding: 3px 8px; }
+.env-source-err { font-size: 11px; color: var(--red); }
+
+/* Variable group dropdown */
+.env-vg-dropdown {
+    position: absolute;
+    z-index: 50;
+    background: var(--bg1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.4);
+    min-width: 280px;
+    max-height: 320px;
+    overflow-y: auto;
+    margin-top: 2px;
+}
+.env-vg-dropdown-header { padding: 8px 12px; font-size: 11px; color: var(--text3); border-bottom: 1px solid var(--border); }
+.env-vg-option { display: flex; align-items: center; gap: 8px; padding: 7px 12px; cursor: pointer; transition: background .1s; }
+.env-vg-option:hover  { background: var(--bg2); }
+.env-vg-added         { opacity: .55; cursor: default; }
+.env-vg-name  { font-size: 13px; color: var(--text1); flex: 1; }
+.env-vg-count { font-size: 11px; color: var(--text3); }
+.env-vg-check { font-size: 12px; color: var(--green); }
+
+/* Column chips */
+.env-col-chips {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px 8px;
+    flex-wrap: wrap;
+}
+.env-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2px 9px 2px 7px;
+    font-size: 11px;
+    color: var(--text2);
+}
+.env-chip-fixed { background: var(--bg0); }
+.env-chip-label { font-weight: 600; color: var(--text1); }
+
+/* Filter + toggle */
+.env-filter-input { font-size: 12px; background: var(--bg2); border: 1px solid var(--border); color: var(--text1); border-radius: 4px; padding: 3px 8px; width: 150px; }
+.env-diff-toggle  { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text2); cursor: pointer; user-select: none; white-space: nowrap; }
+
+/* Table */
+.env-compare-scroll { flex: 1; overflow: auto; }
+.env-compare-empty  { padding: 40px; text-align: center; color: var(--text3); font-size: 13px; line-height: 1.7; }
+.env-compare-table  { width: 100%; border-collapse: collapse; font-size: 12px; }
+.env-compare-table thead { position: sticky; top: 0; background: var(--bg1); z-index: 1; }
+.env-th-key, .env-th-val { padding: 6px 10px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text3); border-bottom: 1px solid var(--border); }
+.env-th-key  { width: 260px; min-width: 180px; }
+.env-th-val  { min-width: 150px; }
+.env-compare-row:nth-child(even) { background: var(--bg1); }
+.env-compare-row:hover           { background: var(--bg2); }
+.env-col-key  { padding: 4px 10px; font-family: var(--font-mono); font-size: 11px; color: var(--text1); white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.env-col-val  { padding: 4px 10px; font-family: var(--font-mono); font-size: 11px; vertical-align: middle; }
+.env-val-local   { color: var(--text1); }
+.env-val-same    { color: var(--text3); }
+.env-val-missing { color: var(--text3); font-style: italic; }
+.env-val-differs { color: #e07b39; font-weight: 500; }
+.env-val-empty   { color: var(--text3); font-style: italic; }
+.env-secret      { color: var(--text3); letter-spacing: 2px; }
+.env-secret-tog  { font-size: 10px; margin-left: 3px; opacity: .6; }
+
 .settings-header {
     display: flex;
     align-items: center;

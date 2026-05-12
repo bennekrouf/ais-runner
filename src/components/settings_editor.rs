@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 use indexmap::IndexMap;
 use crate::services::{azure_cli, config, settings_file};
+use crate::components::env_compare_panel::EnvComparePanel;
 
 const DEFAULT_SUBSCRIPTION: &str = "b4c0de7e-1fe0-4d3b-90c7-e3e9c9e4b9db";
 
@@ -52,6 +53,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
     let logic_apps_dir = props.logic_apps_dir.clone();
     let app_cfg = config::load();
 
+    let mut active_tab = use_signal(|| "edit");
     let mut pairs      = use_signal(|| IndexMap::<String, String>::new());
     let mut status     = use_signal(|| String::new());
     let mut is_err     = use_signal(|| false);
@@ -118,8 +120,31 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
         cats.into_iter().collect()
     };
 
+    let tab = active_tab();
+
     rsx! {
         div { id: "settings-panel",
+
+            // ── Tab bar ──────────────────────────────────────────────────
+            div { class: "settings-tabs",
+                button {
+                    class: if tab == "edit" { "settings-tab active" } else { "settings-tab" },
+                    onclick: move |_| active_tab.set("edit"),
+                    "⚙ Local Settings"
+                }
+                button {
+                    class: if tab == "compare" { "settings-tab active" } else { "settings-tab" },
+                    onclick: move |_| active_tab.set("compare"),
+                    "⊞ Compare Environments"
+                }
+            }
+
+            if tab == "compare" {
+                EnvComparePanel {
+                    logic_apps_dir: props.logic_apps_dir.clone(),
+                    local_pairs:    pairs,
+                }
+            } else {
 
             // ── Header ──────────────────────────────────────────────────
             div { class: "settings-header",
@@ -582,6 +607,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
 
                 AddKeyRow { pairs }
             }
+            } // end else (edit tab)
         }
     }
 }
