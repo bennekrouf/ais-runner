@@ -19,16 +19,12 @@
       "displayName": "serviceBus"
     },
     "cosmos": {
+      "parameterSetName": "connectionString",
       "parameterValues": {
-        "accountEndpoint": "@appsetting('COSMOS_ENDPOINT')",
-        "authenticationPolicy": {
-          "credential": {
-            "accountKey": "@appsetting('COSMOS_KEY')"
-          }
-        }
+        "connectionString": "@appsetting('COSMOS_CONNECTION_STRING')"
       },
       "serviceProvider": {
-        "id": "/serviceProviders/cosmosDb"
+        "id": "/serviceProviders/AzureCosmosDB"
       },
       "displayName": "cosmos"
     }

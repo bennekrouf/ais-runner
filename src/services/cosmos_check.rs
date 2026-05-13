@@ -1,6 +1,7 @@
 /// Well-known Cosmos DB Emulator defaults (Windows + Linux Docker emulator).
 /// The data-explorer UI runs on port 1234; the actual document API is on 8081.
-pub const EMULATOR_ENDPOINT: &str = "https://localhost:8081/";
+/// The vnext-preview Linux emulator serves plain HTTP; the Windows emulator uses HTTPS.
+pub const EMULATOR_ENDPOINT: &str = "http://localhost:8081/";
 pub const EMULATOR_KEY: &str =
     "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw==";
 
@@ -47,31 +48,47 @@ pub fn detect_cosmos_connections(logic_apps_dir: &str) -> Vec<CosmosConnection> 
     if let Some(providers) = conn_json["serviceProviderConnections"].as_object() {
         for (name, conn) in providers {
             let provider_id = conn["serviceProvider"]["id"].as_str().unwrap_or("");
-            let is_cosmos = provider_id == "/serviceProviders/documentDb"   // original (rejected by some runtimes)
-                         || provider_id == "/serviceProviders/cosmosDb"     // camelCase variant
-                         || provider_id == "/serviceProviders/documentDB";  // capital-DB variant
+            let pid_lower = provider_id.to_lowercase();
+            let is_cosmos = pid_lower == "/serviceproviders/azurecosmosdb"
+                         || pid_lower == "/serviceproviders/cosmosdb"
+                         || pid_lower == "/serviceproviders/documentdb";
             if !is_cosmos { continue; }
             let display = conn["displayName"].as_str().unwrap_or(name).to_string();
             let pv = &conn["parameterValues"];
 
-            let endpoint_key = pv["accountEndpoint"].as_str()
-                .and_then(extract_appsetting);
-            let key_key = pv["authenticationPolicy"]["credential"]["accountKey"].as_str()
-                .or_else(|| pv["accountKey"].as_str())
-                .and_then(extract_appsetting);
-
-            let resolve = |k: &Option<String>| -> String {
+            let resolve_setting = |k: &Option<String>| -> String {
                 k.as_deref()
                     .and_then(|k| settings["Values"][k].as_str())
                     .unwrap_or("")
                     .to_string()
             };
 
+            // Two supported parameter layouts:
+            // 1. connectionString  →  "AccountEndpoint=...;AccountKey=..."
+            // 2. accountEndpoint + authenticationPolicy.credential.accountKey (legacy)
+            let conn_str_key = pv["connectionString"].as_str().and_then(extract_appsetting);
+            let (endpoint, account_key, endpoint_key, key_key) = if let Some(ref cs_key) = conn_str_key {
+                let cs = resolve_setting(&conn_str_key);
+                let endpoint = cs.split(';')
+                    .find_map(|p| p.strip_prefix("AccountEndpoint=").map(str::to_string))
+                    .unwrap_or_default();
+                let key = cs.split(';')
+                    .find_map(|p| p.strip_prefix("AccountKey=").map(str::to_string))
+                    .unwrap_or_default();
+                (endpoint, key, Some(cs_key.clone()), Some(cs_key.clone()))
+            } else {
+                let endpoint_key = pv["accountEndpoint"].as_str().and_then(extract_appsetting);
+                let key_key = pv["authenticationPolicy"]["credential"]["accountKey"].as_str()
+                    .or_else(|| pv["accountKey"].as_str())
+                    .and_then(extract_appsetting);
+                (resolve_setting(&endpoint_key), resolve_setting(&key_key), endpoint_key, key_key)
+            };
+
             result.push(CosmosConnection {
                 connection_name: name.clone(),
                 display_name:    display,
-                endpoint:        resolve(&endpoint_key),
-                account_key:     resolve(&key_key),
+                endpoint,
+                account_key,
                 endpoint_key,
                 key_key,
             });
@@ -82,7 +99,8 @@ pub fn detect_cosmos_connections(logic_apps_dir: &str) -> Vec<CosmosConnection> 
 }
 
 /// Test connectivity by GET-ing the Cosmos DB root endpoint (returns account info, no auth needed).
-/// Accepts self-signed TLS — the emulator uses a self-signed cert.
+/// Handles both the Windows emulator (HTTPS + self-signed cert) and the vnext-preview Linux
+/// Docker emulator (plain HTTP on the same port).
 pub async fn test_cosmos_endpoint(endpoint: &str) -> Result<u64, String> {
     if endpoint.is_empty() {
         return Err("No endpoint configured".into());
@@ -94,7 +112,23 @@ pub async fn test_cosmos_endpoint(endpoint: &str) -> Result<u64, String> {
         .build()
         .map_err(|e| e.to_string())?;
     let url = endpoint.trim_end_matches('/').to_string();
-    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let result = client.get(&url).send().await;
+
+    // The vnext-preview Linux emulator serves plain HTTP even if the configured URL says https.
+    // If TLS negotiation fails, retry with http:// on the same host:port.
+    let resp = match result {
+        Ok(r) => r,
+        Err(ref e) if e.to_string().contains("wrong version number")
+                   || e.to_string().contains("tls")
+                   || e.to_string().contains("ssl")
+                   || e.to_string().contains("SSL") =>
+        {
+            let http_url = url.replacen("https://", "http://", 1);
+            client.get(&http_url).send().await.map_err(|e2| e2.to_string())?
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+
     let status = resp.status().as_u16();
     // 200 = account info returned, 401 = reachable but needs auth (also fine for connectivity check)
     if status == 200 || status == 401 {

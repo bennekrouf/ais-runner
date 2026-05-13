@@ -1,5 +1,5 @@
 use regex::Regex;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// Reads a workflow.json and returns a pretty-printed sample JSON body for its trigger.
 /// Tries trigger.inputs.schema first, then the first ParseJson that consumes @triggerBody().
@@ -24,7 +24,7 @@ pub fn suggest_payload(logic_apps_dir: &str, workflow_name: &str) -> String {
         if let Some(trigger) = triggers.values().next() {
             let schema = &trigger["inputs"]["schema"];
             if schema.is_object() && !schema.as_object().map(|m| m.is_empty()).unwrap_or(true) {
-                return pretty(schema_to_sample(schema));
+                return pretty(schema_to_sample("", schema));
             }
         }
     }
@@ -32,7 +32,7 @@ pub fn suggest_payload(logic_apps_dir: &str, workflow_name: &str) -> String {
     // 2. First ParseJson action that reads triggerBody / triggerOutputs
     if let Some(actions) = defn["actions"].as_object() {
         if let Some(schema) = find_trigger_body_schema(actions) {
-            return pretty(schema_to_sample(&schema));
+            return pretty(schema_to_sample("", &schema));
         }
     }
 
@@ -90,18 +90,23 @@ fn resolve_type(schema: &Value) -> &str {
     }
 }
 
-fn schema_to_sample(schema: &Value) -> Value {
+/// `field_name` is the key whose schema this is — used to generate meaningful
+/// samples when the schema is `{"type":"object"}` with no `properties`.
+fn schema_to_sample(field_name: &str, schema: &Value) -> Value {
     match resolve_type(schema) {
         "object" => {
-            let mut map = serde_json::Map::new();
             if let Some(props) = schema["properties"].as_object() {
+                let mut map = serde_json::Map::new();
                 for (k, v) in props {
                     map.insert(k.clone(), sample_named(k, v));
                 }
+                Value::Object(map)
+            } else {
+                // No properties defined — use the field name to provide a meaningful sample
+                sample_object_by_name(field_name)
             }
-            Value::Object(map)
         }
-        "array" => Value::Array(vec![schema_to_sample(&schema["items"])]),
+        "array" => Value::Array(vec![schema_to_sample("item", &schema["items"])]),
         "integer" | "number" => Value::Number(serde_json::Number::from(0)),
         "boolean" => Value::Bool(false),
         _ => {
@@ -118,6 +123,51 @@ fn schema_to_sample(schema: &Value) -> Value {
                 Value::String("text".to_string())
             }
         }
+    }
+}
+
+/// Returns a meaningful sample object for well-known field names that have
+/// `"type": "object"` but no `properties` in the schema (open-ended schemas).
+fn sample_object_by_name(name: &str) -> Value {
+    match name.to_lowercase().as_str() {
+        // CloudEvent envelope — used as the main event carrier in this platform
+        "cloudevent" => json!({
+            "specversion": "1.0",
+            "type": "com.oryx.event",
+            "source": "manual",
+            "id": "TEST-001",
+            "time": "2026-01-01T00:00:00Z",
+            "data": {
+                "msg": {
+                    "correlationId": "TEST-001",
+                    "identifier":    "TEST-001",
+                    "parentId":      "",
+                    "schema":        "",
+                    "content":       {}
+                }
+            }
+        }),
+        // Inner message envelope
+        "msg" => json!({
+            "correlationId": "TEST-001",
+            "identifier":    "TEST-001",
+            "parentId":      "",
+            "schema":        "",
+            "content":       {}
+        }),
+        // CloudEvent data wrapper
+        "data" => json!({
+            "msg": {
+                "correlationId": "TEST-001",
+                "identifier":    "TEST-001",
+                "parentId":      "",
+                "content":       {}
+            }
+        }),
+        // connector and content are intentionally open — empty is valid
+        "connector" | "content" => Value::Object(serde_json::Map::new()),
+        // Anything else with no schema — leave empty
+        _ => Value::Object(serde_json::Map::new()),
     }
 }
 
@@ -189,15 +239,16 @@ fn leaf_value(name: &str) -> Value {
     Value::String(s.to_string())
 }
 
-/// Generate a meaningful value based on the field name when type is string.
+/// Generate a meaningful value based on the field name and its schema type.
 fn sample_named(name: &str, schema: &Value) -> Value {
     let ty = resolve_type(schema);
     if !ty.is_empty() && ty != "string" {
-        return schema_to_sample(schema);
+        // Pass the field name so schema_to_sample can generate smart object samples
+        return schema_to_sample(name, schema);
     }
     let n = name.to_lowercase();
     let s = if n.contains("date") || n.contains("time") {
-        "2026-04-29T10:00:00Z"
+        "2026-01-01T00:00:00Z"
     } else if n == "environment" || n.contains("env") {
         "dev"
     } else if n == "module" {
@@ -205,13 +256,20 @@ fn sample_named(name: &str, schema: &Value) -> Value {
     } else if n == "source" {
         "manual"
     } else if n == "type" {
-        "Invoice"
+        "com.oryx.event"
+    } else if n == "specversion" {
+        "1.0"
+    } else if n.contains("schema") {
+        // inputschema / outputschema — use CloudEvent as default
+        "CloudEvent"
     } else if n.contains("id") || n.contains("key") {
         "TEST-001"
     } else if n.contains("by") || n.contains("user") {
         "test-user"
     } else if n == "value" {
         "example"
+    } else if n.contains("name") {
+        name   // use the field name itself as a hint
     } else {
         "text"
     };
