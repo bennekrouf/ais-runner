@@ -362,8 +362,8 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 {
                     let is_on   = *auto_watch.read();
                     let lbl     = if is_on { "⚡ Auto" } else { "⚡ Off" };
-                    let cls     = if is_on { "btn btn-small auto-watch-btn on" }
-                                  else     { "btn btn-small auto-watch-btn off" };
+                    let cls     = if is_on { "btn auto-watch-btn on" }
+                                  else     { "btn auto-watch-btn off" };
                     let tip     = if is_on {
                         "Auto-trigger ON — watching Azurite for new blobs every 2.5 s. Click to pause."
                     } else {
