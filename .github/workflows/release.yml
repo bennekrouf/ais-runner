@@ -1,0 +1,195 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-mac:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            arch: arm64
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            arch: x86_64
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-macos-${{ matrix.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          DIST=dist/ais-runner-macos-${{ matrix.arch }}
+          mkdir -p "$DIST"
+          cp target/${{ matrix.target }}/release/ais-runner "$DIST/"
+          cp scripts/setup-mac.sh "$DIST/"
+          cp README.md "$DIST/"
+          tar -czf ais-runner-macos-${{ matrix.arch }}.tar.gz -C dist ais-runner-macos-${{ matrix.arch }}
+          shasum -a 256 ais-runner-macos-${{ matrix.arch }}.tar.gz > ais-runner-macos-${{ matrix.arch }}.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ais-runner-macos-${{ matrix.arch }}
+          path: |
+            ais-runner-macos-${{ matrix.arch }}.tar.gz
+            ais-runner-macos-${{ matrix.arch }}.tar.gz.sha256
+
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-windows-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $dist = "dist\ais-runner-windows"
+          New-Item -ItemType Directory -Path $dist -Force | Out-Null
+          Copy-Item "target\release\ais-runner.exe" $dist\
+          Copy-Item "scripts\setup-windows.ps1"     $dist\
+          Copy-Item "README.md"                      $dist\
+          Compress-Archive -Path "$dist\*" -DestinationPath "ais-runner-windows.zip" -Force
+          $hash = (Get-FileHash ais-runner-windows.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  ais-runner-windows.zip" | Out-File "ais-runner-windows.zip.sha256" -Encoding ASCII
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ais-runner-windows
+          path: |
+            ais-runner-windows.zip
+            ais-runner-windows.zip.sha256
+
+  update-tap:
+    needs: [build-mac, build-windows]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Mac artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Compute sha256 values
+        id: sha
+        run: |
+          ARM64=$(cat artifacts/ais-runner-macos-arm64/ais-runner-macos-arm64.tar.gz.sha256 | awk '{print $1}')
+          X86=$(cat artifacts/ais-runner-macos-x86_64/ais-runner-macos-x86_64.tar.gz.sha256 | awk '{print $1}')
+          echo "arm64=$ARM64" >> "$GITHUB_OUTPUT"
+          echo "x86_64=$X86" >> "$GITHUB_OUTPUT"
+
+      - name: Check out homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: Bennekrouf/homebrew-aisrunner
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          path: tap
+
+      - name: Update formula
+        env:
+          VERSION: ${{ github.ref_name }}
+          SHA_ARM64: ${{ steps.sha.outputs.arm64 }}
+          SHA_X86: ${{ steps.sha.outputs.x86_64 }}
+        run: |
+          FORMULA=tap/Formula/aisrunner.rb
+          # Strip leading 'v' from tag for the version field
+          VER="${VERSION#v}"
+
+          sed -i "s|version \".*\"|version \"$VER\"|" "$FORMULA"
+          sed -i "/on_arm/,/end/{s|sha256 \".*\"|sha256 \"$SHA_ARM64\"|}" "$FORMULA"
+          sed -i "/on_intel/,/end/{s|sha256 \".*\"|sha256 \"$SHA_X86\"|}" "$FORMULA"
+
+      - name: Commit and push
+        working-directory: tap
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/aisrunner.rb
+          git commit -m "aisrunner ${{ github.ref_name }}"
+          git push
+
+  release:
+    needs: [build-mac, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+
+          # Collect all release files
+          FILES=$(find artifacts -type f | tr '\n' ' ')
+
+          gh release create "$TAG" \
+            --title "ais-runner $TAG" \
+            --notes "$(cat <<'EOF'
+          ## Installation
+
+          ### macOS (Apple Silicon)
+          ```bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ais-runner-macos-arm64.tar.gz | tar xz
+          cd ais-runner-macos-arm64
+          ./setup-mac.sh   # install Node, Azure CLI, Azurite, func
+          ./ais-runner
+          ```
+
+          ### macOS (Intel)
+          ```bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ais-runner-macos-x86_64.tar.gz | tar xz
+          cd ais-runner-macos-x86_64
+          ./setup-mac.sh
+          ./ais-runner
+          ```
+
+          ### Windows
+          Download `ais-runner-windows.zip`, extract, run `setup-windows.ps1` once, then `ais-runner.exe`.
+          EOF
+          )" \
+            $FILES

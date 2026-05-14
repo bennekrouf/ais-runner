@@ -12,9 +12,15 @@
         Azure CLI        2.65.0
         Azurite          3.30.0    (via npm)
         func core tools  4.0.6610  (official MSI - more reliable than npm on Windows)
+        Docker Desktop   latest    (required for the Service Bus emulator)
 
     Already-installed tools at the correct version are skipped.
     Requires an internet connection and administrator privileges.
+
+    NOTE - Docker Desktop:
+        The installer is large (~600 MB) and requires a reboot + manual launch.
+        If Docker is already installed and running, it is skipped automatically.
+        The Service Bus emulator (AzureCosmosDB) will not work without it.
 #>
 
 Set-StrictMode -Version Latest
@@ -118,6 +124,7 @@ Write-Host "  Node.js    v$NODE_VERSION"
 Write-Host "  Azure CLI  $AZ_CLI_VERSION"
 Write-Host "  Azurite    $AZURITE_VERSION"
 Write-Host "  func       $FUNC_VERSION"
+Write-Host "  Docker     Desktop (for Service Bus emulator)"
 Write-Host ""
 
 # ── 1. Node.js ────────────────────────────────────────────────────────────────
@@ -177,17 +184,72 @@ if ($funcVer -and $funcVer.StartsWith('4.')) {
     if ($funcVer) { Write-Ok "func $funcVer" } else { Write-Fail "func not found after install - try opening a new terminal" }
 }
 
+# ── 5. Docker Desktop ────────────────────────────────────────────────────────
+# Required for the Service Bus emulator (docker compose up).
+# We cannot silently install Docker Desktop - it requires a reboot and interactive
+# acceptance of the license.  We detect it and guide the user if missing.
+Write-Step "Docker Desktop"
+$dockerRunning = $false
+$dockerInstalled = $false
+
+# Check if docker CLI is reachable
+if (Get-Command docker -ErrorAction SilentlyContinue) {
+    $dockerInstalled = $true
+    # Check if the Docker daemon is actually running
+    try {
+        $info = docker info 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0) { $dockerRunning = $true }
+    } catch { }
+}
+
+# Also check common install locations even if not on PATH yet
+if (-not $dockerInstalled) {
+    $dockerPaths = @(
+        "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe",
+        "$env:LocalAppData\Docker\Docker Desktop.exe"
+    )
+    foreach ($p in $dockerPaths) {
+        if (Test-Path $p) { $dockerInstalled = $true; break }
+    }
+}
+
+if ($dockerRunning) {
+    $dockerVer = Get-InstalledVersion 'docker' @('--version')
+    Write-Skip "Docker $dockerVer (running)"
+} elseif ($dockerInstalled) {
+    Write-Warn "Docker Desktop is installed but not running."
+    Write-Warn "Launch Docker Desktop from the Start Menu and wait for it to start before using the Service Bus emulator."
+} else {
+    Write-Warn "Docker Desktop is NOT installed."
+    Write-Host ""
+    Write-Host "  Docker Desktop is required to run the Service Bus emulator." -ForegroundColor Yellow
+    Write-Host "  It cannot be installed silently — please install it manually:" -ForegroundColor Yellow
+    Write-Host "  https://www.docker.com/products/docker-desktop/" -ForegroundColor Cyan
+    Write-Host ""
+    $openBrowser = Read-Host "  Open the Docker Desktop download page now? (Y/N)"
+    if ($openBrowser -eq 'Y' -or $openBrowser -eq 'y') {
+        Start-Process "https://www.docker.com/products/docker-desktop/"
+        Write-Host "  After installing Docker Desktop, re-run this script to verify." -ForegroundColor DarkGray
+    }
+    Write-Warn "Continuing without Docker — Service Bus emulator will not be available."
+}
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 Refresh-Path
 Write-Host ""
 Write-Host "  ==========================" -ForegroundColor DarkGray
 Write-Host ""
 
+$dockerSummaryVer = if ($dockerRunning) { Get-InstalledVersion 'docker' @('--version') }
+                   elseif ($dockerInstalled) { 'installed (not running)' }
+                   else { $null }
+
 $results = @(
     @{ Name = 'node';    Ver = (Get-InstalledVersion 'node') },
     @{ Name = 'az';      Ver = (Get-AzCliVersion) },
     @{ Name = 'azurite'; Ver = (Get-InstalledVersion 'azurite') },
-    @{ Name = 'func';    Ver = (Get-InstalledVersion 'func') }
+    @{ Name = 'func';    Ver = (Get-InstalledVersion 'func') },
+    @{ Name = 'docker';  Ver = $dockerSummaryVer }
 )
 
 $allOk = $true
@@ -201,8 +263,15 @@ foreach ($r in $results) {
 }
 
 Write-Host ""
+# Docker missing is a warning, not a hard failure — all other features still work.
+$coreOk = $results | Where-Object { $_.Name -ne 'docker' } | ForEach-Object { $_.Ver -ne $null }
+$allOk   = -not ($coreOk -contains $false)
+
 if ($allOk) {
-    Write-Host "  All dependencies ready. You can launch ais-runner.exe." -ForegroundColor Green
+    Write-Host "  Core dependencies ready. You can launch ais-runner.exe." -ForegroundColor Green
+    if (-not $dockerRunning) {
+        Write-Host "  Docker Desktop missing or not running — Service Bus emulator unavailable." -ForegroundColor Yellow
+    }
 } else {
     Write-Host "  Some tools were not found. Open a new terminal and run:" -ForegroundColor Yellow
     Write-Host "  node --version / az --version / azurite --version / func --version" -ForegroundColor Yellow
