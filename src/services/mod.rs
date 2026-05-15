@@ -17,3 +17,4 @@ pub mod env_mode;
 pub mod setup_manager;
 pub mod runtime_manager;
 pub mod env_compare;
+pub mod sb_amqp;

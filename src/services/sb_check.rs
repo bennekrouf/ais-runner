@@ -1,5 +1,14 @@
 use std::collections::HashMap;
-use crate::services::sql_check::{test_tcp, TestResult};
+
+/// Return the resolved (fqdn, queue_name) for the trigger of a single workflow,
+/// or None if the workflow is not Service Bus-triggered.
+pub fn trigger_queue_for(logic_apps_dir: &str, workflow_name: &str) -> Option<(String, String)> {
+    let (fqdn, queues) = detect_sb_queues(logic_apps_dir);
+    queues
+        .into_iter()
+        .find(|q| q.trigger_workflows.iter().any(|w| w == workflow_name))
+        .map(|q| (fqdn, q.queue))
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SbQueueInfo {
@@ -107,10 +116,12 @@ pub fn detect_sb_queues(logic_apps_dir: &str) -> (String, Vec<SbQueueInfo>) {
         for (_name, conn) in providers {
             if conn["serviceProvider"]["id"].as_str() == Some("/serviceProviders/serviceBus") {
                 // MSI style: fullyQualifiedNamespace
+                // The setting may be the short name ("sbns-foo") or the full FQDN
+                // ("sbns-foo.servicebus.windows.net") — normalise to the full FQDN.
                 if let Some(raw) = conn["parameterValues"]["fullyQualifiedNamespace"].as_str() {
                     let resolved = resolve_appsetting(raw, &settings);
                     if !resolved.is_empty() {
-                        namespace = resolved;
+                        namespace = normalise_sb_fqdn(&resolved);
                         break;
                     }
                 }
@@ -126,15 +137,24 @@ pub fn detect_sb_queues(logic_apps_dir: &str) -> (String, Vec<SbQueueInfo>) {
         }
     }
 
-    // Fallback: scan local.settings.json for any value that looks like a SB FQDN
+    // Fallback: scan local.settings.json for any value that looks like a SB namespace
     if namespace.is_empty() {
         for val in settings.values() {
             if let Some(fqdn) = fqdn_from_conn_str(val) {
                 namespace = fqdn;
                 break;
             }
-            if val.contains(".servicebus.windows.net") && !val.contains("Endpoint=") {
-                namespace = val.trim().to_string();
+            // Accept both the full FQDN and the bare short name
+            let v = val.trim();
+            if v.contains(".servicebus.windows.net") && !v.contains("Endpoint=") {
+                namespace = v.to_string();
+                break;
+            }
+            // Short name like "sbns-foo" stored directly — normalise it
+            if !v.is_empty() && !v.contains(' ') && !v.contains('=')
+                && (v.starts_with("sbns-") || v.ends_with("-sb") || v.contains("servicebus"))
+            {
+                namespace = normalise_sb_fqdn(v);
                 break;
             }
         }
@@ -277,27 +297,56 @@ fn resolve_appsetting(val: &str, settings: &HashMap<String, String>) -> String {
     }
 }
 
-/// TCP test to the Service Bus namespace on AMQP port 5671.
-/// TCP test to the Service Bus namespace on the specified port.
-pub fn test_sb_port(namespace: &str, port: u16) -> TestResult {
-    let host = if namespace.contains('.') {
-        namespace.to_string()
-    } else {
-        format!("{}.servicebus.windows.net", namespace)
-    };
-    test_tcp(&host, port)
-}
-
-pub fn test_sb_tcp(namespace: &str) -> TestResult {
-    test_sb_port(namespace, 5671)
-}
-
-pub fn test_sb_tcp_443(namespace: &str) -> TestResult {
-    test_sb_port(namespace, 443)
-}
 
 /// Extract the hostname from a Service Bus connection string.
 /// `Endpoint=sb://sbns-xxx.servicebus.windows.net/;...` → `sbns-xxx.servicebus.windows.net`
+/// Ensure the namespace is a fully-qualified Service Bus hostname.
+/// Accepts either the short name ("sbns-foo") or the full FQDN ("sbns-foo.servicebus.windows.net").
+pub fn normalise_sb_fqdn(name: &str) -> String {
+    let n = name.trim();
+    // localhost, 127.0.0.1, or any bare IP — leave as-is
+    if n == "localhost" || n.starts_with("127.") || n.parse::<std::net::IpAddr>().is_ok() {
+        return n.to_string();
+    }
+    if n.contains('.') {
+        n.to_string()
+    } else {
+        format!("{}.servicebus.windows.net", n)
+    }
+}
+
+/// True when the resolved namespace points to the local Service Bus emulator
+/// (localhost / 127.x.x.x).
+pub fn is_local_emulator(fqdn: &str) -> bool {
+    let h = fqdn.trim();
+    h == "localhost" || h.starts_with("127.") || h.parse::<std::net::IpAddr>().is_ok()
+}
+
+/// True when the project's local.settings.json has a Service Bus connection string
+/// that contains `UseDevelopmentEmulator=true` — meaning the local emulator is active
+/// regardless of what namespace the connections.json resolves to.
+pub fn is_emulator_configured(logic_apps_dir: &str) -> bool {
+    let dir = crate::services::workflows::resolve_logic_apps_dir(logic_apps_dir);
+    let text = match std::fs::read_to_string(dir.join("local.settings.json")) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let settings: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    if let Some(vals) = settings["Values"].as_object() {
+        for val in vals.values() {
+            if let Some(s) = val.as_str() {
+                if s.contains("UseDevelopmentEmulator=true") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 pub fn fqdn_from_conn_str(conn_str: &str) -> Option<String> {
     for part in conn_str.split(';') {
         let part = part.trim();
@@ -309,4 +358,30 @@ pub fn fqdn_from_conn_str(conn_str: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Read queue names from the emulator's config.json that are not referenced
+/// by any local workflow — these are manually added queues.
+pub fn emulator_only_queues(workflow_queues: &[SbQueueInfo]) -> Vec<String> {
+    let config_path = crate::handlers::sb_emulator::work_dir().join("Config.json");
+    let text = match std::fs::read_to_string(&config_path) {
+        Ok(t) => t,
+        Err(_) => return vec![],
+    };
+    let v: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let known: std::collections::HashSet<&str> = workflow_queues.iter()
+        .map(|q| q.queue.as_str())
+        .collect();
+
+    v["UserConfig"]["Namespaces"][0]["Queues"]
+        .as_array()
+        .map(|arr| arr.iter()
+            .filter_map(|q| q["Name"].as_str())
+            .filter(|name| !known.contains(name) && *name != "ais.default")
+            .map(|s| s.to_string())
+            .collect())
+        .unwrap_or_default()
 }

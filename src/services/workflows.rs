@@ -469,7 +469,7 @@ pub async fn not_found_hints(workflow: &str) -> Vec<String> {
         Some(true) => vec![
             "  hint: workflow IS registered in the runtime but run history is inaccessible — \
              Azurite table storage may be corrupted. \
-             Stop func, stop Azurite, delete /tmp/azurite contents, then restart both.".to_string(),
+             Stop func, stop Azurite, clear Azurite data (Connections → Blob → Reset Azurite Data), then restart both.".to_string(),
         ],
         Some(false) => vec![
             "  hint: workflow is NOT in the runtime registry — a failing connection likely \

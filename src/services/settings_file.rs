@@ -35,10 +35,11 @@ pub fn try_bootstrap_link(logic_apps_dir: &str) -> Option<config::WorkspaceLink>
     let site_name = v["Values"]["WEBSITE_SITE_NAME"].as_str()
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
+    // Normalise: users often write the short name ("sbns-foo") instead of the full FQDN.
     let sb_ns = v["Values"]["serviceBus_fullyQualifiedNamespace"].as_str()
         .or_else(|| v["Values"]["serviceBus_namespace"].as_str())
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
+        .map(|s| crate::services::sb_check::normalise_sb_fqdn(s));
     Some(config::WorkspaceLink {
         subscription_id: sub_id,
         resource_group:  rg,
