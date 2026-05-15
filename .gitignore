@@ -1,3 +1,16 @@
 target
 tmp_azurite_build/
 bin/azurite
+
+# Secrets / config
+local.settings.json
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp

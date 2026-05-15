@@ -334,8 +334,6 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
     let in_sync   = diff_map.read().values().filter(|s| matches!(s, DiffStatus::Same)).count();
     let differ    = diff_map.read().values().filter(|s| matches!(s, DiffStatus::Differs(_))).count();
     let errors    = diff_map.read().values().filter(|s| matches!(s, DiffStatus::Error)).count();
-    let not_local = az_workflows.read().iter().filter(|w| !local_set.contains(&w.name)).count();
-
     let synced_count = in_sync;
     let visible: Vec<AzureWorkflow> = if !is_computing {
         az_workflows.read().iter()
@@ -417,9 +415,6 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                         if differ > 0 {
                             span { class: "az-stat az-stat-differs", "≠ {differ} differ" }
                         }
-                        if not_local > 0 {
-                            span { class: "az-stat az-stat-remote", "↓ {not_local} not local" }
-                        }
                         if in_sync > 0 {
                             span { class: "az-stat az-stat-sync", "✅ {in_sync} in sync" }
                         }
@@ -438,7 +433,7 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                                 ("parameters.json", "__parameters.json__", "__parameters.json__", true),
                                 ("connections.json", "__connections.json__", "__connections.json__", false),
                             ];
-                            let mut pcf = pull_config_file.clone();
+                            let pcf = pull_config_file.clone();
                             rsx! {
                                 for (label, map_key, cache_key, allow_pull) in configs.iter().copied() {
                                     {

@@ -2,8 +2,6 @@
 
 A desktop tool for running and testing **Azure Logic Apps Standard** workflows locally, built with [Dioxus](https://dioxuslabs.com/) (Rust).
 
----
-
 ## What it does
 
 - **Start / stop** Azurite and `func start` from a single UI
@@ -17,145 +15,97 @@ A desktop tool for running and testing **Azure Logic Apps Standard** workflows l
 
 ---
 
-## Prerequisites
+## Install
 
-| Tool | Purpose | Install | Note |
-|------|---------|---------|------|
-| **Azure Functions Core Tools** (`func`) | Runs workflows locally | `npm install -g azure-functions-core-tools@4` | Required |
-| **Azure CLI** (`az`) | Fetches connection strings | https://aka.ms/installazurecli | Optional |
-| **Node.js** | Runtime for tools | https://nodejs.org | **Optional** (if bundled) |
-| **Azurite** | Storage emulator | `npm install -g azurite` | **Optional** (if bundled) |
+### macOS (Apple Silicon)
 
-> **Zero-Dependency Mode:** You can bundle Node.js and Azurite directly with the app so that your colleagues don't need to install them. See the [Packaging](#packaging) section below.
-
----
-
-## Packaging
-
-To create a "zero-dependency" version of the app that works on machines without Node.js or Azurite installed:
-
-### 1. Bundle Azurite
-Run the provided packaging script. This uses `pkg` to compile Azurite into a standalone binary in your `bin/` folder.
 ```bash
-./scripts/package_azurite.sh
+brew tap Bennekrouf/aisrunner
+brew install aisrunner
 ```
 
-### 2. Distribute
-When sharing the app, include the `bin/` folder next to your executable:
-- `ais-runner` (the app)
-- `bin/azurite` (the bundled emulator)
+This installs `ais-runner` plus its dependencies (Node.js, Azure CLI, Azurite, Azure Functions Core Tools).
 
-The app will automatically detect the bundled binary and use it, bypassing the need for a global `node` or `azurite` installation.
+### Windows
+
+1. Download `ais-runner-windows.zip` from the [latest release](https://github.com/Bennekrouf/ais-runner/releases/latest)
+2. Extract the ZIP anywhere
+3. Right-click `setup-windows.ps1` → **Run with PowerShell** (first time only — installs Node.js, Azure CLI, Azurite, func)
+4. Run `ais-runner.exe`
 
 ---
 
+## Usage
+
+1. Launch `ais-runner`
+2. Select your `logic_apps/` folder
+3. The app starts Azurite and `func start`, then lists all discovered workflows
+4. Click any workflow to view its source, run it, or inspect its action timeline
+
+Configuration is stored in:
+- **macOS:** `~/.config/ais-runner/config.json`
+- **Windows:** `%APPDATA%\ais-runner\config.json`
+
 ---
 
-## Building from source
+## Contributing
 
-### macOS / Linux
+### Prerequisites
+
+| Tool | Install |
+|------|---------|
+| **Rust** | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| **Dioxus CLI** (optional) | `cargo install dioxus-cli` |
+
+### Build from source
 
 ```bash
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Install Dioxus CLI (optional — only needed for dx serve / dx bundle)
-cargo install dioxus-cli
-
-# Build
+git clone https://github.com/Bennekrouf/ais-runner.git
+cd ais-runner
 cargo build --release
-
-# Run
 ./target/release/ais-runner
 ```
 
-### Windows (native)
+### Project structure
 
-```powershell
-# Install Rust from https://rustup.rs, then:
-cargo build --release
-.\target\release\ais-runner.exe
-```
+| Path | Description |
+|------|-------------|
+| `src/main.rs` | App entry point and UI |
+| `src/utils.rs` | Helper functions |
+| `scripts/setup-mac.sh` | macOS dependency installer |
+| `scripts/setup-windows.ps1` | Windows dependency installer |
+| `.github/workflows/` | CI: Mac build, Windows build, release pipeline |
 
----
+### Release process
 
-## Cross-compiling for Windows from macOS
-
-> The recommended approach is **Option A or B** below. Plain `cargo build --target x86_64-pc-windows-gnu` may fail due to Dioxus's WebView2 dependency.
-
-### Option A — GitHub Actions (simplest)
-
-Create `.github/workflows/build-windows.yml`:
-
-```yaml
-name: Build Windows
-
-on:
-  push:
-    branches: [main]
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --release
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ais-runner-windows
-          path: target/release/ais-runner.exe
-```
-
-Push to GitHub, let the action run, then download `ais-runner.exe` from the Actions tab.
-
-### Option B — `cargo cross` (local, requires Docker)
+Releases are fully automated. To publish a new version:
 
 ```bash
-# Install cross
+# 1. Bump version in Cargo.toml
+# 2. Commit and tag
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+This triggers the release workflow which:
+- Builds macOS (arm64) and Windows binaries
+- Creates a GitHub Release with all assets
+- Auto-updates the Homebrew formula with the new sha256
+
+### Cross-compiling for Windows from macOS
+
+The easiest way is to push to GitHub and let the CI build it. For local builds:
+
+```bash
+# Option A: cargo cross (requires Docker)
 cargo install cross
-
-# Make sure Docker Desktop is running, then:
 cross build --release --target x86_64-pc-windows-gnu
-```
 
-Output: `target/x86_64-pc-windows-gnu/release/ais-runner.exe`
-
-### Option C — mingw (may have linker issues with WebView2)
-
-```bash
+# Option B: mingw (may have linker issues with WebView2)
 rustup target add x86_64-pc-windows-gnu
 brew install mingw-w64
-```
-
-Add to `.cargo/config.toml`:
-
-```toml
-[target.x86_64-pc-windows-gnu]
-linker = "x86_64-w64-mingw32-gcc"
-```
-
-```bash
 cargo build --release --target x86_64-pc-windows-gnu
 ```
-
----
-
-## Distributing to colleagues
-
-The compiled binary is self-contained — no Rust installation needed on the target machine.
-
-Colleagues need only:
-1. The `ais-runner.exe` (or `ais-runner` on macOS/Linux)
-2. The prerequisites listed above (Node.js, func, azurite, az)
-3. Access to the `logic_apps/` folder of the repo
-
-The app stores its configuration (recent folders, Service Bus namespace, subscription ID) in:
-- **macOS/Linux:** `~/.config/ais-runner/config.json`
-- **Windows:** `%APPDATA%\ais-runner\config.json`
 
 ---
 

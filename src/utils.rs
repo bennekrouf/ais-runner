@@ -1,9 +1,26 @@
 use chrono::Local;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use dioxus::prelude::{Readable, Writable};
 
 use crate::components::log_panel::{LogLevel, LogLine};
 use crate::services::workflows;
+
+/// Cross-platform temp directory for Azurite data.
+/// - macOS/Linux: `/tmp/azurite`   (Docker-accessible, consistent across sessions)
+/// - Windows:     `%TEMP%\azurite`
+pub fn azurite_dir() -> PathBuf {
+    if cfg!(target_os = "windows") {
+        std::env::temp_dir().join("azurite")
+    } else {
+        PathBuf::from("/tmp/azurite")
+    }
+}
+
+/// Path to Azurite's debug log file.
+pub fn azurite_log() -> PathBuf {
+    azurite_dir().join("debug.log")
+}
 
 pub fn now() -> String {
     Local::now().format("%H:%M:%S").to_string()

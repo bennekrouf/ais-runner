@@ -5,10 +5,9 @@ use crate::services::{
     azurite_client,
     azure_sync,
     blob_check::BlobConnection,
-    config,
     cosmos_check::{self, CosmosConnection},
-    env_mode::{self, EnvMode},
-    sb_check::{self, SbQueueInfo},
+    env_mode::EnvMode,
+    sb_check::SbQueueInfo,
     sftp_check::{self, SftpConnection, SftpTestResult},
     sql_check::{self, SqlAuthType, SqlConnection, TestResult},
     settings_file,
@@ -58,43 +57,6 @@ fn blob_fetch_all() -> Result<Vec<(String, Vec<BlobInfo>)>, String> {
     Ok(out)
 }
 
-fn do_fetch_conn_str(
-    ns:             String,
-    rg_cached:      Option<String>,
-    subscription:   Option<String>,
-    mut sb_rg:      Signal<Option<String>>,
-    mut sb_cs_edit: Signal<String>,
-    mut fetching:   Signal<bool>,
-    mut status:     Signal<Option<(String, bool)>>,
-) {
-    fetching.set(true);
-    spawn(async move {
-        let rg = if let Some(r) = rg_cached {
-            Ok(r)
-        } else {
-            let ns2 = ns.clone();
-            let sub = subscription.clone();
-            tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns2, sub.as_deref()))
-                .await
-                .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
-        };
-        match rg {
-            Ok(r) => {
-                sb_rg.set(Some(r.clone()));
-                match tokio::task::spawn_blocking(move || azure_cli::sb_fetch_conn_str(&r, &ns)).await {
-                    Ok(Ok(cs)) => {
-                        sb_cs_edit.set(cs);
-                        status.set(Some(("Connection string fetched — click 💾 Save to apply.".into(), false)));
-                    }
-                    Ok(Err(e)) => { status.set(Some((format!("Fetch error: {:?}", e), true))); }
-                    Err(_)     => { status.set(Some(("Task failed".into(), true))); }
-                }
-            }
-            Err(e) => { status.set(Some((format!("RG lookup failed: {:?}", e), true))); }
-        }
-        fetching.set(false);
-    });
-}
 
 #[derive(Props, Clone, PartialEq)]
 pub struct DbPanelProps {
@@ -134,7 +96,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     });
 
     // Blob connection endpoint edits: appsetting_key → current value
-    let mut blob_edits: Signal<HashMap<String, String>> = use_signal(|| {
+    let blob_edits: Signal<HashMap<String, String>> = use_signal(|| {
         props.blob_connections.iter()
             .map(|c| (c.endpoint_key.clone(), c.endpoint.clone()))
             .collect()
@@ -161,50 +123,16 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     let mut cosmos_adhoc_testing:  Signal<bool>   = use_signal(|| false);
     let mut cosmos_adhoc_result:   Signal<Option<Result<u64, String>>> = use_signal(|| None);
 
-    // ── Env switch (Local ↔ Azure) ────────────────────────────────────────────
-    let mut env_switching:    Signal<bool>                = use_signal(|| false);
-    let mut env_pending_keys: Signal<Vec<String>>         = use_signal(Vec::new);
-    let mut env_accounts:     Signal<Vec<(String, String)>> = use_signal(Vec::new);
+    // ── SQL test ─────────────────────────────────────────────────────────────
     let mut sql_test_results: Signal<HashMap<String, TestResult>> = use_signal(HashMap::new);
     let mut sql_testing:      Signal<HashSet<String>>             = use_signal(HashSet::new);
 
     // ── Service Bus signals ──────────────────────────────────────────────────
-    let mut sb_tcp_result: Signal<Option<TestResult>> = use_signal(|| None);
-    let mut sb_tcp_testing: Signal<bool>              = use_signal(|| false);
-    let mut sb_tcp_443_result: Signal<Option<TestResult>> = use_signal(|| None);
-    let mut sb_tcp_443_testing: Signal<bool>              = use_signal(|| false);
     let mut sb_rg:          Signal<Option<String>>    = use_signal(|| None);
     let mut sb_stats:       Signal<HashMap<String, SbQueueStats>> = use_signal(HashMap::new);
     let mut sb_fetching:    Signal<HashSet<String>>   = use_signal(HashSet::new);
     let mut sb_send_open:   Signal<HashSet<String>>   = use_signal(HashSet::new);
     let mut sb_send_bodies: Signal<HashMap<String, String>> = use_signal(HashMap::new);
-
-    // Namespace editing
-    let mut sb_ns_edit: Signal<String> = use_signal(|| {
-        if !props.sb_namespace.is_empty() {
-            props.sb_namespace.clone()
-        } else {
-            config::load().get_link(&props.logic_apps_dir)
-                .and_then(|l| l.sb_namespace.clone())
-                .unwrap_or_default()
-        }
-    });
-    // (short_name, fqdn, rg) list fetched from az
-    let mut sb_ns_list:    Signal<Vec<(String, String, String)>> = use_signal(Vec::new);
-    let mut sb_ns_loading: Signal<bool>                          = use_signal(|| false);
-
-    // Connection string (for local dev — alternative to MSI)
-    let initial_conn_str = props.sb_conn_str.as_ref()
-        .map(|(_, v)| v.clone())
-        .unwrap_or_default();
-    let sb_cs_edit:    Signal<String> = use_signal(|| initial_conn_str);
-    let sb_cs_fetching: Signal<bool>  = use_signal(|| false);
-
-    // ── Azure queue sync ─────────────────────────────────────────────────────
-    // None = not fetched yet, Some(vec) = queue names that exist in Azure
-    let mut az_queues:         Signal<Option<Vec<String>>> = use_signal(|| None);
-    let mut az_queues_loading: Signal<bool>                = use_signal(|| false);
-    let mut az_creating:       Signal<HashSet<String>>     = use_signal(HashSet::new);
 
     // ── Subscription (for scoped az calls) ──────────────────────────────────
     // Stored as a Signal so closures can clone it freely without move conflicts.
@@ -236,11 +164,14 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     // ── Shared status bar ────────────────────────────────────────────────────
     let mut status: Signal<Option<(String, bool)>> = use_signal(|| None);
 
-    // Auto-refresh blob list whenever the blob tab becomes active and Azurite is running.
+    // Auto-refresh blob list whenever the blob tab becomes active (or the panel opens)
+    // and Azurite is running.
     // Use .peek() for blob_loading so it is NOT a reactive dependency — only active_tab
-    // switching drives re-runs, preventing the infinite loop that .read() would cause.
+    // and is_open drive re-runs, preventing the infinite loop that .read() would cause.
     let azurite_up = props.azurite_running;
+    let is_open    = props.is_open;
     use_effect(move || {
+        let _open = is_open.read(); // reactive: re-run when panel opens
         if *active_tab.read() == "blob" && azurite_up && !*blob_loading.peek() {
             blob_loading.set(true);
             blob_clear_confirm.set(None);
@@ -317,6 +248,9 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
         }
     };
     let _ = sync_az_error; // used in SB error handlers below
+    let sb_namespace_rsx = props.sb_namespace.clone(); // for rsx! closures
+    // Signal so use_effect (FnMut) can clone it on each call without moving
+    let sb_namespace_sig = use_signal(|| props.sb_namespace.clone());
 
     // Auto-refresh SB queue message counts every 3 s while panel is open on the SB tab.
     // Only refreshes queues whose stats have already been loaded (avoids hammering Azure).
@@ -332,7 +266,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                 let queues: Vec<String> = sb_stats.peek().keys().cloned().collect();
                 if queues.is_empty() { continue; }
 
-                let ns  = sb_ns_edit.peek().clone();
+                let ns  = sb_namespace_sig.read().clone();
                 let rg  = sb_rg.peek().clone();
                 let Some(rg) = rg else { continue; };
                 if ns.is_empty() { continue; }
@@ -349,43 +283,12 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
         });
     });
 
-    // Auto-refresh SB queues when the SB tab becomes active
-    use_effect(move || {
-        if *active_tab.read() == "sb" && !sb_ns_edit.read().is_empty() && az_queues.read().is_none() && !*az_queues_loading.peek() {
-            let ns = sb_ns_edit.read().clone();
-            let rg_cached = sb_rg.read().clone();
-            let sub = subscription.read().clone();
-            az_queues_loading.set(true);
-            spawn(async move {
-                let rg = if let Some(r) = rg_cached { Ok(r) } else {
-                    let ns2 = ns.clone();
-                    tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns2, sub.as_deref()))
-                        .await
-                        .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
-                };
-                match rg {
-                    Ok(r) => {
-                        sb_rg.set(Some(r.clone()));
-                        match tokio::task::spawn_blocking(move || azure_cli::sb_list_queues(&r, &ns)).await {
-                            Ok(Ok(list)) => { az_queues.set(Some(list)); }
-                            Ok(Err(_))   => {}
-                            Err(_)       => {}
-                        }
-                    }
-                    Err(_) => {}
-                }
-                az_queues_loading.set(false);
-            });
-        }
-    });
 
     let dir = props.logic_apps_dir.clone();
 
-    // ── Save SQL + SB namespace + SB connection string ───────────────────────
+    // ── Save SQL + SB connection string ──────────────────────────────────────
     let on_save = {
-        let dir    = dir.clone();
-        let ns_key = props.sb_namespace_key.clone();
-        let cs_key = props.sb_conn_str.as_ref().map(|(k, _)| k.clone());
+        let dir = dir.clone();
         move |_| {
             match settings_file::read_local_settings(&dir) {
                 Err(e) => { status.set(Some((e, true))); return; }
@@ -407,18 +310,6 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                         }
                         for (k, v) in cosmos_edits.read().iter() {
                             vals.insert(k.clone(), serde_json::Value::String(v.clone()));
-                        }
-                        if let Some(ref key) = ns_key {
-                            let new_ns = sb_ns_edit.read().clone();
-                            if !new_ns.is_empty() {
-                                vals.insert(key.clone(), serde_json::Value::String(new_ns));
-                            }
-                        }
-                        if let Some(ref key) = cs_key {
-                            let new_cs = sb_cs_edit.read().clone();
-                            if !new_cs.is_empty() {
-                                vals.insert(key.clone(), serde_json::Value::String(new_cs));
-                            }
                         }
                     }
                     let text = serde_json::to_string_pretty(&root).unwrap_or_default();
@@ -843,58 +734,8 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                 // ════════════════════════════════════════════════════════════
                 div {
                     class: if *active_tab.read() == "sb" { "tab-pane" } else { "tab-pane hidden" },
-                div { class: "db-section-title", style: "margin-top:20px; display:flex; align-items:center; gap:10px;",
+                div { class: "db-section-title", style: "margin-top:20px;",
                     span { "📨 Service Bus" }
-                    {
-                        let is_loading = *az_queues_loading.read();
-                        let ns = sb_ns_edit.read().clone();
-                        let already = az_queues.read().is_some();
-                        let sub_for_check = subscription.read().clone();
-                        rsx! {
-                            button {
-                                class: "btn btn-small btn-fetch",
-                                disabled: is_loading || ns.is_empty(),
-                                title: "List all queues in Azure and compare with local workflows",
-                                onclick: move |_| {
-                                    let ns2 = sb_ns_edit.read().clone();
-                                    let rg_cached = sb_rg.read().clone();
-                                    az_queues.set(None);
-                                    az_queues_loading.set(true);
-                                    let sub2 = sub_for_check.clone();
-                                    spawn(async move {
-                                        let rg = if let Some(r) = rg_cached {
-                                            Ok(r)
-                                        } else {
-                                            let ns3 = ns2.clone();
-                                            tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns3, sub2.as_deref()))
-                                                .await
-                                                .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
-                                        };
-                                        match rg {
-                                            Ok(r) => {
-                                                sb_rg.set(Some(r.clone()));
-                                                match tokio::task::spawn_blocking(move || {
-                                                    azure_cli::sb_list_queues(&r, &ns2)
-                                                }).await {
-                                                    Ok(Ok(list)) => az_queues.set(Some(list)),
-                                                    Ok(Err(e))   => status.set(Some((format!("Queue list error: {:?}", e), true))),
-                                                    Err(_)       => status.set(Some(("Task failed".into(), true))),
-                                                }
-                                            }
-                                            Err(e) => status.set(Some((format!("RG lookup failed: {:?}", e), true))),
-                                        }
-                                        az_queues_loading.set(false);
-                                    });
-                                },
-                                if is_loading { "☁ Loading…" } else if already { "☁ Refresh" } else { "☁ Check Queues" }
-                            }
-                            if let Some(ref list) = *az_queues.read() {
-                                span { class: "db-az-summary",
-                                    "{list.len()} queues in Azure"
-                                }
-                            }
-                        }
-                    }
                 }
 
                 div { class: "db-create-row",
@@ -907,37 +748,29 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     }
                     button {
                         class: "btn btn-run btn-small",
-                        disabled: *new_queue_creating.read() || new_queue_name.read().is_empty() || sb_ns_edit.read().is_empty(),
+                        disabled: *new_queue_creating.read() || new_queue_name.read().is_empty(),
                         onclick: move |_| {
                             let q = new_queue_name.read().clone();
-                            let ns = sb_ns_edit.read().clone();
-                            let rg_cached = sb_rg.read().clone();
-                            let sub = subscription.read().clone();
                             new_queue_creating.set(true);
                             spawn(async move {
-                                let rg = if let Some(r) = rg_cached { Ok(r) } else {
-                                    let ns2 = ns.clone();
-                                    tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns2, sub.as_deref()))
-                                        .await
-                                        .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
-                                };
-                                match rg {
-                                    Ok(r) => {
-                                        sb_rg.set(Some(r.clone()));
-                                        let q_task = q.clone();
-                                        match tokio::task::spawn_blocking(move || azure_cli::sb_create_queue(&r, &ns, &q_task)).await {
-                                            Ok(Ok(_)) => {
-                                                status.set(Some((format!("✅ Created queue '{}'", q), false)));
-                                                new_queue_name.set(String::new());
-                                                if let Some(ref mut list) = *az_queues.write() {
-                                                    list.push(q);
-                                                }
-                                            }
-                                            Ok(Err(e)) => status.set(Some((format!("Create failed: {:?}", e), true))),
-                                            Err(_)     => status.set(Some(("Task failed".into(), true))),
+                                let emulator_up = tokio::net::TcpStream::connect("127.0.0.1:5672").await.is_ok();
+                                if emulator_up {
+                                    let q2 = q.clone();
+                                    let result = tokio::task::spawn_blocking(move || {
+                                        crate::handlers::sb_emulator::add_queue_to_emulator_config(&q2)
+                                    }).await.unwrap_or(Err("task failed".into()));
+                                    match result {
+                                        Ok(()) => {
+                                            status.set(Some((
+                                                format!("✅ '{}' added — restart SB Emulator to apply.", q),
+                                                false,
+                                            )));
+                                            new_queue_name.set(String::new());
                                         }
+                                        Err(e) => status.set(Some((format!("Config update failed: {}", e), true))),
                                     }
-                                    Err(e) => status.set(Some((format!("RG lookup failed: {:?}", e), true))),
+                                } else {
+                                    status.set(Some(("SB Emulator is not running — start it from the toolbar first.".into(), true)));
                                 }
                                 new_queue_creating.set(false);
                             });
@@ -946,298 +779,21 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     }
                 }
 
-                {
-                    let app_cfg = config::load();
-                    let link = app_cfg.get_link(&props.logic_apps_dir);
-
-                    // Determine whether Service Bus is usably configured.
-                    // An empty value OR the placeholder we auto-stub both mean "not ready".
-                    let conn_str_val = props.sb_conn_str.as_ref().map(|(_, v)| v.as_str()).unwrap_or("");
-                    let sb_is_real = !conn_str_val.is_empty()
-                        && !conn_str_val.contains("placeholder.servicebus.windows.net");
-
-                    if !sb_is_real && props.sb_namespace.is_empty() {
-                        rsx! {
-                            div { class: "sb-unavailable-card",
-                                div { class: "sb-unavail-title", "📨 Service Bus — not available locally" }
-                                div { class: "sb-unavail-body",
-                                    p { "Azure Service Bus has no local emulator (unlike Azurite for storage). \
-                                         To use Service Bus you need one of:" }
-                                    ul {
-                                        li { b { "Real Azure SB" } " — go to ⚙️ Settings, pick your namespace, click ↓ Azure to fill in the connection string." }
-                                        li { b { "Microsoft SB Emulator" } " — runs as a Docker container ("
-                                            code { "mcr.microsoft.com/azure-messaging/servicebus-emulator" }
-                                            "), then paste its connection string in Settings." }
-                                    }
-                                    p { style: "color: var(--text3); font-size: 12px; margin-top: 8px;",
-                                        "Workflows with 📨 triggers and the send-to-bus fixture are visible \
-                                         in the workflow list but will fail to run until a real connection string is set."
-                                    }
-                                }
-                            }
-                        }
-                    } else if props.sb_namespace.is_empty() && props.sb_conn_str.is_some() && link.is_none() {
-                        rsx! { div { class: "empty-state", "No Service Bus connection found in connections.json" } }
-                    } else if let Some(l) = link.filter(|_| props.sb_namespace.is_empty()) {
-                        let rg = l.resource_group.clone();
-                        let sub_id = l.subscription_id.clone();
-                        let app_name = l.logic_app_name.clone();
-                        let dir_auto = props.logic_apps_dir.clone();
-                        rsx! {
-                            div { class: "db-card", style: "background: var(--blue-bg); border: 1px solid var(--blue); padding: 15px; display: flex; flex-direction: column; gap: 10px;",
-                                div { style: "font-weight: 600; color: var(--blue);", "🔗 Azure Link Detected" }
-                                div { style: "font-size: 13px;", "This project is linked to Resource Group " b { "{rg}" } ". We can automatically find your Service Bus namespace." }
-                                button {
-                                    class: "btn btn-run btn-small",
-                                    style: "align-self: flex-start;",
-                                    onclick: move |_| {
-                                        let d = dir_auto.clone();
-                                        let rg2 = rg.clone();
-                                        let sub2 = sub_id.clone();
-                                        let app2 = app_name.clone();
-                                        spawn(async move {
-                                            let _ = tokio::task::spawn_blocking(move || {
-                                                crate::services::setup_manager::auto_detect_resources(&d, Some(&sub2), &rg2, app2.as_deref())
-                                            }).await;
-                                            props.on_saved.call("⚠ Settings saved — stop and restart func start to apply changes.".into());
-                                        });
-                                    },
-                                    "Auto-Link Service Bus"
-                                }
-                            }
-                        }
-                    } else {
-                        // Namespace card — editable + browse
-                        let tcp_res = sb_tcp_result.read().clone();
-                        let is_tcp_testing = *sb_tcp_testing.read();
-                        let is_loading = *sb_ns_loading.read();
-                        let ns_list = sb_ns_list.read().clone();
-                        let current_edit = sb_ns_edit.read().clone();
-                        let has_key = props.sb_namespace_key.is_some();
-                        let uses_conn_str = props.sb_conn_str.is_some();
-                        let auth_badge: &str = if uses_conn_str { "ConnStr" } else { "MSI" };
-                        let auth_class: &str = if uses_conn_str { "db-auth-badge cs" } else { "db-auth-badge msi" };
-                        let fqdn_title: &str = if has_key && !uses_conn_str {
-                            "Edit to switch to a different namespace"
-                        } else if uses_conn_str {
-                            "FQDN is derived from the connection string — edit the connection string to change it"
-                        } else {
-                            "Namespace is hardcoded in connections.json"
-                        };
-
-                        rsx! {
-                            div { class: "db-card",
-                                div { class: "db-card-header",
-                                    span { class: "db-card-name", "Namespace" }
-                                    span { class: "{auth_class}", "{auth_badge}" }
-                                    div { style: "margin-left:auto;display:flex;gap:8px;align-items:center",
-                                        // Fetch button — prominent when namespace is empty
-                                        button {
-                                            class: if current_edit.is_empty() { "btn btn-run btn-small" } else { "btn btn-small btn-fetch" },
-                                            disabled: is_loading,
-                                            title: "List Service Bus namespaces from your Azure subscription",
-                                            onclick: move |_| {
-                                                if sb_ns_list.read().is_empty() && !*sb_ns_loading.peek() {
-                                                    sb_ns_loading.set(true);
-                                                    spawn(async move {
-                                                        match tokio::task::spawn_blocking(azure_cli::sb_list_namespaces).await {
-                                                            Ok(Ok(list)) => { sb_ns_list.set(list); }
-                                                            Ok(Err(e))   => { status.set(Some((format!("az error: {:?}", e), true))); }
-                                                            Err(_)       => { status.set(Some(("Could not list namespaces — az login required".into(), true))); }
-                                                        }
-                                                        sb_ns_loading.set(false);
-                                                    });
-                                                } else {
-                                                    sb_ns_list.write().clear();
-                                                }
-                                            },
-                                            if is_loading { "☁ Loading…" } else if !sb_ns_list.read().is_empty() { "☁ Close" } else { "☁ Fetch from Azure" }
-                                        }
-                                        if let Some(ref r) = tcp_res {
-                                            if r.reachable {
-                                                span { class: "db-test-ok", "✅ {r.latency_ms.unwrap_or(0)}ms (5671)" }
-                                            } else {
-                                                span { class: "db-test-err",
-                                                    title: "{r.error.as_deref().unwrap_or(\"\")}",
-                                                    "❌ port 5671 unreachable"
-                                                }
-                                            }
-                                        }
-                                        button {
-                                            class: "btn btn-small btn-fetch",
-                                            disabled: is_tcp_testing || current_edit.is_empty(),
-                                            onclick: move |_| {
-                                                let ns = sb_ns_edit.read().clone();
-                                                sb_tcp_result.set(None);
-                                                sb_tcp_testing.set(true);
-                                                spawn(async move {
-                                                    let result = tokio::task::spawn_blocking(move || {
-                                                        sb_check::test_sb_tcp(&ns)
-                                                    }).await.unwrap_or(TestResult {
-                                                        reachable: false, latency_ms: None,
-                                                        error: Some("Task failed".into()),
-                                                    });
-                                                    sb_tcp_result.set(Some(result));
-                                                    sb_tcp_testing.set(false);
-                                                });
-                                            },
-                                            if is_tcp_testing { "Testing…" } else { "⚡ Test TCP" }
-                                        }
-
-                                        if let Some(ref r) = *sb_tcp_result.read() {
-                                            if !r.reachable {
-                                                button {
-                                                    class: "btn btn-small btn-fetch",
-                                                    style: "margin-left: 8px",
-                                                    disabled: *sb_tcp_443_testing.read() || current_edit.is_empty(),
-                                                    onclick: move |_| {
-                                                        let ns = sb_ns_edit.read().clone();
-                                                        sb_tcp_443_result.set(None);
-                                                        sb_tcp_443_testing.set(true);
-                                                        spawn(async move {
-                                                            let result = tokio::task::spawn_blocking(move || {
-                                                                sb_check::test_sb_tcp_443(&ns)
-                                                            }).await.unwrap_or(TestResult {
-                                                                reachable: false, latency_ms: None,
-                                                                error: Some("Task failed".into()),
-                                                            });
-                                                            sb_tcp_443_result.set(Some(result));
-                                                            sb_tcp_443_testing.set(false);
-                                                        });
-                                                    },
-                                                    if *sb_tcp_443_testing.read() { "Testing 443…" } else { "⚡ Test 443" }
-                                                }
-                                            }
-                                        }
-                                        
-                                        if let Some(ref r) = *sb_tcp_443_result.read() {
-                                            if r.reachable {
-                                                span { class: "db-test-ok", style: "margin-left: 8px", "✅ Port 443 reachable ({r.latency_ms.unwrap_or(0)}ms)" }
-                                            } else {
-                                                span { class: "db-test-err", style: "margin-left: 8px", title: "{r.error.as_deref().unwrap_or(\"\")}", "❌ Port 443 unreachable" }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Namespace combobox
-                                div { class: "db-field-row",
-                                    label { class: "db-field-label", "Namespace" }
-                                    div { class: "db-ns-combobox",
-                                        div {
-                                            class: if is_loading { "db-ns-field loading" } else { "db-ns-field" },
-                                            title: fqdn_title,
-                                            onclick: move |_| {
-                                                if ns_list.is_empty() && !is_loading {
-                                                    sb_ns_loading.set(true);
-                                                    spawn(async move {
-                                                        match tokio::task::spawn_blocking(azure_cli::sb_list_namespaces).await {
-                                                            Ok(Ok(list)) => { sb_ns_list.set(list); }
-                                                            Ok(Err(e)) => { status.set(Some((format!("az error: {:?}", e), true))); }
-                                                            Err(_) => { status.set(Some(("Could not list namespaces — az login required".into(), true))); }
-                                                        }
-                                                        sb_ns_loading.set(false);
-                                                    });
-                                                } else {
-                                                    sb_ns_list.write().clear();
-                                                }
-                                            },
-                                            span { class: "db-ns-field-value",
-                                                if current_edit.is_empty() {
-                                                    span { class: "db-ns-placeholder", "Click to pick a namespace…" }
-                                                } else {
-                                                    "{current_edit}"
-                                                }
-                                            }
-                                            span { class: "db-ns-chevron",
-                                                if is_loading { "…" } else if !ns_list.is_empty() { "▲" } else { "▾" }
-                                            }
-                                        }
-                                        if !ns_list.is_empty() {
-                                            {
-                                                let uses_cs = uses_conn_str;
-                                                rsx! {
-                                                    div { class: "db-ns-dropdown",
-                                                        for (short_name, fqdn, rg) in ns_list.iter() {
-                                                            {
-                                                                let fqdn2 = fqdn.clone();
-                                                                let fqdn3 = fqdn.clone();
-                                                                let rg2   = rg.clone();
-                                                                let is_active = *fqdn == current_edit;
-                                                                rsx! {
-                                                                    div {
-                                                                        class: if is_active { "db-ns-item active" } else { "db-ns-item" },
-                                                                        onclick: move |_| {
-                                                                            sb_ns_edit.set(fqdn2.clone());
-                                                                            sb_tcp_result.set(None);
-                                                                            sb_ns_list.write().clear();
-                                                                            if uses_cs {
-                                                                                sb_rg.set(Some(rg2.clone()));
-                                                                                do_fetch_conn_str(fqdn3.clone(), Some(rg2.clone()), subscription.read().clone(), sb_rg, sb_cs_edit, sb_cs_fetching, status);
-                                                                            }
-                                                                        },
-                                                                        span { class: "db-ns-item-name", "{short_name}" }
-                                                                        span { class: "db-ns-item-rg", "{rg}" }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                if let Some((ref cs_key_label, _)) = props.sb_conn_str {
-                                    {
-                                        let is_cs_fetching = *sb_cs_fetching.read();
-                                        let cs_value = sb_cs_edit.read().clone();
-                                        let cs_status: &str = if is_cs_fetching { "Fetching…" } else if !cs_value.is_empty() { "✅ Set" } else { "⚠ Not set" };
-                                        let cs_status_class: &str = if is_cs_fetching || cs_value.is_empty() { "db-cs-status warn" } else { "db-cs-status ok" };
-                                        rsx! {
-                                            div { class: "db-field-row", style: "margin-top:6px",
-                                                label { class: "db-field-label", title: "Setting: {cs_key_label}", "Conn string" }
-                                                span { class: "{cs_status_class}", "{cs_status}" }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                if !has_key && !uses_conn_str {
-                                    div { class: "db-msi-note", "⚠ Namespace is hardcoded — add @appsetting('serviceBus_fullyQualifiedNamespace') to connections.json" }
-                                }
-
-                                if let Some(ref r) = tcp_res {
-                                    if !r.reachable {
-                                        if let Some(ref err) = r.error {
-                                            div { class: "db-test-error-detail", "{err} — try port 443 (AMQP over WebSockets)." }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
 
                     // Queue cards (local workflows)
                     for q in props.sb_queues.clone() {
                         {
+                            let sb_ns = sb_namespace_rsx.clone();
                             let queue_name  = q.queue.clone();
                             let queue_name2 = queue_name.clone();
                             let queue_name3 = queue_name.clone();
                             let queue_name4 = queue_name.clone();
-                            let queue_name5 = queue_name.clone();
-                            let ns  = props.sb_namespace.clone();
-                            let ns2 = ns.clone();
-                            let ns3 = ns.clone();
+                            let ns  = sb_ns.clone();
                             let sub_stats  = subscription.read().clone();
-                            let sub_create = subscription.read().clone();
                             let is_fetching    = sb_fetching.read().contains(&queue_name);
                             let stats_opt      = sb_stats.read().get(&queue_name).cloned();
                             let is_send_open   = sb_send_open.read().contains(&queue_name);
                             let send_body      = sb_send_bodies.read().get(&queue_name).cloned().unwrap_or_default();
-                            let az_status: Option<bool> = az_queues.read().as_ref().map(|list| list.contains(&queue_name));
-                            let is_creating    = az_creating.read().contains(&queue_name);
 
                             rsx! {
                                 div { class: "db-card",
@@ -1258,56 +814,6 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                     "A:{q.action_workflows.len()}"
                                                 }
                                             }
-                                            // Azure existence badge
-                                            match az_status {
-                                                Some(true)  => rsx! { span { class: "db-az-ok",      title: "Queue exists in Azure", "☁✅" } },
-                                                Some(false) => rsx! {
-                                                    span { class: "db-az-missing", title: "Queue not found in Azure", "☁❌" }
-                                                    button {
-                                                        class: "btn btn-small btn-warn",
-                                                        disabled: is_creating,
-                                                        title: "Create this queue in Azure",
-                                                        onclick: move |_| {
-                                                            let qn  = queue_name5.clone();
-                                                            let qn2 = queue_name5.clone();
-                                                            let ns4 = ns3.clone();
-                                                            let rg_now = sb_rg.read().clone();
-                                                            let sub4 = sub_create.clone();
-                                                            az_creating.write().insert(qn.clone());
-                                                            spawn(async move {
-                                                                let rg = if let Some(r) = rg_now { Ok(r) } else {
-                                                                    let ns5 = ns4.clone();
-                                                                    tokio::task::spawn_blocking(move || azure_cli::sb_find_rg(&ns5, sub4.as_deref()))
-                                                                        .await
-                                                                        .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
-                                                                };
-                                                                match rg {
-                                                                    Ok(r) => {
-                                                                        sb_rg.set(Some(r.clone()));
-                                                                        match tokio::task::spawn_blocking(move || {
-                                                                            azure_cli::sb_create_queue(&r, &ns4, &qn)
-                                                                        }).await {
-                                                                            Ok(Ok(_)) => {
-                                                                                status.set(Some((format!("✅ Created queue '{}'", qn2), false)));
-                                                                                // Add to local az_queues list so badge flips to ✅
-                                                                                if let Some(ref mut list) = *az_queues.write() {
-                                                                                    list.push(qn2.clone());
-                                                                                }
-                                                                            }
-                                                                            Ok(Err(e)) => status.set(Some((format!("Create failed: {:?}", e), true))),
-                                                                            Err(_)     => status.set(Some(("Task failed".into(), true))),
-                                                                        }
-                                                                    }
-                                                                    Err(e) => status.set(Some((format!("RG lookup failed: {:?}", e), true))),
-                                                                }
-                                                                az_creating.write().remove(&qn2);
-                                                            });
-                                                        },
-                                                        if is_creating { "Creating…" } else { "Create" }
-                                                    }
-                                                },
-                                                None => rsx! {},
-                                            }
                                         }
                                         div { style: "margin-left:auto;display:flex;gap:6px;align-items:center",
                                             if let Some(ref s) = stats_opt {
@@ -1322,8 +828,8 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                             }
                                             button {
                                                 class: "btn btn-small btn-fetch",
-                                                disabled: is_fetching,
-                                                title: "Fetch active message count (requires az login)",
+                                                disabled: is_fetching || crate::services::sb_check::is_local_emulator(&ns),
+                                                title: if crate::services::sb_check::is_local_emulator(&ns) { "Stats not available for local emulator" } else { "Fetch active message count (requires az login)" },
                                                 onclick: move |_| {
                                                     let qn  = queue_name2.clone();
                                                     let qn2 = queue_name2.clone();
@@ -1392,7 +898,6 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                         {
                                             let qn  = queue_name4.clone();
                                             let qn2 = queue_name4.clone();
-                                            let ns3 = ns2.clone();
                                             rsx! {
                                                 div { class: "db-send-form",
                                                     textarea {
@@ -1407,63 +912,27 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                         button {
                                                             class: "btn btn-run btn-small",
                                                             onclick: move |_| {
-                                                                let ns4  = ns3.clone();
                                                                 let qn4  = qn2.clone();
                                                                 let body = sb_send_bodies.read()
                                                                     .get(&qn2).cloned().unwrap_or_default();
                                                                 spawn(async move {
-                                                                    let token = tokio::task::spawn_blocking(
-                                                                        azure_cli::sb_get_bearer_token
-                                                                    ).await
-                                                                     .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())));
-                                                                    match token {
-                                                                        Err(e) => {
-                                                                            status.set(Some((
-                                                                                format!("Token error: {:?}", e), true,
-                                                                            )));
-                                                                        }
-                                                                        Ok(t) => {
-                                                                            let url = format!(
-                                                                                "https://{}/{}/messages",
-                                                                                ns4, qn4
-                                                                            );
-                                                                            let client = reqwest::Client::new();
-                                                                            match client
-                                                                                .post(&url)
-                                                                                .header("Authorization", format!("Bearer {}", t))
-                                                                                .header("Content-Type", "application/json")
-                                                                                .body(reqwest::Body::from(body))
-                                                                                .send()
-                                                                                .await
-                                                                            {
-                                                                                Ok(resp) if resp.status().is_success() => {
-                                                                                    status.set(Some((
-                                                                                        format!("✅ Message sent to {}", qn4),
-                                                                                        false,
-                                                                                    )));
-                                                                                }
-                                                                                Ok(resp) => {
-                                                                                    let code = resp.status();
-                                                                                    let body = resp.text().await.unwrap_or_default();
-                                                                                    status.set(Some((
-                                                                                        format!("HTTP {}: {}", code, body),
-                                                                                        true,
-                                                                                    )));
-                                                                                }
-                                                                                Err(e) => {
-                                                                                    status.set(Some((
-                                                                                        format!("Send error: {}", e), true,
-                                                                                    )));
-                                                                                }
-                                                                            }
-                                                                        }
+                                                                    let emulator_up = tokio::net::TcpStream::connect("127.0.0.1:5672").await.is_ok();
+                                                                    let result = if emulator_up {
+                                                                        crate::services::sb_amqp::send_amqp_message(
+                                                                            "localhost", &qn4, &body,
+                                                                        ).await
+                                                                    } else {
+                                                                        Err("SB Emulator is not running — start it from the toolbar first.".into())
+                                                                    };
+                                                                    match result {
+                                                                        Ok(()) => status.set(Some((
+                                                                            format!("✅ Sent to {}", qn4), false,
+                                                                        ))),
+                                                                        Err(e) => status.set(Some((e, true))),
                                                                     }
                                                                 });
                                                             },
                                                             "Send"
-                                                        }
-                                                        span { class: "db-msi-note",
-                                                            "Sent via REST API (Bearer token from current az session)"
                                                         }
                                                     }
                                                 }
@@ -1475,35 +944,75 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                         }
                     }
 
-                    // Azure-only queues (exist in Azure but not referenced by any local workflow)
-                    {
-                        let local_names: HashSet<String> = props.sb_queues.iter()
-                            .map(|q| q.queue.clone())
-                            .collect();
-                        let azure_only: Vec<String> = az_queues.read()
-                            .as_ref()
-                            .map(|list| list.iter()
-                                .filter(|q| !local_names.contains(*q))
-                                .cloned()
-                                .collect())
-                            .unwrap_or_default();
-
-                        if !azure_only.is_empty() {
-                            rsx! {
-                                div { class: "db-section-sub", "☁ Azure-only queues (not used by local workflows)" }
-                                for qname in azure_only {
-                                    div { class: "db-card db-card-azure-only",
+                // ── Emulator-only queues (manually added, not in any workflow) ─
+                {
+                    let extra = crate::services::sb_check::emulator_only_queues(&props.sb_queues);
+                    if !extra.is_empty() {
+                        rsx! {
+                            div { class: "db-section-sub", style: "margin-top:12px;opacity:0.7",
+                                "📋 Emulator-only queues"
+                            }
+                            for qname in extra {
+                                { let qn = qname.clone();
+                                  let qn2 = qname.clone();
+                                  let is_open = sb_send_open.read().contains(&qname);
+                                  let send_body = sb_send_bodies.read().get(&qname).cloned().unwrap_or_default();
+                                  rsx! {
+                                    div { class: "db-card",
                                         div { class: "db-card-header",
                                             span { class: "db-card-name", "{qname}" }
-                                            span { class: "db-az-ok", "☁ Azure only" }
+                                            button {
+                                                class: "btn btn-small",
+                                                onclick: move |_| {
+                                                    if sb_send_open.read().contains(&qn) {
+                                                        sb_send_open.write().remove(&qn);
+                                                    } else {
+                                                        sb_send_open.write().insert(qn.clone());
+                                                    }
+                                                },
+                                                if is_open { "▲ Close" } else { "📤 Send" }
+                                            }
+                                        }
+                                        if is_open {
+                                            div { class: "db-send-form",
+                                                textarea {
+                                                    class: "db-field-textarea",
+                                                    placeholder: "{{ \"key\": \"value\" }}",
+                                                    value: "{send_body}",
+                                                    oninput: move |e| { sb_send_bodies.write().insert(qn2.clone(), e.value()); },
+                                                }
+                                                button {
+                                                    class: "btn btn-run btn-small",
+                                                    onclick: move |_| {
+                                                        let qn3 = qname.clone();
+                                                        let body = sb_send_bodies.read().get(&qname).cloned().unwrap_or_default();
+                                                        spawn(async move {
+                                                            let emulator_up = tokio::net::TcpStream::connect("127.0.0.1:5672").await.is_ok();
+                                                            let result = if emulator_up {
+                                                                crate::services::sb_amqp::send_amqp_message("localhost", &qn3, &body).await
+                                                            } else {
+                                                                Err("SB Emulator is not running — start it from the toolbar first.".into())
+                                                            };
+                                                            match result {
+                                                                Ok(()) => status.set(Some((format!("✅ Sent to {}", qn3), false))),
+                                                                Err(e) => status.set(Some((e, true))),
+                                                            }
+                                                        });
+                                                    },
+                                                    "Send"
+                                                }
+                                            }
                                         }
                                     }
+                                  }
                                 }
                             }
-                        } else {
-                            rsx! {}
                         }
+                    } else {
+                        rsx! {}
                     }
+                }
+
                 } // end SB tab-pane
 
                 // ════════════════════════════════════════════════════════════
@@ -1513,9 +1022,6 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     class: if *active_tab.read() == "blob" { "tab-pane" } else { "tab-pane hidden" },
 
                 // ── AzureWebJobsStorage ───────────────────────────────────────
-                // This setting controls where the Logic Apps runtime stores workflow
-                // state. If it points to Azure instead of Azurite, ALL workflow runs
-                // APIs return "not found" locally.
                 div { class: "db-card", style: "margin-bottom:12px",
                     div { class: "db-card-header",
                         span { class: "db-card-name", "AzureWebJobsStorage" }
@@ -1524,13 +1030,12 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                             let is_azurite = v == "UseDevelopmentStorage=true"
                                 || v.contains("127.0.0.1:10000")
                                 || v.contains("localhost:10000");
-                            let is_azure   = !v.is_empty() && !is_azurite;
                             if is_azurite {
-                                rsx! { span { class: "db-auth-badge", style: "color:var(--green);border-color:var(--green)", "🏠 Azurite" } }
-                            } else if is_azure {
-                                rsx! { span { class: "db-auth-badge", style: "color:var(--yellow);border-color:var(--yellow)", "⚠ Azure" } }
-                            } else {
+                                rsx! { span { class: "db-auth-badge", style: "color:var(--green);border-color:var(--green)", "✅ Azurite" } }
+                            } else if v.is_empty() {
                                 rsx! { span { class: "db-auth-badge db-badge-missing", "not set" } }
+                            } else {
+                                rsx! { span { class: "db-auth-badge db-badge-missing", "⚠ not Azurite" } }
                             }
                         }
                     }
@@ -1541,193 +1046,16 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                             value: "{webjobs_edit.read()}",
                             oninput: move |e| webjobs_edit.set(e.value()),
                         }
-                        button {
-                            class: "btn btn-small",
-                            style: "flex-shrink:0",
-                            title: "Use Azurite local emulator",
-                            onclick: move |_| webjobs_edit.set("UseDevelopmentStorage=true".into()),
-                            "🏠 Use Azurite"
-                        }
-                    }
-                    div { class: "db-msi-note",
-                        "Must point to Azurite locally — if set to an Azure URL, "
-                        em { "all" }
-                        " workflow runs APIs return 'not found'."
                     }
                 }
 
-                // ── Azure Blob Connections (from connections.json) ────────────
-                div { class: "db-section",
-                    div { class: "db-section-title", style: "display:flex;align-items:center;gap:10px;",
-                        span { "☁ Azure Blob Connections" }
-                        {
-                            let mode      = props.env_mode.clone();
-                            let switching = *env_switching.read();
-                            let dir_sw    = props.logic_apps_dir.clone();
-                            let dir_sw2   = props.logic_apps_dir.clone();
-                            let sub       = azure_sync::detect_subscription(&props.logic_apps_dir);
-                            let going_local = !matches!(mode, EnvMode::Azure);
-                            let (btn_label, btn_title) = if going_local {
-                                ("🏠 All Local", "Set all blob endpoints to Azurite (local dev)")
-                            } else {
-                                ("☁ All Azure", "Set all blob endpoints to real Azure storage")
-                            };
-                            rsx! {
-                                button {
-                                    class: "btn btn-small btn-fetch",
-                                    disabled: switching || props.blob_connections.is_empty(),
-                                    title: "{btn_title}",
-                                    onclick: move |_| {
-                                        env_switching.set(true);
-                                        env_pending_keys.set(vec![]);
-                                        env_accounts.set(vec![]);
-                                        let d  = dir_sw.clone();
-                                        let d2 = dir_sw2.clone();
-                                        let sub2 = sub.clone();
-                                        spawn(async move {
-                                            if going_local {
-                                                let _ = tokio::task::spawn_blocking(move || env_mode::switch_to_local(&d)).await;
-                                            } else {
-                                                let result = tokio::task::spawn_blocking(move || env_mode::switch_to_azure(&d))
-                                                    .await.unwrap_or(Err("task failed".into()));
-                                                if let Ok(r) = result {
-                                                    if !r.needs_fetch.is_empty() {
-                                                        let accounts = tokio::task::spawn_blocking(move || {
-                                                            azure_cli::list_storage_accounts(sub2.as_deref())
-                                                        }).await.unwrap_or(Ok(vec![])).unwrap_or_default();
-                                                        env_pending_keys.set(r.needs_fetch);
-                                                        env_accounts.set(accounts);
-                                                    }
-                                                }
-                                            }
-                                            // Reload blob_edits from disk so inputs reflect new values
-                                            let _ = tokio::task::spawn_blocking(move || {
-                                                env_mode::detect_mode(&d2)
-                                            }).await;
-                                            env_switching.set(false);
-                                            props.on_env_changed.call(());
-                                        });
-                                    },
-                                    if switching { "…" } else { "{btn_label}" }
-                                }
-                                // Badge showing current mode
-                                span {
-                                    class: match mode {
-                                        EnvMode::Local   => "db-auth-badge msi",
-                                        EnvMode::Azure   => "db-auth-badge cs",
-                                        EnvMode::Mixed   => "db-auth-badge db-badge-missing",
-                                        EnvMode::Unknown => "db-auth-badge",
-                                    },
-                                    match mode {
-                                        EnvMode::Local   => "🏠 local",
-                                        EnvMode::Azure   => "☁ azure",
-                                        EnvMode::Mixed   => "⚠ mixed",
-                                        EnvMode::Unknown => "? unknown",
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // Picker: shown when switching to Azure reveals uncached endpoints
-                    if !env_pending_keys.read().is_empty() && !env_accounts.read().is_empty() {
-                        div { class: "env-picker",
-                            span { class: "env-picker-title", "Pick an Azure storage account for each connection:" }
-                            for key in env_pending_keys.read().clone() {
-                                {
-                                    let key2    = key.clone();
-                                    let display = key.trim_end_matches("_blobStorageEndpoint").to_string();
-                                    let dir_k   = props.logic_apps_dir.clone();
-                                    let dir_k2  = props.logic_apps_dir.clone();
-                                    rsx! {
-                                        div { class: "env-picker-row",
-                                            span { class: "env-picker-key", "{display}" }
-                                            select {
-                                                class: "env-picker-select",
-                                                onchange: move |e| {
-                                                    let endpoint = e.value();
-                                                    let k  = key2.clone();
-                                                    let d  = dir_k.clone();
-                                                    let d2 = dir_k2.clone();
-                                                    let k2       = k.clone();
-                                                    let endpoint2 = endpoint.clone();
-                                                    spawn(async move {
-                                                        let _ = tokio::task::spawn_blocking(move || {
-                                                            env_mode::apply_fetched_endpoint(&d, &k, &endpoint)
-                                                        }).await;
-                                                        blob_edits.write().insert(k2, endpoint2);
-                                                        props.on_env_changed.call(());
-                                                        let _ = d2;
-                                                    });
-                                                },
-                                                option { value: "", "— pick —" }
-                                                for (name, ep) in env_accounts.read().clone() {
-                                                    option { value: "{ep}", "{name}" }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if props.blob_connections.is_empty() {
-                        div { class: "empty-state", "No AzureBlob connections found in connections.json" }
-                    } else {
-                        for conn in props.blob_connections.clone() {
-                            {
-                                let key  = conn.endpoint_key.clone();
-                                let key2 = key.clone();
-                                let key3 = key.clone();
-                                let current = blob_edits.read().get(&key).cloned().unwrap_or_default();
-                                let is_configured = !current.is_empty();
-                                let azurite_up = props.azurite_running;
-                                rsx! {
-                                    div { class: "db-card",
-                                        div { class: "db-card-header",
-                                            span { class: "db-card-name", "{conn.display_name}" }
-                                            span {
-                                                class: if is_configured { "db-auth-badge msi" } else { "db-auth-badge db-badge-missing" },
-                                                if is_configured { "✅ configured" } else { "⚠ missing" }
-                                            }
-                                            if !is_configured {
-                                                div { style: "margin-left:auto;display:flex;gap:6px;",
-                                                    button {
-                                                        class: "btn btn-small",
-                                                        title: "Use local Azurite storage (http://127.0.0.1:10000/devstoreaccount1)",
-                                                        onclick: move |_| {
-                                                            blob_edits.write().insert(key3.clone(), env_mode::AZURITE_BLOB.to_string());
-                                                        },
-                                                        if azurite_up { "🏠 Use Azurite" } else { "🏠 Use Azurite (start it first)" }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        div { class: "db-field-row",
-                                            label { class: "db-field-label", "Endpoint" }
-                                            input {
-                                                class: "db-field-input",
-                                                placeholder: "https://<account>.blob.core.windows.net",
-                                                value: "{current}",
-                                                oninput: move |e| { blob_edits.write().insert(key.clone(), e.value()); },
-                                            }
-                                        }
-                                        div { class: "db-msi-note",
-                                            "appsetting: " code { "{key2}" }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
 
                 div { class: "db-section",
                     // ── Header row ───────────────────────────────────────────
                     div { class: "db-section-header",
                         div { class: "db-section-title-row",
-                            span { class: "db-section-title", "🗄 Local Blob Storage" }
+                            span { class: "db-section-title", "🗄 Blob Storage" }
                             div { class: "db-section-title-right",
-                                span { class: "db-az-badge local", "via Azurite" }
                                 if *blob_loading.read() {
                                     span { class: "db-fetching", "loading…" }
                                 } else if props.azurite_running {

@@ -11,33 +11,46 @@
           "schema": {
             "type": "object",
             "properties": {
-              "id":           { "type": "string" },
-              "partitionKey": { "type": "string" },
-              "payload":      { "type": "object" }
+              "id":      { "type": "string" },
+              "payload": { "type": "object" }
             },
-            "required": ["id", "partitionKey"]
+            "required": ["id"]
           }
         }
       }
     },
     "actions": {
-      "Create_document": {
-        "type": "ServiceProvider",
+      "Get_date": {
+        "type": "Compose",
         "runAfter": {},
+        "inputs": "@{utcNow('r')}"
+      },
+      "Build_string_to_sign": {
+        "type": "Compose",
+        "runAfter": { "Get_date": ["Succeeded"] },
+        "inputs": "post\ndocs\ndbs/ais-runner-test/colls/test-items\n@{toLower(string(outputs('Get_date')))}\n\n"
+      },
+      "Build_auth_header": {
+        "type": "Compose",
+        "runAfter": { "Build_string_to_sign": ["Succeeded"] },
+        "inputs": "@{concat('type%3Dmaster%26ver%3D1.0%26sig%3D', encodeUriComponent(hmacSha256(string(outputs('Build_string_to_sign')), 'C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw==')))}"
+      },
+      "Write_document": {
+        "type": "Http",
+        "runAfter": { "Build_auth_header": ["Succeeded"] },
         "inputs": {
-          "parameters": {
-            "databaseId":       "ais-runner-test",
-            "containerId":      "test-items",
-            "partitionKeyValue": "@triggerBody()?['partitionKey']",
-            "item": {
-              "id":      "@triggerBody()?['id']",
-              "payload": "@triggerBody()?['payload']"
-            }
+          "method": "POST",
+          "uri": "http://127.0.0.1:8081/dbs/ais-runner-test/colls/test-items/docs",
+          "headers": {
+            "Authorization": "@{outputs('Build_auth_header')}",
+            "x-ms-date": "@{outputs('Get_date')}",
+            "x-ms-version": "2018-12-31",
+            "Content-Type": "application/json",
+            "x-ms-documentdb-partitionkey": "@{concat('[\"', triggerBody()?['id'], '\"]')}"
           },
-          "serviceProviderConfiguration": {
-            "connectionName":    "cosmos",
-            "operationId":       "CreateOrUpdateDocument",
-            "serviceProviderId": "/serviceProviders/AzureCosmosDB"
+          "body": {
+            "id": "@{triggerBody()?['id']}",
+            "payload": "@triggerBody()?['payload']"
           }
         }
       }

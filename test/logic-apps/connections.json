@@ -17,16 +17,6 @@
         "id": "/serviceProviders/serviceBus"
       },
       "displayName": "serviceBus"
-    },
-    "cosmos": {
-      "parameterSetName": "connectionString",
-      "parameterValues": {
-        "connectionString": "@appsetting('COSMOS_CONNECTION_STRING')"
-      },
-      "serviceProvider": {
-        "id": "/serviceProviders/AzureCosmosDB"
-      },
-      "displayName": "cosmos"
     }
   }
 }

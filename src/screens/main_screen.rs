@@ -21,7 +21,7 @@ use crate::services::{
     workflows::{self, WorkflowItem},
 };
 use crate::utils::make_push;
-use crate::handlers::{azurite, func_start, java, setup, workflow_select, workflow_run};
+use crate::handlers::{azurite, func_start, java, sb_emulator, setup, workflow_select, workflow_run};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct MainScreenProps {
@@ -39,9 +39,12 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let azurite_state   = use_signal(|| ServiceState::Stopped);
     let func_state      = use_signal(|| ServiceState::Stopped);
     let java_func_state = use_signal(|| ServiceState::Stopped);
+    let sb_emu_state    = use_signal(|| ServiceState::Stopped);
     let azurite_proc    = use_signal(|| Arc::new(ManagedProcess::new()));
     let func_proc       = use_signal(|| Arc::new(ManagedProcess::new()));
     let java_func_proc  = use_signal(|| Arc::new(ManagedProcess::new()));
+    let sb_emu_proc     = use_signal(|| Arc::new(ManagedProcess::new()));
+    let sb_emu_lines: Signal<Vec<String>> = use_signal(Vec::new);
 
     let func_apps_dir = std::path::Path::new(&dir)
         .parent()
@@ -59,7 +62,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let system_light    = dark_light::detect() != dark_light::Mode::Dark;
     let mut is_light    = use_signal(|| system_light);
     let active_tab  = use_signal(|| "Source".to_string());
-    let mut run_dialog  = use_signal(|| Option::<(String, String, String, String, Option<String>)>::None);
+    let mut run_dialog  = use_signal(|| Option::<(String, String, String, String, Option<String>, Option<String>)>::None);
     let mut traced_wfs  = use_signal(|| HashSet::<String>::new());
     let mut cleared_wfs = use_signal(|| HashMap::<String, String>::new());
     let mut auto_watch  = use_signal(|| true);
@@ -332,7 +335,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
                 ServiceBlock {
                     label: "Azurite".to_string(),
-                    cmd:   "azurite --location /tmp/azurite".to_string(),
+                    cmd:   format!("azurite --location {}", crate::utils::azurite_dir().display()),
                     state: azurite_state.read().clone(),
                     on_start: move |_| azurite::handle_start(azurite_state, azurite_proc, log_lines),
                     on_stop:  move |_| azurite::handle_stop(azurite_state, azurite_proc, log_lines),
@@ -344,6 +347,13 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         azurite_state, azurite_proc, func_state, func_proc, log_lines,
                     ),
                     "⟳ Reset"
+                }
+                ServiceBlock {
+                    label: "SB Emulator".to_string(),
+                    cmd:   format!("docker run -p 5672:5672 -e ACCEPT_EULA=Y {}", sb_emulator::SB_EMULATOR_IMAGE),
+                    state: sb_emu_state.read().clone(),
+                    on_start: { let dir = dir.clone(); move |_| sb_emulator::handle_start(sb_emu_state, sb_emu_proc, log_lines, sb_emu_lines, dir.clone()) },
+                    on_stop:  move |_| sb_emulator::handle_stop(sb_emu_state, sb_emu_proc, log_lines),
                 }
                 ServiceBlock {
                     label: "func start".to_string(),
@@ -653,22 +663,24 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
             div { id: "log-resize-handle" }
 
             LogPanel {
-                lines:    log_lines,
-                on_clear: move |_| { log_lines.write().clear(); },
+                lines:        log_lines,
+                sb_emu_lines: sb_emu_lines,
+                on_clear:     move |_| { log_lines.write().clear(); },
             }
 
-            if let Some((wf_name, trigger_name, trigger_type, suggested, blob_container)) = run_dialog.read().clone() {
+            if let Some((wf_name, trigger_name, trigger_type, suggested, blob_container, queue_name)) = run_dialog.read().clone() {
                 RunDialog {
                     workflow:        wf_name.clone(),
                     trigger_type:    trigger_type.clone(),
                     payload:         suggested,
                     blob_container:  blob_container,
+                    queue_name:      queue_name,
                     on_cancel:       move |_| run_dialog.set(None),
                     on_run: {
                         let dir = dir.clone();
-                        move |(_blob_name, body): (String, String)| workflow_run::handle_run(
+                        move |(queue_or_blob, body): (String, String)| workflow_run::handle_run(
                             wf_name.clone(), trigger_name.clone(), trigger_type.clone(),
-                            body, &dir,
+                            queue_or_blob, body, &dir,
                             runs, actions, log_lines, running_wfs, active_tab,
                             traced_wfs, cleared_wfs, run_dialog,
                         )

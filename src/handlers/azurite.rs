@@ -3,6 +3,7 @@ use dioxus::prelude::*;
 
 use crate::components::log_panel::{LogLevel, LogLine};
 use crate::services::{process::{ManagedProcess, ServiceState}, runtime_manager};
+use crate::utils::{azurite_dir, azurite_log};
 use crate::utils::make_push;
 
 pub fn handle_start(
@@ -11,15 +12,20 @@ pub fn handle_start(
     log_lines: Signal<Vec<LogLine>>,
 ) {
     state.set(ServiceState::Starting);
-    let az_bin = runtime_manager::resolve_tool("azurite");
+    let az_bin  = runtime_manager::resolve_tool("azurite");
+    let az_dir  = azurite_dir();
+    let az_log  = azurite_log();
+    let az_dir_s = az_dir.to_string_lossy().to_string();
+    let az_log_s = az_log.to_string_lossy().to_string();
+    let _ = std::fs::create_dir_all(&az_dir);
     let mut push = make_push(log_lines);
     push(
-        format!("$ {} --location /tmp/azurite --debug /tmp/azurite/debug.log --skipApiVersionCheck", az_bin),
+        format!("$ {} --location {} --debug {} --skipApiVersionCheck", az_bin, az_dir_s, az_log_s),
         LogLevel::Info,
     );
     match proc.read().start(
         &az_bin,
-        &["--location", "/tmp/azurite", "--debug", "/tmp/azurite/debug.log", "--skipApiVersionCheck"],
+        &["--location", &az_dir_s, "--debug", &az_log_s, "--skipApiVersionCheck"],
         None,
     ) {
         Ok((az_stdout, az_stderr)) => {
@@ -136,10 +142,10 @@ pub fn handle_reset(
 
         // Clear /tmp/azurite contents
         let cleared = tokio::task::spawn_blocking(|| -> std::io::Result<usize> {
-            let dir = std::path::Path::new("/tmp/azurite");
-            std::fs::create_dir_all(dir)?;
+            let dir = azurite_dir();
+            std::fs::create_dir_all(&dir)?;
             let mut n = 0usize;
-            for entry in std::fs::read_dir(dir)?.flatten() {
+            for entry in std::fs::read_dir(&dir)?.flatten() {
                 let p = entry.path();
                 if p.is_dir() { std::fs::remove_dir_all(&p)?; }
                 else          { std::fs::remove_file(&p)?; }
@@ -149,7 +155,7 @@ pub fn handle_reset(
         }).await.unwrap_or(Ok(0));
 
         match cleared {
-            Err(e) => { push2(format!("Could not clear /tmp/azurite: {}", e), LogLevel::Error); return; }
+            Err(e) => { push2(format!("Could not clear {}: {}", azurite_dir().display(), e), LogLevel::Error); return; }
             Ok(n)  => push2(format!("Azurite data wiped ({} item(s)) — starting fresh…", n), LogLevel::Ok),
         }
 

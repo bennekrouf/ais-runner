@@ -1,4 +1,5 @@
 pub mod azurite;
+pub mod sb_emulator;
 pub mod func_start;
 pub mod java;
 pub mod setup;

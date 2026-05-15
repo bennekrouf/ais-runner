@@ -1,7 +1,8 @@
-/// Well-known Cosmos DB Emulator defaults (Windows + Linux Docker emulator).
-/// The data-explorer UI runs on port 1234; the actual document API is on 8081.
-/// The vnext-preview Linux emulator serves plain HTTP; the Windows emulator uses HTTPS.
-pub const EMULATOR_ENDPOINT: &str = "http://localhost:8081/";
+/// Well-known Cosmos DB Emulator defaults for the vnext-preview Linux Docker image.
+/// That image serves plain HTTP on 8081 (no TLS) — use http://, not https://.
+/// The Windows installer emulator still uses HTTPS; test_cosmos_endpoint handles both.
+/// Data-explorer UI is on port 1234.
+pub const EMULATOR_ENDPOINT: &str = "http://localhost:8081";
 pub const EMULATOR_KEY: &str =
     "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw==";
 

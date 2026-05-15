@@ -6,7 +6,8 @@ pub struct RunDialogProps {
     pub trigger_type:    String,
     pub payload:         String,
     pub blob_container:  Option<String>,   // Some("kyriba-input") for blob triggers
-    pub on_run:          EventHandler<(String, String)>, // (blob_name, body)
+    pub queue_name:      Option<String>,   // Some("ais.pivot.trading.je-local") for SB triggers
+    pub on_run:          EventHandler<(String, String)>, // (blob_name_or_queue, body)
     pub on_cancel:       EventHandler<()>,
 }
 
@@ -15,12 +16,15 @@ pub fn RunDialog(props: RunDialogProps) -> Element {
     let mut body = use_signal(|| props.payload.clone());
 
     let trigger_lower = props.trigger_type.to_lowercase();
-    let is_http       = matches!(trigger_lower.as_str(), "request" | "http");
-    let is_schedule   = matches!(trigger_lower.as_str(), "recurrence" | "schedule");
-    let is_blob       = props.blob_container.is_some();
+    let is_http        = matches!(trigger_lower.as_str(), "request" | "http");
+    let is_schedule    = matches!(trigger_lower.as_str(), "recurrence" | "schedule");
+    let is_blob        = props.blob_container.is_some();
+    let is_service_bus = props.queue_name.is_some() && !is_blob;
 
     let hint = if is_blob {
         "Blob trigger — upload a file to the container, then click Watch to poll for the run."
+    } else if is_service_bus {
+        "Service Bus trigger — body will be sent as a message to the input queue."
     } else if is_http {
         "HTTP Request trigger — body will be POSTed to the callback URL."
     } else if is_schedule {
@@ -28,6 +32,10 @@ pub fn RunDialog(props: RunDialogProps) -> Element {
     } else {
         "Trigger will be fired via /run. Body is passed as query input."
     };
+
+    let run_label = if is_blob { "👁 Watch" }
+                   else if is_service_bus { "📨 Send" }
+                   else { "▶  Run" };
 
     rsx! {
         // ── backdrop ──────────────────────────────────────────────────
@@ -52,7 +60,7 @@ pub fn RunDialog(props: RunDialogProps) -> Element {
             }
 
             if is_blob {
-                // ── Blob trigger: instruct user to upload manually ────
+                // ── Blob trigger ──────────────────────────────────────
                 div { id: "run-dialog-body",
                     if let Some(container) = &props.blob_container {
                         div { class: "dialog-blob-info",
@@ -67,7 +75,25 @@ pub fn RunDialog(props: RunDialogProps) -> Element {
                         }
                     }
                 }
+            } else if is_service_bus {
+                // ── Service Bus trigger ───────────────────────────────
+                div { id: "run-dialog-body",
+                    if let Some(queue) = &props.queue_name {
+                        div { class: "dialog-blob-info",
+                            span { class: "dialog-label", "Input queue" }
+                            span { class: "dialog-blob-container", "📨 {queue}" }
+                        }
+                    }
+                    div { class: "dialog-label", "Message body (JSON)" }
+                    textarea {
+                        id: "run-dialog-textarea",
+                        spellcheck: false,
+                        value: "{body}",
+                        oninput: move |e| body.set(e.value()),
+                    }
+                }
             } else if is_schedule {
+                // ── Recurrence trigger ────────────────────────────────
                 div { id: "run-dialog-body",
                     div { class: "dialog-no-body",
                         span { "⏱ This workflow is schedule-triggered." }
@@ -75,6 +101,7 @@ pub fn RunDialog(props: RunDialogProps) -> Element {
                     }
                 }
             } else {
+                // ── HTTP / generic trigger ────────────────────────────
                 div { id: "run-dialog-body",
                     div { class: "dialog-label", "Request body (JSON)" }
                     textarea {
@@ -94,11 +121,11 @@ pub fn RunDialog(props: RunDialogProps) -> Element {
                 }
                 button {
                     class: "btn btn-run btn-small",
-                    onclick: move |_| props.on_run.call((
-                        String::new(),
-                        body.read().clone(),
-                    )),
-                    if is_blob { "👁 Watch" } else { "▶  Run" }
+                    onclick: {
+                        let queue = props.queue_name.clone().unwrap_or_default();
+                        move |_| props.on_run.call((queue.clone(), body.read().clone()))
+                    },
+                    "{run_label}"
                 }
             }
         }

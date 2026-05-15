@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 
 use crate::components::log_panel::{LogLevel, LogLine};
 use crate::services::{
-    azure_cli, connection_diag, payload,
+    azure_cli, connection_diag, payload, sb_check,
     workflows::{self, ActionItem, RunItem, WorkflowItem},
 };
 use crate::utils::{filter_cleared, make_push, sweep_run_history};
@@ -25,7 +25,7 @@ pub fn handle_open_dialog(
     mut source_text: Signal<String>,
     mut active_tab: Signal<String>,
     az_status: Signal<Option<Result<String, azure_cli::AzError>>>,
-    mut run_dialog: Signal<Option<(String, String, String, String, Option<String>)>>,
+    mut run_dialog: Signal<Option<(String, String, String, String, Option<String>, Option<String>)>>,
     log_lines: Signal<Vec<LogLine>>,
 ) {
     let mut push = make_push(log_lines);
@@ -45,8 +45,9 @@ pub fn handle_open_dialog(
     };
     source_text.set(wf_text.clone());
     let blob_container = blob_container_for(dir, &name, &trigger_type);
-    let suggested = payload::suggest_payload(dir, &name);
-    run_dialog.set(Some((name, trigger_name, trigger_type, suggested, blob_container)));
+    let queue_name     = sb_check::trigger_queue_for(dir, &name).map(|(_fqdn, q)| q);
+    let suggested      = payload::suggest_payload(dir, &name);
+    run_dialog.set(Some((name, trigger_name, trigger_type, suggested, blob_container, queue_name)));
 }
 
 pub fn handle_trigger_from_detail(
@@ -54,7 +55,7 @@ pub fn handle_trigger_from_detail(
     workflows_sig: Signal<Vec<WorkflowItem>>,
     selected_wf: Signal<Option<String>>,
     az_status: Signal<Option<Result<String, azure_cli::AzError>>>,
-    mut run_dialog: Signal<Option<(String, String, String, String, Option<String>)>>,
+    mut run_dialog: Signal<Option<(String, String, String, String, Option<String>, Option<String>)>>,
     log_lines: Signal<Vec<LogLine>>,
 ) {
     let mut push = make_push(log_lines);
@@ -68,14 +69,16 @@ pub fn handle_trigger_from_detail(
     let Some(wf_name) = selected_wf.read().clone() else { return };
     let Some(wf) = workflows_sig.read().iter().find(|w| w.name == wf_name).cloned() else { return };
     let blob_container = blob_container_for(dir, &wf.name, &wf.trigger_type);
-    let suggested = payload::suggest_payload(dir, &wf.name);
-    run_dialog.set(Some((wf.name, wf.trigger_name, wf.trigger_type, suggested, blob_container)));
+    let queue_name     = sb_check::trigger_queue_for(dir, &wf.name).map(|(_fqdn, q)| q);
+    let suggested      = payload::suggest_payload(dir, &wf.name);
+    run_dialog.set(Some((wf.name, wf.trigger_name, wf.trigger_type, suggested, blob_container, queue_name)));
 }
 
 pub fn handle_run(
     name: String,
     trigger_name: String,
     trigger_type: String,
+    queue_or_blob: String,   // queue name for SB triggers, blob filename for blob triggers
     body: String,
     dir: &str,
     runs: Signal<Vec<RunItem>>,
@@ -85,7 +88,7 @@ pub fn handle_run(
     mut active_tab: Signal<String>,
     mut traced_wfs: Signal<HashSet<String>>,
     mut cleared_wfs: Signal<HashMap<String, String>>,
-    mut run_dialog: Signal<Option<(String, String, String, String, Option<String>)>>,
+    mut run_dialog: Signal<Option<(String, String, String, String, Option<String>, Option<String>)>>,
 ) {
     run_dialog.set(None);
     active_tab.set("Run".into());
@@ -217,9 +220,45 @@ pub fn handle_run(
                     return;
                 }
             }
+        } else if !queue_or_blob.is_empty() {
+            // Service Bus trigger — send the message body to the resolved queue
+            let queue  = queue_or_blob.clone();
+            let fqdn   = sb_check::trigger_queue_for(&dir_diag, &wf)
+                .map(|(f, _)| f)
+                .unwrap_or_default();
+            push(format!("📨 Sending message to {}/{}…", fqdn, queue), LogLevel::Info);
+            let body_clone = body.clone();
+            // Decide send path: AMQP to localhost if the emulator is active.
+            // Three ways to detect it — any one is sufficient:
+            //   1. fqdn resolved to localhost/127.x (connection string style)
+            //   2. UseDevelopmentEmulator=true in local.settings.json (conn str was patched)
+            //   3. Port 5672 is open on localhost (most reliable: covers MSI connections
+            //      where settings were never patched because there is no conn string key)
+            let emulator_port_open = tokio::net::TcpStream::connect("127.0.0.1:5672")
+                .await
+                .is_ok();
+            let result = if emulator_port_open
+                || sb_check::is_local_emulator(&fqdn)
+                || sb_check::is_emulator_configured(&dir_diag)
+            {
+                crate::services::sb_amqp::send_amqp_message("localhost", &queue, &body_clone).await
+            } else {
+                Err("SB Emulator is not running — start it from the toolbar first.".into())
+            };
+            match result {
+                Ok(()) => {
+                    push("✅ Message sent — waiting for workflow run…".into(), LogLevel::Ok);
+                }
+                Err(e) => {
+                    push(format!("❌ Send failed: {}", e), LogLevel::Error);
+                    running_wfs.write().remove(&wf);
+                    return;
+                }
+            }
         } else {
             push(
-                "This workflow is triggered by Service Bus — cannot run manually. Put a message on the input queue instead.".into(),
+                "This workflow is triggered by Service Bus — cannot resolve the queue name. \
+                 Check ServiceBus_*QueueName in local.settings.json.".into(),
                 LogLevel::Warn,
             );
             running_wfs.write().remove(&wf);

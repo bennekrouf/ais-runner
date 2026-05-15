@@ -71,14 +71,16 @@ fn az_split(line: &str) -> (&str, &str) {
 
 #[derive(Props, Clone, PartialEq)]
 pub struct LogPanelProps {
-    pub lines: Signal<Vec<LogLine>>,
-    pub on_clear: EventHandler<()>,
+    pub lines:        Signal<Vec<LogLine>>,
+    pub sb_emu_lines: Signal<Vec<String>>,
+    pub on_clear:     EventHandler<()>,
 }
 
 #[component]
 pub fn LogPanel(props: LogPanelProps) -> Element {
     let mut active_tab = use_signal(|| "console");
     let mut az_lines: Signal<Vec<String>> = use_signal(Vec::new);
+    let mut sb_emu_lines = props.sb_emu_lines;
 
     use_effect(move || {
         let _n = props.lines.read().len();
@@ -88,13 +90,17 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
         let _n = az_lines.read().len();
         document::eval("var e=document.getElementById('az-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
     });
+    use_effect(move || {
+        let _n = sb_emu_lines.read().len();
+        document::eval("var e=document.getElementById('sb-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+    });
 
-    // tail -f /tmp/azurite/debug.log  (polls every 500 ms)
+    // tail -f azurite debug.log  (polls every 500 ms)
     use_coroutine(move |_rx: UnboundedReceiver<()>| async move {
-        let path = "/tmp/azurite/debug.log";
+        let path = crate::utils::azurite_log();
         let mut offset: u64 = 0;
         loop {
-            match tokio::fs::metadata(path).await {
+            match tokio::fs::metadata(&path).await {
                 Ok(meta) => {
                     let len = meta.len();
                     if len < offset {
@@ -102,7 +108,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                         az_lines.write().clear();
                     }
                     if len > offset {
-                        if let Ok(mut f) = tokio::fs::File::open(path).await {
+                        if let Ok(mut f) = tokio::fs::File::open(&path).await {
                             use tokio::io::{AsyncReadExt, AsyncSeekExt};
                             if f.seek(std::io::SeekFrom::Start(offset)).await.is_ok() {
                                 let mut buf = String::new();
@@ -139,7 +145,9 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     });
 
     let tab = active_tab();
-    let sb_count = props.lines.read().iter().filter(|l| is_sb_noise(&l.msg)).count();
+    let sb_noise_count = props.lines.read().iter().filter(|l| is_sb_noise(&l.msg)).count();
+    let sb_emu_count   = sb_emu_lines.read().len();
+    let sb_count       = sb_noise_count + sb_emu_count;
 
     rsx! {
         div { id: "log-panel",
@@ -179,6 +187,9 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                     onclick: move |_| {
                         if tab == "azurite" {
                             az_lines.write().clear();
+                        } else if tab == "servicebus" {
+                            sb_emu_lines.write().clear();
+                            props.on_clear.call(());
                         } else {
                             props.on_clear.call(());
                         }
@@ -210,7 +221,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                             div { class: "log-line",
                                 span { class: "log-msg info",
                                     style: "opacity:0.45;font-style:italic",
-                                    "Waiting for /tmp/azurite/debug.log…"
+                                    "Waiting for Azurite debug.log…"
                                 }
                             }
                         }
@@ -233,33 +244,62 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                 }
             }
 
-            // ── Service Bus tab ───────────────────────────────────────────
+            // ── Service Bus tab — emulator docker output + func SB noise ─
             div {
                 id: "sb-log-scroll",
                 style: if tab == "servicebus" { "" } else { "display:none" },
+                // Docker container stdout/stderr
                 {
-                    let sb_lines: Vec<_> = props.lines.read().iter()
-                        .filter(|l| is_sb_noise(&l.msg))
-                        .cloned()
-                        .collect();
-                    if sb_lines.is_empty() {
+                    let emu = sb_emu_lines.read();
+                    if emu.is_empty() {
                         rsx! {
                             div { class: "log-line",
                                 span { class: "log-msg info",
                                     style: "opacity:0.45;font-style:italic",
-                                    "No Service Bus errors captured yet."
+                                    "SB Emulator not running — start it from the toolbar."
                                 }
                             }
                         }
                     } else {
                         rsx! {
-                            for line in sb_lines.iter() {
+                            for line in emu.iter() {
+                                {
+                                    let (time, msg) = az_split(line);
+                                    let cls = az_line_class(line);
+                                    rsx! {
+                                        div { class: "log-line",
+                                            span { class: "log-time", "{time}" }
+                                            span { class: cls, "{msg}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Func SB noise (connection errors, retries etc.)
+                {
+                    let noise: Vec<_> = props.lines.read().iter()
+                        .filter(|l| is_sb_noise(&l.msg))
+                        .cloned()
+                        .collect();
+                    if !noise.is_empty() {
+                        rsx! {
+                            div { class: "log-line",
+                                span { class: "log-msg warn",
+                                    style: "opacity:0.6;font-style:italic;margin-top:8px",
+                                    "── func Service Bus noise ──"
+                                }
+                            }
+                            for line in noise.iter() {
                                 div { class: "log-line",
                                     span { class: "log-time", "{line.time}" }
                                     span { class: line.level.css_class(), "{line.msg}" }
                                 }
                             }
                         }
+                    } else {
+                        rsx! {}
                     }
                 }
             }

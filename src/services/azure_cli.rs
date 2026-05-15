@@ -278,82 +278,15 @@ pub fn sb_queue_stats(rg: &str, namespace_fqdn: &str, queue: &str) -> Result<SbQ
     })
 }
 
-/// Fetch the primary connection string for a SB namespace (requires Contributor or higher).
-pub fn sb_fetch_conn_str(rg: &str, namespace_fqdn: &str) -> Result<String, AzError> {
-    let short_name = namespace_fqdn.split('.').next().unwrap_or(namespace_fqdn);
-    run(&[
-        "servicebus", "namespace", "authorization-rule", "keys", "list",
-        "--resource-group", rg,
-        "--namespace-name", short_name,
-        "--name", "RootManageSharedAccessKey",
-        "--query", "primaryConnectionString",
-        "-o", "tsv",
-    ])
-}
-
-/// Obtain an AAD Bearer token scoped to the Service Bus data-plane.
-pub fn sb_get_bearer_token() -> Result<String, AzError> {
-    run(&[
-        "account", "get-access-token",
-        "--resource", "https://servicebus.azure.net/",
-        "--query", "accessToken",
-        "-o", "tsv",
-    ])
-}
 
 /// Sets the active subscription for subsequent az commands.
 pub fn set_subscription(subscription_id: &str) -> Result<(), AzError> {
     run(&["account", "set", "--subscription", subscription_id]).map(|_| ())
 }
 
-/// List all queue names in a Service Bus namespace.
-pub fn sb_list_queues(rg: &str, namespace_fqdn: &str) -> Result<Vec<String>, AzError> {
-    let short_name = namespace_fqdn.split('.').next().unwrap_or(namespace_fqdn);
-    let out = run(&[
-        "servicebus", "queue", "list",
-        "--resource-group", rg,
-        "--namespace-name", short_name,
-        "--query", "[].name",
-        "-o", "tsv",
-    ])?;
-    Ok(out.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
-}
 
-/// Create a queue in a Service Bus namespace.
-pub fn sb_create_queue(rg: &str, namespace_fqdn: &str, queue: &str) -> Result<(), AzError> {
-    let short_name = namespace_fqdn.split('.').next().unwrap_or(namespace_fqdn);
-    run(&[
-        "servicebus", "queue", "create",
-        "--resource-group", rg,
-        "--namespace-name", short_name,
-        "--name", queue,
-    ]).map(|_| ())
-}
 
-/// List all storage accounts in the subscription with their blob endpoint URLs.
-/// Returns (account_name, blob_endpoint) pairs.
-pub fn list_storage_accounts(subscription: Option<&str>) -> Result<Vec<(String, String)>, AzError> {
-    let mut args = vec![
-        "storage", "account", "list",
-        "--query", "[].{name:name,ep:primaryEndpoints.blob}",
-        "-o", "tsv",
-    ];
-    let sub_owned;
-    if let Some(sub) = subscription {
-        sub_owned = sub.to_string();
-        args.push("--subscription");
-        args.push(&sub_owned);
-    }
-    let out = run(&args)?;
-    Ok(out.lines()
-        .filter_map(|line| {
-            let mut parts = line.splitn(2, '\t');
-            let name = parts.next()?.trim().to_string();
-            let ep   = parts.next().unwrap_or("").trim().trim_end_matches('/').to_string();
-            if name.is_empty() { None } else { Some((name, ep)) }
-        })
-        .collect())
-}
+
 
 /// Fetches the primary connection string for a Service Bus namespace.
 pub fn fetch_servicebus_connection_string(subscription: &str, rg: &str, namespace: &str) -> Result<String, AzError> {
