@@ -140,6 +140,14 @@ impl ManagedProcess {
         if guard.is_some() {
             return Err("Process already started".into());
         }
+        if let Some(dir) = workdir {
+            if !std::path::Path::new(dir).is_dir() {
+                return Err(format!(
+                    "Working directory '{}' does not exist — create it first.",
+                    dir
+                ));
+            }
+        }
         let resolved = resolve_bin(program);
         let mut cmd = Command::new(&resolved);
         cmd.args(args)
@@ -151,7 +159,7 @@ impl ManagedProcess {
         }
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("Failed to spawn '{}': {}", program, e))?;
+            .map_err(|e| format!("Failed to spawn '{}': {}", resolved, e))?;
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
         *guard = Some(child);

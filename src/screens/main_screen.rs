@@ -47,10 +47,16 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let sb_emu_proc     = use_signal(|| Arc::new(ManagedProcess::new()));
     let sb_emu_lines: Signal<Vec<String>> = use_signal(Vec::new);
 
-    let func_apps_dir = std::path::Path::new(&dir)
-        .parent()
-        .map(|p| p.join("function_apps").to_string_lossy().to_string())
-        .unwrap_or_else(|| format!("{}/function_apps", dir));
+    // resolve_logic_apps_dir may descend into a logic_apps/ subfolder,
+    // so derive func_apps_dir from the resolved path's parent (the platform
+    // root) rather than the raw dir the user selected.
+    let func_apps_dir = {
+        let resolved = workflows::resolve_logic_apps_dir(&dir);
+        resolved
+            .parent()
+            .map(|p| p.join("function_apps").to_string_lossy().to_string())
+            .unwrap_or_else(|| format!("{}/function_apps", dir))
+    };
 
     // ── Data signals ───────────────────────────────────────────────────────
     let mut workflows   = use_signal(|| Vec::<WorkflowItem>::new());

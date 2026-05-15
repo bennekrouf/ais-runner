@@ -30,6 +30,16 @@ pub fn handle_start(
         Err(e) => {
             state.set(ServiceState::Stopped);
             push(format!("Java Function App error: {}", e), LogLevel::Error);
+            if e.contains("does not exist") {
+                push(format!(
+                    "  hint: create a Maven Azure Functions project at '{}'  \
+                     (mvn archetype:generate -DarchetypeGroupId=com.microsoft.azure \
+                     -DarchetypeArtifactId=azure-functions-archetype)",
+                    func_apps_dir,
+                ), LogLevel::Warn);
+            } else if e.contains("Failed to spawn") {
+                push("  hint: install Maven — brew install maven".into(), LogLevel::Warn);
+            }
         }
     }
 }
