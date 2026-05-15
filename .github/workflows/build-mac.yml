@@ -7,24 +7,14 @@ on:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        include:
-          - runner: macos-latest      # arm64 (M-series)
-            target: aarch64-apple-darwin
-            arch: arm64
-          - runner: macos-13          # x86_64 (Intel)
-            target: x86_64-apple-darwin
-            arch: x86_64
-
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-latest  # arm64 (Apple Silicon)
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -33,24 +23,24 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: macos-${{ matrix.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
+          key: macos-arm64-cargo-${{ hashFiles('Cargo.lock') }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target aarch64-apple-darwin
 
       - name: Package tar.gz
         run: |
-          DIST=dist/ais-runner-macos-${{ matrix.arch }}
+          DIST=dist/ais-runner-macos-arm64
           mkdir -p "$DIST"
-          cp target/${{ matrix.target }}/release/ais-runner "$DIST/"
+          cp target/aarch64-apple-darwin/release/ais-runner "$DIST/"
           cp scripts/setup-mac.sh "$DIST/"
           cp README.md "$DIST/"
-          tar -czf ais-runner-macos-${{ matrix.arch }}.tar.gz -C dist ais-runner-macos-${{ matrix.arch }}
-          echo "sha256: $(shasum -a 256 ais-runner-macos-${{ matrix.arch }}.tar.gz)"
+          tar -czf ais-runner-macos-arm64.tar.gz -C dist ais-runner-macos-arm64
+          echo "sha256: $(shasum -a 256 ais-runner-macos-arm64.tar.gz)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ais-runner-macos-${{ matrix.arch }}
-          path: ais-runner-macos-${{ matrix.arch }}.tar.gz
+          name: ais-runner-macos-arm64
+          path: ais-runner-macos-arm64.tar.gz
           retention-days: 30

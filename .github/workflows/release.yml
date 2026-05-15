@@ -7,24 +7,14 @@ on:
 
 jobs:
   build-mac:
-    strategy:
-      matrix:
-        include:
-          - runner: macos-latest
-            target: aarch64-apple-darwin
-            arch: arm64
-          - runner: macos-13
-            target: x86_64-apple-darwin
-            arch: x86_64
-
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-latest  # arm64 (Apple Silicon)
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -33,28 +23,28 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: release-macos-${{ matrix.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
+          key: release-macos-arm64-cargo-${{ hashFiles('Cargo.lock') }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target aarch64-apple-darwin
 
       - name: Package
         run: |
-          DIST=dist/ais-runner-macos-${{ matrix.arch }}
+          DIST=dist/ais-runner-macos-arm64
           mkdir -p "$DIST"
-          cp target/${{ matrix.target }}/release/ais-runner "$DIST/"
+          cp target/aarch64-apple-darwin/release/ais-runner "$DIST/"
           cp scripts/setup-mac.sh "$DIST/"
           cp README.md "$DIST/"
-          tar -czf ais-runner-macos-${{ matrix.arch }}.tar.gz -C dist ais-runner-macos-${{ matrix.arch }}
-          shasum -a 256 ais-runner-macos-${{ matrix.arch }}.tar.gz > ais-runner-macos-${{ matrix.arch }}.tar.gz.sha256
+          tar -czf ais-runner-macos-arm64.tar.gz -C dist ais-runner-macos-arm64
+          shasum -a 256 ais-runner-macos-arm64.tar.gz > ais-runner-macos-arm64.tar.gz.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ais-runner-macos-${{ matrix.arch }}
+          name: ais-runner-macos-arm64
           path: |
-            ais-runner-macos-${{ matrix.arch }}.tar.gz
-            ais-runner-macos-${{ matrix.arch }}.tar.gz.sha256
+            ais-runner-macos-arm64.tar.gz
+            ais-runner-macos-arm64.tar.gz.sha256
 
   build-windows:
     runs-on: windows-latest
@@ -106,13 +96,11 @@ jobs:
         with:
           path: artifacts
 
-      - name: Compute sha256 values
+      - name: Compute sha256
         id: sha
         run: |
           ARM64=$(cat artifacts/ais-runner-macos-arm64/ais-runner-macos-arm64.tar.gz.sha256 | awk '{print $1}')
-          X86=$(cat artifacts/ais-runner-macos-x86_64/ais-runner-macos-x86_64.tar.gz.sha256 | awk '{print $1}')
           echo "arm64=$ARM64" >> "$GITHUB_OUTPUT"
-          echo "x86_64=$X86" >> "$GITHUB_OUTPUT"
 
       - name: Check out homebrew tap
         uses: actions/checkout@v4
@@ -125,15 +113,12 @@ jobs:
         env:
           VERSION: ${{ github.ref_name }}
           SHA_ARM64: ${{ steps.sha.outputs.arm64 }}
-          SHA_X86: ${{ steps.sha.outputs.x86_64 }}
         run: |
           FORMULA=tap/Formula/aisrunner.rb
-          # Strip leading 'v' from tag for the version field
           VER="${VERSION#v}"
 
           sed -i "s|version \".*\"|version \"$VER\"|" "$FORMULA"
-          sed -i "/on_arm/,/end/{s|sha256 \".*\"|sha256 \"$SHA_ARM64\"|}" "$FORMULA"
-          sed -i "/on_intel/,/end/{s|sha256 \".*\"|sha256 \"$SHA_X86\"|}" "$FORMULA"
+          sed -i "s|sha256 \".*\"|sha256 \"$SHA_ARM64\"|" "$FORMULA"
 
       - name: Commit and push
         working-directory: tap
@@ -174,16 +159,14 @@ jobs:
 
           ### macOS (Apple Silicon)
           ```bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ais-runner-macos-arm64.tar.gz | tar xz
-          cd ais-runner-macos-arm64
-          ./setup-mac.sh   # install Node, Azure CLI, Azurite, func
-          ./ais-runner
+          brew tap Bennekrouf/aisrunner
+          brew install aisrunner
           ```
 
-          ### macOS (Intel)
+          Or manually:
           ```bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ais-runner-macos-x86_64.tar.gz | tar xz
-          cd ais-runner-macos-x86_64
+          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ais-runner-macos-arm64.tar.gz | tar xz
+          cd ais-runner-macos-arm64
           ./setup-mac.sh
           ./ais-runner
           ```
