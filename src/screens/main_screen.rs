@@ -12,6 +12,7 @@ use crate::components::{
     settings_editor::SettingsEditor,
     db_panel::DbPanel,
     azure_panel::AzurePanel,
+    devops_panel::DevOpsPanel,
 };
 use crate::services::{
     azure_cli, azure_sync, blob_check, config, connection_diag, cosmos_check,
@@ -226,8 +227,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut msi_wfs          = use_signal(|| HashSet::<String>::new());
     let mut wf_connectors    = use_signal(|| std::collections::HashMap::<String, Vec<workflows::ConnectorKind>>::new());
     let mut sql_conns        = use_signal(|| Vec::<sql_check::SqlConnection>::new());
-    let mut db_panel_open    = use_signal(|| false);
-    let mut azure_panel_open = use_signal(|| false);
+    let mut db_panel_open     = use_signal(|| false);
+    let mut azure_panel_open  = use_signal(|| false);
+    let mut devops_panel_open = use_signal(|| false);
     let az_diff_cache = use_signal(|| std::collections::HashMap::<String, crate::components::azure_panel::DiffStatus>::new());
     let mut sftp_conns       = use_signal(|| Vec::<sftp_check::SftpConnection>::new());
     let mut blob_conns       = use_signal(|| Vec::<blob_check::BlobConnection>::new());
@@ -435,9 +437,19 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         onclick: move |_| {
                             let next = !*azure_panel_open.read();
                             azure_panel_open.set(next);
-                            if next { db_panel_open.set(false); }
+                            if next { db_panel_open.set(false); devops_panel_open.set(false); }
                         },
                         "☁ Azure"
+                    }
+                    button {
+                        class: if *devops_panel_open.read() { "btn btn-small btn-panel active" } else { "btn btn-small btn-panel" },
+                        title: "View Azure DevOps pipelines and runs",
+                        onclick: move |_| {
+                            let next = !*devops_panel_open.read();
+                            devops_panel_open.set(next);
+                            if next { db_panel_open.set(false); azure_panel_open.set(false); }
+                        },
+                        "🚀 DevOps"
                     }
                 }
 
@@ -660,6 +672,17 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                             }
                         }
                     }
+                }
+            }
+
+            // DevOps panel — same slot pattern as Azure / Connections
+            div {
+                id: "devops-panel-slot",
+                class: if *devops_panel_open.read() { "open" } else { "" },
+                DevOpsPanel {
+                    workspace_link: workspace_link.clone(),
+                    logic_apps_dir: dir.clone(),
+                    is_open:        devops_panel_open,
                 }
             }
 

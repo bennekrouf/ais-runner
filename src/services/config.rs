@@ -13,6 +13,10 @@ pub struct WorkspaceLink {
     pub tenant_id:       Option<String>,
     pub logic_app_name:  Option<String>,
     pub sb_namespace:    Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub devops_org:     Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub devops_project: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

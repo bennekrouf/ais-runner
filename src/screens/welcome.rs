@@ -69,6 +69,8 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
                                                     tenant_id:       None,
                                                     logic_app_name:  Some(site.name.clone()),
                                                     sb_namespace:    None,
+                                                    devops_org:      None,
+                                                    devops_project:  None,
                                                 });
                                                 config::save(&cfg);
                                                 app_cfg.set(cfg);

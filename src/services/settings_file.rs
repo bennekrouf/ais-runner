@@ -46,5 +46,7 @@ pub fn try_bootstrap_link(logic_apps_dir: &str) -> Option<config::WorkspaceLink>
         tenant_id:       None,
         logic_app_name:  site_name,
         sb_namespace:    sb_ns,
+        devops_org:      None,
+        devops_project:  None,
     })
 }

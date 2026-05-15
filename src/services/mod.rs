@@ -18,3 +18,4 @@ pub mod setup_manager;
 pub mod runtime_manager;
 pub mod env_compare;
 pub mod sb_amqp;
+pub mod devops_cli;
