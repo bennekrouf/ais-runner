@@ -1,0 +1,90 @@
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "triggers": {
+      "When_a_blob_is_added_or_updated": {
+        "type": "ServiceProvider",
+        "inputs": {
+          "parameters": {
+            "path": "rename-input"
+          },
+          "serviceProviderConfiguration": {
+            "connectionName": "AzureBlob",
+            "operationId": "whenABlobIsAddedOrModified",
+            "serviceProviderId": "/serviceProviders/AzureBlob"
+          }
+        }
+      }
+    },
+    "actions": {
+      "Compose_new_name": {
+        "type": "Compose",
+        "runAfter": {},
+        "inputs": "@concat('processed_', triggerBody()?['name'])"
+      },
+      "Read_blob": {
+        "type": "ServiceProvider",
+        "runAfter": {},
+        "inputs": {
+          "parameters": {
+            "containerName": "rename-input",
+            "blobName": "@triggerBody()?['name']",
+            "inferContentType": false
+          },
+          "serviceProviderConfiguration": {
+            "connectionName": "AzureBlob",
+            "operationId": "readBlob",
+            "serviceProviderId": "/serviceProviders/AzureBlob"
+          }
+        }
+      },
+      "Compose_rewritten_content": {
+        "type": "Compose",
+        "runAfter": {
+          "Read_blob": ["SUCCEEDED"]
+        },
+        "inputs": "@concat('[rewritten] ', body('Read_blob')?['content'])"
+      },
+      "Upload_renamed_blob": {
+        "type": "ServiceProvider",
+        "runAfter": {
+          "Compose_new_name":          ["SUCCEEDED"],
+          "Compose_rewritten_content": ["SUCCEEDED"]
+        },
+        "inputs": {
+          "parameters": {
+            "containerName": "rename-output",
+            "blobName": "@outputs('Compose_new_name')",
+            "content": "@outputs('Compose_rewritten_content')",
+            "overrideIfExists": "true"
+          },
+          "serviceProviderConfiguration": {
+            "connectionName": "AzureBlob",
+            "operationId": "uploadBlob",
+            "serviceProviderId": "/serviceProviders/AzureBlob"
+          }
+        }
+      },
+      "Delete_original_blob": {
+        "type": "ServiceProvider",
+        "runAfter": {
+          "Upload_renamed_blob": ["SUCCEEDED"]
+        },
+        "inputs": {
+          "parameters": {
+            "containerName": "rename-input",
+            "blobName": "@triggerBody()?['name']"
+          },
+          "serviceProviderConfiguration": {
+            "connectionName": "AzureBlob",
+            "operationId": "deleteBlob",
+            "serviceProviderId": "/serviceProviders/AzureBlob"
+          }
+        }
+      }
+    },
+    "outputs": {}
+  },
+  "kind": "Stateful"
+}

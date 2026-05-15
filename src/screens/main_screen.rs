@@ -27,6 +27,7 @@ use crate::handlers::{azurite, func_start, java, sb_emulator, setup, workflow_se
 pub struct MainScreenProps {
     pub logic_apps_dir: String,
     pub on_back: EventHandler<()>,
+    pub is_light: Signal<bool>,
 }
 
 #[component]
@@ -59,8 +60,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut actions     = use_signal(|| Vec::<workflows::ActionItem>::new());
     let mut running_wfs = use_signal(|| HashSet::<String>::new());
     let mut current_view = use_signal(|| "Workflows".to_string());
-    let system_light    = dark_light::detect() != dark_light::Mode::Dark;
-    let mut is_light    = use_signal(|| system_light);
+    let mut is_light     = props.is_light;
     let active_tab  = use_signal(|| "Source".to_string());
     let mut run_dialog  = use_signal(|| Option::<(String, String, String, String, Option<String>, Option<String>)>::None);
     let mut traced_wfs  = use_signal(|| HashSet::<String>::new());
@@ -182,6 +182,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         wf, Some(trigger_ts),
                         runs, actions, log_lines,
                         running_wfs, traced_wfs, cleared,
+                        false, // manual Watch — not a blob trigger
                     ));
                 }
             }
@@ -240,10 +241,6 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut active_tenant: Signal<Option<String>>                          = use_signal(|| None);
 
     // ══ Effects ════════════════════════════════════════════════════════════
-
-    use_effect(move || {
-        document::eval(&format!("document.body.className = '{}';", if *is_light.read() { "light" } else { "" }));
-    });
 
     use_effect(move || {
         spawn(async move {

@@ -267,6 +267,7 @@ pub fn handle_run(
 
         poll_for_run(
             wf, cleared_at, runs, actions, log_lines, running_wfs, traced_wfs, cleared,
+            is_blob,
         ).await;
         return;
     });
@@ -274,6 +275,8 @@ pub fn handle_run(
 
 /// Shared polling loop used by both manual Watch and the auto-trigger watcher.
 /// Polls run history until the run reaches a terminal state or times out.
+/// `is_blob` controls the patience window: blob triggers poll every ~30 s so
+/// they need a longer wait than HTTP/recurrence triggers.
 pub async fn poll_for_run(
     wf:          String,
     cleared_at:  Option<String>,
@@ -283,11 +286,17 @@ pub async fn poll_for_run(
     mut running_wfs: Signal<HashSet<String>>,
     mut traced_wfs:  Signal<HashSet<String>>,
     cleared:         Signal<HashMap<String, String>>,
+    is_blob:         bool,
 ) {
-        // Poll until terminal.  Stop quickly if nothing appears — a working blob
-        // trigger fires within a few seconds of the blob being added.
-        let empty_tick_limit: u32 = 20; // ~16 s at 800 ms/tick
-        let patience_secs         = 16u32;
+        // Poll until terminal.  Blob triggers can take up to 30 s to fire
+        // (that is the default polling interval of the Standard LA runtime).
+        // HTTP/recurrence runs appear almost immediately so we use a shorter
+        // patience window for those.
+        let (empty_tick_limit, patience_secs): (u32, u32) = if is_blob {
+            (50, 40) // ~40 s at 800 ms/tick — covers the 30 s poll interval
+        } else {
+            (20, 16) // ~16 s — fast for HTTP / recurrence
+        };
         let mut push = make_push(log_lines);
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
         let deadline        = tokio::time::Instant::now() + std::time::Duration::from_secs(300);

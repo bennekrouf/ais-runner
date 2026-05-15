@@ -348,25 +348,35 @@ body.light .tool-banner-item code { background: #f0f3f6; color: #9a6700; }
     background: var(--bg0);
     border: 1px solid var(--border);
     border-radius: 6px;
-    padding: 0 7px;
-    flex-shrink: 1;
+    padding: 0 10px;
+    flex-shrink: 0;
     min-width: 0;
+    user-select: none;
 }
+.service-block-btn {
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
+}
+.service-block-btn:hover { opacity: 0.8; }
+.service-block-btn.svc-stopped:hover  { background: rgba(35,134,54,0.08); border-color: var(--green); }
+.service-block-btn.svc-running  { border-color: var(--green); background: rgba(35,134,54,0.08); }
+.service-block-btn.svc-running:hover  { background: rgba(200,50,50,0.1); border-color: var(--red-bg); }
+.service-block-btn.svc-starting { cursor: default; opacity: 0.6; }
 .service-label {
     font-size: 12px;
     color: var(--text2);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 90px;
     flex-shrink: 1;
 }
+.svc-running .service-label { color: var(--green); font-weight: 600; }
 .btn-svc {
     font-size: 11px;
-    padding: 2px 8px;
-    height: 20px;
-    line-height: 1;
+    padding: 4px 8px;
+    line-height: 1.4;
     flex-shrink: 0;
+    align-self: center;
 }
 .auto-watch-btn {
     font-size: 11px;

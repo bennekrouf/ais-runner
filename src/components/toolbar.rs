@@ -18,26 +18,25 @@ pub fn ServiceBlock(props: ServiceBlockProps) -> Element {
         ServiceState::Stopped  => "dot stopped",
     };
 
-    let (btn_label, btn_class, is_start) = match props.state {
-        ServiceState::Stopped  => ("Start",      "btn btn-start btn-svc", true),
-        ServiceState::Starting => ("Starting…",  "btn btn-start btn-svc", false),
-        ServiceState::Running  => ("Stop",       "btn btn-stop  btn-svc", false),
+    let (block_state_class, tooltip, is_start) = match props.state {
+        ServiceState::Stopped  => ("svc-stopped",  format!("Click to start {} — {}", props.label, props.cmd), true),
+        ServiceState::Starting => ("svc-starting", format!("{} is starting…", props.label), false),
+        ServiceState::Running  => ("svc-running",  format!("Click to stop {}", props.label), false),
     };
+
+    let disabled = matches!(props.state, ServiceState::Starting);
 
     rsx! {
         div {
-            class: "service-block",
-            title: "{props.label} — {props.cmd}",
+            class: "service-block service-block-btn {block_state_class}",
+            title: "{tooltip}",
+            role: "button",
+            onclick: move |_| {
+                if disabled { return; }
+                if is_start { props.on_start.call(()); } else { props.on_stop.call(()); }
+            },
             div { class: dot_class }
             span { class: "service-label", "{props.label}" }
-            button {
-                class: btn_class,
-                disabled: matches!(props.state, ServiceState::Starting),
-                onclick: move |_| {
-                    if is_start { props.on_start.call(()); } else { props.on_stop.call(()); }
-                },
-                "{btn_label}"
-            }
         }
     }
 }
