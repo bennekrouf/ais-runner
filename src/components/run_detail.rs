@@ -1,7 +1,17 @@
 use dioxus::prelude::*;
 use crate::services::workflows::{self, ActionItem, RunItem, duration_ms};
+use crate::services::workflow_analysis::{WorkflowAnalysis, TriggerKind};
 use crate::components::log_panel::LogLine;
 use crate::components::tooltip::Tooltip;
+
+fn open_in_editor(path: &str) {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(path).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd").args(["/c", "start", "", path]).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+}
 
 #[derive(Props, Clone, PartialEq)]
 pub struct RunDetailProps {
@@ -13,6 +23,8 @@ pub struct RunDetailProps {
     pub active_tab:    Signal<String>,
     pub health_error:  Option<String>,
     pub logs:          Vec<LogLine>,
+    pub analysis:      WorkflowAnalysis,
+    pub source_path:   Option<String>,
     pub on_run:        EventHandler<()>,
     pub on_refresh:    EventHandler<()>,
     pub on_clear_runs: EventHandler<()>,
@@ -91,6 +103,93 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                 }
             }
 
+            // ── Workflow analysis bar ─────────────────────────────────
+            {
+                let a = &props.analysis;
+                if props.workflow.is_some() && !a.is_empty() {
+                    rsx! {
+                        div { class: "wf-analysis-bar",
+                            // trigger chip
+                            match &a.trigger {
+                                TriggerKind::Http  => rsx! {
+                                    span { class: "wf-chip wf-chip-http", title: "HTTP trigger",
+                                        span { class: "wf-dir wf-dir-in", "▼" }
+                                        span { class: "wf-type", "HTTP" }
+                                    }
+                                },
+                                TriggerKind::Timer { schedule } => rsx! {
+                                    span { class: "wf-chip wf-chip-timer", title: "Scheduled trigger",
+                                        span { class: "wf-dir wf-dir-in", "▼" }
+                                        span { class: "wf-type", "Timer" }
+                                        span { class: "wf-name", "{schedule}" }
+                                    }
+                                },
+                                TriggerKind::ServiceBus { queue } => rsx! {
+                                    span { class: "wf-chip wf-chip-sb", title: "Service Bus trigger: reads from {queue}",
+                                        span { class: "wf-dir wf-dir-in", "▼" }
+                                        span { class: "wf-type", "SB" }
+                                        span { class: "wf-name", "{queue}" }
+                                    }
+                                },
+                                TriggerKind::Blob { container } => rsx! {
+                                    span { class: "wf-chip wf-chip-blob", title: "Blob trigger: listens on {container}",
+                                        span { class: "wf-dir wf-dir-in", "▼" }
+                                        span { class: "wf-type", "Blob" }
+                                        span { class: "wf-name", "{container}" }
+                                    }
+                                },
+                                TriggerKind::Unknown => rsx! { span {} },
+                            }
+
+                            // input queues (excluding trigger — already shown)
+                            for q in a.input_queues.iter().filter(|q| {
+                                !matches!(&a.trigger, TriggerKind::ServiceBus { queue } if queue == *q)
+                            }) {
+                                span { class: "wf-chip wf-chip-sb", title: "Reads from queue: {q}",
+                                    span { class: "wf-dir wf-dir-in", "▼" }
+                                    span { class: "wf-type", "SB" }
+                                    span { class: "wf-name", "{q}" }
+                                }
+                            }
+                            // output queues
+                            for q in &a.output_queues {
+                                span { class: "wf-chip wf-chip-sb", title: "Sends to queue: {q}",
+                                    span { class: "wf-dir wf-dir-out", "▲" }
+                                    span { class: "wf-type", "SB" }
+                                    span { class: "wf-name", "{q}" }
+                                }
+                            }
+                            // input blobs (excluding trigger)
+                            for c in a.input_blobs.iter().filter(|c| {
+                                !matches!(&a.trigger, TriggerKind::Blob { container } if container == *c)
+                            }) {
+                                span { class: "wf-chip wf-chip-blob", title: "Reads from container: {c}",
+                                    span { class: "wf-dir wf-dir-in", "▼" }
+                                    span { class: "wf-type", "Blob" }
+                                    span { class: "wf-name", "{c}" }
+                                }
+                            }
+                            // output blobs
+                            for c in &a.output_blobs {
+                                span { class: "wf-chip wf-chip-blob", title: "Writes to container: {c}",
+                                    span { class: "wf-dir wf-dir-out", "▲" }
+                                    span { class: "wf-type", "Blob" }
+                                    span { class: "wf-name", "{c}" }
+                                }
+                            }
+                            // http calls
+                            for h in &a.http_calls {
+                                span { class: "wf-chip wf-chip-http", title: "Calls: {h}",
+                                    span { class: "wf-dir wf-dir-out", "▲" }
+                                    span { class: "wf-type", "HTTP" }
+                                    span { class: "wf-name", "{h}" }
+                                }
+                            }
+                        }
+                    }
+                } else { rsx! {} }
+            }
+
             // ── Tab content ────────────────────────────────────────────
             if *active_tab.read() == "Run" {
                 div { id: "runs",
@@ -163,6 +262,17 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                                     }
                                 },
                                 "⎘"
+                            }
+                            if let Some(path) = props.source_path.clone() {
+                                button {
+                                    class: "source-copy-btn",
+                                    title: "Open in editor",
+                                    onclick: move |_| {
+                                        let p = path.clone();
+                                        std::thread::spawn(move || { open_in_editor(&p); });
+                                    },
+                                    "✎"
+                                }
                             }
                             pre { id: "source-pre", "{props.source_text}" }
                         }

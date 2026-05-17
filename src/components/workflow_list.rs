@@ -154,8 +154,40 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
 
     let shown = visible.len();
 
+    // Build a flat ordered list of visible names for keyboard navigation.
+    let visible_names: Vec<String> = visible.iter().map(|(wf, _)| wf.name.clone()).collect();
+
+    // Scroll selected item into view after each render where selection changes.
+    use_effect(move || {
+        document::eval(
+            "var el = document.querySelector('#workflow-list .workflow-item.selected');\
+             if (el) el.scrollIntoView({ block: 'nearest', behavior: 'instant' });"
+        );
+    });
+
     rsx! {
         div { id: "workflows",
+            tabindex: "0",
+            onkeydown: {
+                let names = visible_names.clone();
+                move |evt: KeyboardEvent| {
+                    let key = evt.key();
+                    if key != Key::ArrowDown && key != Key::ArrowUp { return; }
+                    let current = props.selected.as_deref().unwrap_or("");
+                    let idx = names.iter().position(|n| n == current);
+                    let next = match (key, idx) {
+                        (Key::ArrowDown, None)       => names.first(),
+                        (Key::ArrowDown, Some(i))    => names.get(i + 1).or_else(|| names.first()),
+                        (Key::ArrowUp,   None)       => names.last(),
+                        (Key::ArrowUp,   Some(0))    => names.last(),
+                        (Key::ArrowUp,   Some(i))    => names.get(i - 1),
+                        _                            => None,
+                    };
+                    if let Some(name) = next {
+                        props.on_select.call(name.clone());
+                    }
+                }
+            },
             div { id: "wf-header",
                 div { id: "wf-title-row",
                     h2 {

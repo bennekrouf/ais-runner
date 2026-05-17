@@ -25,8 +25,11 @@ fn load_all_workflows_from_fixture() {
     assert!(names.contains(&"send-to-bus"));
 
     for wf in &items {
-        assert_eq!(wf.trigger_name, "manual");
-        assert_eq!(wf.trigger_type, "Request");
+        // blob-rename-rewrite uses a blob trigger, not a manual HTTP trigger
+        if wf.name != "blob-rename-rewrite" {
+            assert_eq!(wf.trigger_name, "manual");
+            assert_eq!(wf.trigger_type, "Request");
+        }
         assert!(wf.healthy);
     }
 }

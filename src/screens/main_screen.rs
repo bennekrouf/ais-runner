@@ -19,6 +19,7 @@ use crate::services::{
     env_mode::{self, EnvMode},
     process::{ManagedProcess, ServiceState},
     setup_manager, sftp_check, sql_check, sb_check, system_check,
+    workflow_analysis,
     workflows::{self, WorkflowItem},
 };
 use crate::utils::make_push;
@@ -29,10 +30,11 @@ pub struct MainScreenProps {
     pub logic_apps_dir: String,
     pub on_back: EventHandler<()>,
     pub is_light: Signal<bool>,
+    pub theme_overridden: Signal<bool>,
 }
 
 #[component]
-pub fn MainScreen(props: MainScreenProps) -> Element {
+pub fn MainScreen(mut props: MainScreenProps) -> Element {
     let dir            = props.logic_apps_dir.clone();
     let cfg            = use_signal(config::load);
     let workspace_link = cfg.read().get_link(&dir).cloned();
@@ -63,6 +65,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut workflows   = use_signal(|| Vec::<WorkflowItem>::new());
     let selected_wf     = use_signal(|| Option::<String>::None);
     let source_text = use_signal(String::new);
+    let wf_analysis = use_memo(move || workflow_analysis::analyse(&source_text.read()));
     let mut runs        = use_signal(|| Vec::<workflows::RunItem>::new());
     let mut actions     = use_signal(|| Vec::<workflows::ActionItem>::new());
     let mut running_wfs = use_signal(|| HashSet::<String>::new());
@@ -189,7 +192,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         wf, Some(trigger_ts),
                         runs, actions, log_lines,
                         running_wfs, traced_wfs, cleared,
-                        false, // manual Watch — not a blob trigger
+                        false, false, // manual Watch — not a blob or SB trigger
                     ));
                 }
             }
@@ -227,9 +230,8 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut msi_wfs          = use_signal(|| HashSet::<String>::new());
     let mut wf_connectors    = use_signal(|| std::collections::HashMap::<String, Vec<workflows::ConnectorKind>>::new());
     let mut sql_conns        = use_signal(|| Vec::<sql_check::SqlConnection>::new());
-    let mut db_panel_open     = use_signal(|| false);
-    let mut azure_panel_open  = use_signal(|| false);
-    let mut devops_panel_open = use_signal(|| false);
+    let mut db_panel_open    = use_signal(|| false);
+    let mut azure_panel_open = use_signal(|| false);
     let az_diff_cache = use_signal(|| std::collections::HashMap::<String, crate::components::azure_panel::DiffStatus>::new());
     let mut sftp_conns       = use_signal(|| Vec::<sftp_check::SftpConnection>::new());
     let mut blob_conns       = use_signal(|| Vec::<blob_check::BlobConnection>::new());
@@ -335,8 +337,10 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
             // ── Toolbar ───────────────────────────────────────────────────
             div { id: "toolbar",
-                button { class: "btn-back", onclick: move |_| props.on_back.call(()), "‹ Back" }
-                span { id: "toolbar-dir", title: "{dir_label}", "{dir_label}" }
+                div { class: "back-wrap",
+                    button { class: "btn-back", onclick: move |_| props.on_back.call(()), "‹ Back" }
+                    span { id: "toolbar-dir", title: "{dir_label}", "{dir_label}" }
+                }
 
                 ServiceBlock {
                     label: "Azurite".to_string(),
@@ -359,6 +363,19 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     state: sb_emu_state.read().clone(),
                     on_start: { let dir = dir.clone(); move |_| sb_emulator::handle_start(sb_emu_state, sb_emu_proc, log_lines, sb_emu_lines, dir.clone()) },
                     on_stop:  move |_| sb_emulator::handle_stop(sb_emu_state, sb_emu_proc, log_lines),
+                }
+                {
+                    let dir_r = dir.clone();
+                    rsx! {
+                        button {
+                            class: "btn btn-warn btn-svc",
+                            title: "Stop emulator, wipe Config.json + Docker volumes, restart fresh — fixes wrong namespace, NullReferenceException, SQL Edge corruption",
+                            onclick: move |_| sb_emulator::handle_reset(
+                                sb_emu_state, sb_emu_proc, log_lines, sb_emu_lines, dir_r.clone(),
+                            ),
+                            "⟳ Reset"
+                        }
+                    }
                 }
                 ServiceBlock {
                     label: "func start".to_string(),
@@ -406,14 +423,39 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
                 {az_login_widget(az_status, active_tenant, workspace_link.as_ref().and_then(|l| l.tenant_id.clone()), &dir)}
                 {env_badge(setup_status, current_env)}
+                {
+                    let dir_s  = dir.clone();
+                    let link_s = workspace_link.clone();
+                    let mut msi = msi_wfs;
+                    rsx! {
+                        button {
+                            class: "btn btn-svc",
+                            title: "Re-run setup: patch connections.json (MSI → connectionString), stub missing keys, auto-detect Azure resources",
+                            onclick: move |_| {
+                                let d = dir_s.clone();
+                                setup::handle_initialize_default(&dir_s, setup_status, log_lines, link_s.clone());
+                                // Refresh the MSI-warning set so the workflow list icons
+                                // update immediately after connections.json is patched.
+                                spawn(async move {
+                                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                                    let refreshed = tokio::task::spawn_blocking(move || {
+                                        connection_diag::scan_msi_local_trigger_workflows(&d)
+                                    }).await.unwrap_or_default();
+                                    msi.set(refreshed);
+                                });
+                            },
+                            "⚙ Setup"
+                        }
+                    }
+                }
 
                 // ── spacer pushes the right group to the far edge ─────────────
                 div { style: "flex:1; min-width:0" }
 
-                // ── view switch: Workflows | Settings ─────────────────────────
+                // ── view switch: Workflows | Settings | DevOps ────────────────
                 div { class: "view-switch",
                     button {
-                        class: if *current_view.read() != "Settings" { "view-btn active" } else { "view-btn" },
+                        class: if *current_view.read() == "Workflows" { "view-btn active" } else { "view-btn" },
                         title: "Workflow list and run detail",
                         onclick: move |_| current_view.set("Workflows".into()),
                         "Workflows"
@@ -423,6 +465,12 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         title: "Edit local.settings.json",
                         onclick: move |_| current_view.set("Settings".into()),
                         "Settings"
+                    }
+                    button {
+                        class: if *current_view.read() == "DevOps" { "view-btn active" } else { "view-btn" },
+                        title: "Azure DevOps pipelines and runs",
+                        onclick: move |_| current_view.set("DevOps".into()),
+                        "DevOps"
                     }
                 }
 
@@ -437,19 +485,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         onclick: move |_| {
                             let next = !*azure_panel_open.read();
                             azure_panel_open.set(next);
-                            if next { db_panel_open.set(false); devops_panel_open.set(false); }
+                            if next { db_panel_open.set(false); }
                         },
                         "☁ Azure"
-                    }
-                    button {
-                        class: if *devops_panel_open.read() { "btn btn-small btn-panel active" } else { "btn btn-small btn-panel" },
-                        title: "View Azure DevOps pipelines and runs",
-                        onclick: move |_| {
-                            let next = !*devops_panel_open.read();
-                            devops_panel_open.set(next);
-                            if next { db_panel_open.set(false); azure_panel_open.set(false); }
-                        },
-                        "🚀 DevOps"
                     }
                 }
 
@@ -458,6 +496,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     title: if *is_light.read() { "Switch to dark mode" } else { "Switch to light mode" },
                     onclick: move |_| {
                         let next = !*is_light.read();
+                        props.theme_overridden.set(true);
                         is_light.set(next);
                         document::eval(&format!("document.body.className = '{}';", if next { "light" } else { "" }));
                     },
@@ -490,9 +529,16 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
             // ── Main content ──────────────────────────────────────────────
             div { id: "main",
-                if *current_view.read() == "Settings" {
+                // Settings — always mounted; hidden when not active
+                div { style: if *current_view.read() == "Settings" { "display:contents" } else { "display:none" },
                     SettingsEditor { logic_apps_dir: dir.clone() }
-                } else {
+                }
+                // DevOps — always mounted so signals (cache) survive tab switches
+                div { style: if *current_view.read() == "DevOps" { "display:contents" } else { "display:none" },
+                    DevOpsPanel { logic_apps_dir: dir.clone() }
+                }
+                // Workflows — always mounted; hidden when another view is active
+                div { style: if *current_view.read() == "Workflows" { "display:contents" } else { "display:none" },
                     WorkflowList { // always-rendered content block
                         workflows:  workflows.read().clone(),
                         selected:   selected_wf.read().clone(),
@@ -523,6 +569,12 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     RunDetail {
                         workflow:      selected_wf.read().clone(),
                         source_text:   source_text.read().clone(),
+                        analysis:      wf_analysis.read().clone(),
+                        source_path:   selected_wf.read().as_ref().map(|name| {
+                            workflows::resolve_logic_apps_dir(&dir)
+                                .join(name).join("workflow.json")
+                                .to_string_lossy().to_string()
+                        }),
                         runs:          runs.read().clone(),
                         actions:       actions.read().clone(),
                         is_live:       selected_wf.read().as_deref()
@@ -672,17 +724,6 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                             }
                         }
                     }
-                }
-            }
-
-            // DevOps panel — same slot pattern as Azure / Connections
-            div {
-                id: "devops-panel-slot",
-                class: if *devops_panel_open.read() { "open" } else { "" },
-                DevOpsPanel {
-                    workspace_link: workspace_link.clone(),
-                    logic_apps_dir: dir.clone(),
-                    is_open:        devops_panel_open,
                 }
             }
 

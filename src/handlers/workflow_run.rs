@@ -112,6 +112,10 @@ pub fn handle_run(
     let blob_container = blob_container_for(&dir_diag, &wf, &trigger_type);
     let is_blob        = blob_container.is_some();
     let blob_container = blob_container.unwrap_or_default();
+    // SB polling triggers (receiveQueueMessages, onNewMessagesFromQueue) poll
+    // on a recurrence — typically every 1 minute — so they need the same
+    // extended patience window as blob triggers.
+    let is_sb_polling  = !queue_or_blob.is_empty() && !is_blob;
 
     push(format!("Triggering: {}", wf), LogLevel::Info);
     running_wfs.write().insert(wf.clone());
@@ -234,14 +238,23 @@ pub fn handle_run(
             //   2. UseDevelopmentEmulator=true in local.settings.json (conn str was patched)
             //   3. Port 5672 is open on localhost (most reliable: covers MSI connections
             //      where settings were never patched because there is no conn string key)
-            let emulator_port_open = tokio::net::TcpStream::connect("127.0.0.1:5672")
-                .await
-                .is_ok();
-            let result = if emulator_port_open
+            let emulator_port_open = tokio::time::timeout(
+                std::time::Duration::from_millis(400),
+                tokio::net::TcpStream::connect("127.0.0.1:5672"),
+            ).await.map(|r| r.is_ok()).unwrap_or(false);
+
+            let use_local = emulator_port_open
                 || sb_check::is_local_emulator(&fqdn)
-                || sb_check::is_emulator_configured(&dir_diag)
-            {
-                crate::services::sb_amqp::send_amqp_message("localhost", &queue, &body_clone).await
+                || sb_check::is_emulator_configured(&dir_diag);
+
+            let result = if use_local {
+                let r = crate::services::sb_amqp::send_amqp_message("localhost", &queue, &body_clone).await;
+                // Enrich "Connection refused" with an actionable hint
+                r.map_err(|e| if e.contains("Connection refused") || e.contains("connect") {
+                    format!("{} — is the SB Emulator running? (start it from the toolbar)", e)
+                } else {
+                    e
+                })
             } else {
                 Err("SB Emulator is not running — start it from the toolbar first.".into())
             };
@@ -267,7 +280,7 @@ pub fn handle_run(
 
         poll_for_run(
             wf, cleared_at, runs, actions, log_lines, running_wfs, traced_wfs, cleared,
-            is_blob,
+            is_blob, is_sb_polling,
         ).await;
         return;
     });
@@ -287,15 +300,18 @@ pub async fn poll_for_run(
     mut traced_wfs:  Signal<HashSet<String>>,
     cleared:         Signal<HashMap<String, String>>,
     is_blob:         bool,
+    is_sb_polling:   bool,
 ) {
-        // Poll until terminal.  Blob triggers can take up to 30 s to fire
-        // (that is the default polling interval of the Standard LA runtime).
-        // HTTP/recurrence runs appear almost immediately so we use a shorter
-        // patience window for those.
-        let (empty_tick_limit, patience_secs): (u32, u32) = if is_blob {
-            (50, 40) // ~40 s at 800 ms/tick — covers the 30 s poll interval
+        // Patience window by trigger type:
+        //   HTTP / recurrence → runs appear within seconds → 16 s is enough
+        //   Blob              → LA runtime polls Azurite every ~30 s → 40 s
+        //   SB polling        → workflow recurrence is typically 1 min → 75 s
+        let (empty_tick_limit, patience_secs): (u32, u32) = if is_sb_polling {
+            (95, 75)  // ~75 s at 800 ms/tick — covers the 1-minute SB poll interval
+        } else if is_blob {
+            (50, 40)  // ~40 s at 800 ms/tick — covers the 30 s blob poll interval
         } else {
-            (20, 16) // ~16 s — fast for HTTP / recurrence
+            (20, 16)  // ~16 s — fast for HTTP / recurrence
         };
         let mut push = make_push(log_lines);
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;

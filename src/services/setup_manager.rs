@@ -129,22 +129,81 @@ pub fn initialize_default(dir: &str) -> Result<(), String> {
         fs::write(pkg_path, pkg_content).map_err(|e| e.to_string())?;
     }
 
-    // 3. Fix connections.json if present: @{appsetting('key')} → @appsetting('key')
-    //    The Logic Apps runtime rejects the ARM-template curly-brace form when running
-    //    locally.  This causes a "functionConnections cannot be parsed" error that blocks
-    //    ALL workflow registrations and therefore prevents FLOWLOOKUP entries from being
-    //    written, making every trigger fail with "WorkflowNotFound".
+    // 3. Fix connections.json if present:
+    //    a) @{appsetting('key')} → @appsetting('key')  (ARM-template syntax rejected locally)
+    //    b) MSI AzureBlob connections → connectionString  (IMDS not available on dev machines)
     let conn_path = p.join("connections.json");
     if conn_path.exists() {
         if let Ok(raw) = fs::read_to_string(&conn_path) {
-            let fixed = fix_connections_json(&raw);
-            if fixed != raw {
-                fs::write(&conn_path, fixed).map_err(|e| e.to_string())?;
+            let syntax_fixed = fix_connections_json(&raw);
+            let fully_fixed  = patch_connections_for_local(&syntax_fixed);
+            if fully_fixed != raw {
+                fs::write(&conn_path, &fully_fixed).map_err(|e| e.to_string())?;
             }
         }
     }
 
     Ok(())
+}
+
+/// Patch `connections.json` for local development: switch every AzureBlob
+/// ServiceProvider connection from MSI to connectionString auth so Azurite
+/// can be used instead of Azure Active Directory.
+///
+/// MSI (`parameterSetName: "ManagedServiceIdentity"`) requires the Azure IMDS
+/// endpoint which does not exist on a developer machine.  The equivalent local
+/// form is `parameterSetName: "connectionString"` pointing to
+/// `@appsetting('<Name>_connectionString')` which resolves to
+/// `UseDevelopmentStorage=true` in local.settings.json.
+///
+/// Only connections whose `serviceProvider.id` is `/serviceProviders/AzureBlob`
+/// are touched; all others are left unchanged.
+pub fn patch_connections_for_local(raw: &str) -> String {
+    let Ok(mut root) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return raw.to_string();
+    };
+
+    let Some(svc) = root["serviceProviderConnections"].as_object_mut() else {
+        return serde_json::to_string_pretty(&root).unwrap_or_else(|_| raw.to_string());
+    };
+
+    let keys: Vec<String> = svc.keys().cloned().collect();
+    for name in keys {
+        let conn = &svc[&name];
+        // Only patch AzureBlob service provider connections
+        let is_blob = conn["serviceProvider"]["id"]
+            .as_str()
+            .map(|id| id == "/serviceProviders/AzureBlob")
+            .unwrap_or(false);
+        let is_msi = conn["parameterSetName"]
+            .as_str()
+            .map(|p| p == "ManagedServiceIdentity")
+            .unwrap_or(false);
+
+        if is_blob && is_msi {
+            // All local blob connections must share the SAME connection key
+            // (AzureWebJobsStorage).  If each connection uses its own key
+            // (IgniteBlob_connectionString, KyribaBlob_connectionString, …)
+            // the Functions runtime registers a separate ListenerFactoryContext
+            // per key and, because they all resolve to the same Azurite account,
+            // the DI container ends up with services.Count=N, instances.Count=0
+            // → "Script host in error state: Mismatch detected for type
+            // ListenerFactoryContext".  One shared key = one context = no crash.
+            let entry = svc.get_mut(&name).unwrap();
+            *entry = serde_json::json!({
+                "displayName": entry["displayName"].clone(),
+                "parameterSetName": "connectionString",
+                "parameterValues": {
+                    "connectionString": "@appsetting('AzureWebJobsStorage')"
+                },
+                "serviceProvider": {
+                    "id": "/serviceProviders/AzureBlob"
+                }
+            });
+        }
+    }
+
+    serde_json::to_string_pretty(&root).unwrap_or_else(|_| raw.to_string())
 }
 
 /// Convert `@{appsetting('key')}` → `@appsetting('key')` throughout connections.json.
@@ -253,14 +312,23 @@ pub fn auto_detect_resources(
         Err(e) => { messages.push(format!("❌ Failed to list SB namespaces: {:?}", e)); }
     }
 
-    // Fix connections.json @{appsetting} syntax if present
+    // Fix connections.json: syntax + MSI → connectionString for blob connections
     let conn_path = crate::services::workflows::resolve_logic_apps_dir(dir).join("connections.json");
     if conn_path.exists() {
         if let Ok(raw) = std::fs::read_to_string(&conn_path) {
             let fixed = fix_connections_json(&raw);
+            let fixed = patch_connections_for_local(&fixed);
             if fixed != raw {
-                let _ = std::fs::write(&conn_path, fixed);
-                messages.push("✅ Fixed connections.json: @{appsetting(...)} → @appsetting(...) (ARM-template syntax is not supported locally)".into());
+                let _ = std::fs::write(&conn_path, &fixed);
+                // Report what changed
+                let syntax_changed = fix_connections_json(&raw) != raw;
+                let msi_changed    = patch_connections_for_local(&fix_connections_json(&raw)) != fix_connections_json(&raw);
+                if syntax_changed {
+                    messages.push("✅ Fixed connections.json: @{appsetting(...)} → @appsetting(...) (ARM-template syntax not supported locally)".into());
+                }
+                if msi_changed {
+                    messages.push("✅ Patched connections.json: AzureBlob MSI → connectionString (Azurite does not support MSI auth)".into());
+                }
             }
         }
     }
@@ -407,4 +475,98 @@ pub fn apply_settings(dir: &str, updates: HashMap<String, String>) -> Result<(),
     let new_text = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
     settings_file::write_local_settings(dir, &new_text)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MSI_CONNECTIONS: &str = r#"{
+        "serviceProviderConnections": {
+            "IgniteBlob": {
+                "displayName": "IgniteBlob",
+                "parameterSetName": "ManagedServiceIdentity",
+                "parameterValues": {
+                    "authProvider": { "Type": "ManagedServiceIdentity" },
+                    "blobStorageEndpoint": "@appsetting('IgniteBlob_blobStorageEndpoint')"
+                },
+                "serviceProvider": { "id": "/serviceProviders/AzureBlob" }
+            },
+            "KyribaBlob": {
+                "displayName": "KyribaBlob",
+                "parameterSetName": "ManagedServiceIdentity",
+                "parameterValues": {
+                    "authProvider": { "Type": "ManagedServiceIdentity" },
+                    "blobStorageEndpoint": "@appsetting('KyribaBlob_blobStorageEndpoint')"
+                },
+                "serviceProvider": { "id": "/serviceProviders/AzureBlob" }
+            },
+            "serviceBus": {
+                "displayName": "serviceBus",
+                "parameterSetName": "ManagedServiceIdentity",
+                "parameterValues": {
+                    "authProvider": { "Type": "ManagedServiceIdentity" },
+                    "fullyQualifiedNamespace": "@appsetting('serviceBus_fullyQualifiedNamespace')"
+                },
+                "serviceProvider": { "id": "/serviceProviders/serviceBus" }
+            }
+        }
+    }"#;
+
+    #[test]
+    fn patch_blob_msi_to_connection_string() {
+        let patched = patch_connections_for_local(MSI_CONNECTIONS);
+        let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
+
+        // IgniteBlob: switched to connectionString pointing at AzureWebJobsStorage
+        let ignite = &v["serviceProviderConnections"]["IgniteBlob"];
+        assert_eq!(ignite["parameterSetName"], "connectionString");
+        assert_eq!(
+            ignite["parameterValues"]["connectionString"],
+            "@appsetting('AzureWebJobsStorage')"
+        );
+        assert!(ignite["parameterValues"]["authProvider"].is_null(), "authProvider should be removed");
+        assert!(ignite["parameterValues"]["blobStorageEndpoint"].is_null(), "blobStorageEndpoint should be removed");
+
+        // KyribaBlob: also points at AzureWebJobsStorage (same key avoids ListenerFactoryContext clash)
+        let kyriba = &v["serviceProviderConnections"]["KyribaBlob"];
+        assert_eq!(kyriba["parameterSetName"], "connectionString");
+        assert_eq!(
+            kyriba["parameterValues"]["connectionString"],
+            "@appsetting('AzureWebJobsStorage')"
+        );
+    }
+
+    #[test]
+    fn patch_does_not_touch_non_blob_connections() {
+        let patched = patch_connections_for_local(MSI_CONNECTIONS);
+        let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
+
+        // serviceBus is MSI but NOT AzureBlob — must be left unchanged
+        let sb = &v["serviceProviderConnections"]["serviceBus"];
+        assert_eq!(sb["parameterSetName"], "ManagedServiceIdentity");
+        assert_eq!(
+            sb["parameterValues"]["fullyQualifiedNamespace"],
+            "@appsetting('serviceBus_fullyQualifiedNamespace')"
+        );
+    }
+
+    #[test]
+    fn patch_idempotent_on_already_connection_string() {
+        let already_cs = r#"{
+            "serviceProviderConnections": {
+                "IgniteBlob": {
+                    "displayName": "IgniteBlob",
+                    "parameterSetName": "connectionString",
+                    "parameterValues": {
+                        "connectionString": "@appsetting('AzureWebJobsStorage')"
+                    },
+                    "serviceProvider": { "id": "/serviceProviders/AzureBlob" }
+                }
+            }
+        }"#;
+        let patched = patch_connections_for_local(already_cs);
+        let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
+        assert_eq!(v["serviceProviderConnections"]["IgniteBlob"]["parameterSetName"], "connectionString");
+    }
 }

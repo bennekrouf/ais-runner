@@ -33,7 +33,7 @@ pub fn handle_initialize_default(
     spawn(async move {
         match tokio::task::spawn_blocking(move || setup_manager::initialize_default(&d)).await.unwrap_or(Err("task panicked".into())) {
             Ok(_) => {
-                push("Default local.settings.json created.".into(), LogLevel::Ok);
+                push("✅ Setup complete — connections.json patched (AzureBlob MSI → connectionString), local.settings.json ready.".into(), LogLevel::Ok);
                 if let Some(l) = workspace_link {
                     push(format!("Auto-detecting resources in {}...", l.resource_group), LogLevel::Info);
                     match tokio::task::spawn_blocking(move || {

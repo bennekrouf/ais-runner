@@ -5,5 +5,9 @@ default_platform = "desktop"
 [desktop]
 title = "AIS Local Runner"
 
+[bundle]
+identifier = "com.ais-runner.app"
+icon = ["assets/icon.png"]
+
 [web.app]
 title = "AIS Local Runner"

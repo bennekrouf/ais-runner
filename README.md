@@ -48,6 +48,56 @@ Configuration is stored in:
 
 ---
 
+## Service Bus Emulator — known pitfalls
+
+The Azure Service Bus Emulator runs via Docker Compose. ais-runner generates `Config.json`
+automatically, but if you ever edit it by hand or use the emulator outside ais-runner, keep
+these rules in mind:
+
+### 1. Namespace name must be exactly `sbemulatorns`
+
+```json
+{ "Name": "sbemulatorns" }   ✅
+{ "Name": "my-namespace" }   ❌  NullReferenceException on startup
+```
+
+### 2. Logging key is `Logging`, not `LoggingConfig`
+
+```json
+{ "Logging": { "Type": "Console" } }     ✅
+{ "LoggingConfig": { "Type": "console" } }  ❌  "Logging config cannot be null"
+```
+
+### 3. Do not include an empty `Topics` array
+
+Omit `Topics` entirely, or the emulator throws a `NullReferenceException` on startup.
+
+### 4. "Ready" ≠ "AMQP broker ready"
+
+The port `:5672` opens as soon as the container network stack starts, but the AMQP
+broker needs SQL Edge to finish initialising first (10–30 s longer). Wait for the
+**"Service Bus emulator ready"** message in ais-runner before sending messages — it
+probes the actual AMQP handshake, not just the TCP port.
+
+### 5. SB polling triggers fire on a 1-minute recurrence
+
+If your workflow uses `receiveQueueMessages` or `onNewMessagesFromQueueSession`, it
+polls every minute by default. ais-runner waits up to 75 s for a run to appear after
+you send a test message — do not restart before that window expires.
+
+### 6. MSI connections do not work locally
+
+The Azure IMDS endpoint (`169.254.169.254`) does not exist on a developer machine.
+Click **⚙ Setup** in ais-runner to patch `connections.json` — it switches all
+`AzureBlob` connections from `ManagedServiceIdentity` to `connectionString`
+(pointing to `AzureWebJobsStorage = UseDevelopmentStorage=true`).
+
+Using a **separate connection string per blob connection** causes a
+`ListenerFactoryContext` DI conflict when two blob triggers share the same underlying
+storage account. All local blob connections must share the single `AzureWebJobsStorage` key.
+
+---
+
 ## Contributing
 
 ### Prerequisites

@@ -164,6 +164,21 @@ fn sample_object_by_name(name: &str) -> Value {
                 "content":       {}
             }
         }),
+        // ais.workflow.error — the standard error envelope produced by AIS-GenericCatch
+        // and consumed by AIS-Error-Teams-Notif (CA03).
+        "ais.workflow.error" => json!({
+            "action": "Upload_to_Kyriba",
+            "message": "The service provider action failed with error code 'EmptyFile'",
+            "messageDetails": "",
+            "workflowStack": [
+                {
+                    "name": "Send-Kyriba-files-broadcast",
+                    "identifier": "TEST-RUN-001",
+                    "startTime": "2026-01-01T10:00:00Z",
+                    "input": { "name": "payments/test.txt" }
+                }
+            ]
+        }),
         // connector and content are intentionally open — empty is valid
         "connector" | "content" => Value::Object(serde_json::Map::new()),
         // Anything else with no schema — leave empty

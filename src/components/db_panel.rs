@@ -131,6 +131,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     let mut sb_rg:          Signal<Option<String>>    = use_signal(|| None);
     let mut sb_stats:       Signal<HashMap<String, SbQueueStats>> = use_signal(HashMap::new);
     let mut sb_fetching:    Signal<HashSet<String>>   = use_signal(HashSet::new);
+    let mut sb_queue_err:   Signal<HashMap<String, String>> = use_signal(HashMap::new);
     let mut sb_send_open:   Signal<HashSet<String>>   = use_signal(HashSet::new);
     let mut sb_send_bodies: Signal<HashMap<String, String>> = use_signal(HashMap::new);
 
@@ -792,6 +793,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                             let sub_stats  = subscription.read().clone();
                             let is_fetching    = sb_fetching.read().contains(&queue_name);
                             let stats_opt      = sb_stats.read().get(&queue_name).cloned();
+                            let queue_err      = sb_queue_err.read().get(&queue_name).cloned();
                             let is_send_open   = sb_send_open.read().contains(&queue_name);
                             let send_body      = sb_send_bodies.read().get(&queue_name).cloned().unwrap_or_default();
 
@@ -837,8 +839,8 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                     let rg_now = sb_rg.read().clone();
                                                     let sub3 = sub_stats.clone();
                                                     sb_fetching.write().insert(qn.clone());
+                                                    sb_queue_err.write().remove(&qn);
                                                     spawn(async move {
-                                                        // Resolve RG once
                                                         let rg = if let Some(r) = rg_now {
                                                             r
                                                         } else {
@@ -851,10 +853,10 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                                     r
                                                                 }
                                                                 _ => {
-                                                                    status.set(Some((
-                                                                        "Could not find SB resource group — ensure az login is active".into(),
-                                                                        true,
-                                                                    )));
+                                                                    sb_queue_err.write().insert(
+                                                                        qn.clone(),
+                                                                        "Could not find resource group — check az login".into(),
+                                                                    );
                                                                     sb_fetching.write().remove(&qn);
                                                                     return;
                                                                 }
@@ -865,18 +867,25 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                         }).await {
                                                             Ok(Ok(s)) => {
                                                                 sb_stats.write().insert(qn2.clone(), s);
+                                                                sb_queue_err.write().remove(&qn2);
                                                             }
                                                             Ok(Err(e)) => {
-                                                                status.set(Some((format!("Stats error: {:?}", e), true)));
+                                                                sb_queue_err.write().insert(
+                                                                    qn2.clone(),
+                                                                    format!("{:?}", e),
+                                                                );
                                                             }
                                                             Err(_) => {
-                                                                status.set(Some(("Stats task panicked".into(), true)));
+                                                                sb_queue_err.write().insert(
+                                                                    qn2.clone(),
+                                                                    "Stats task failed".into(),
+                                                                );
                                                             }
                                                         }
                                                         sb_fetching.write().remove(&qn2);
                                                     });
                                                 },
-                                                if is_fetching { "…" } else { "📊" }
+                                                if is_fetching { "…" } else { "Count" }
                                             }
                                             button {
                                                 class: "btn btn-small",
@@ -891,6 +900,11 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                 if is_send_open { "▲ Close" } else { "📤 Send" }
                                             }
                                         }
+                                    }
+
+                                    // Inline error
+                                    if let Some(err) = queue_err {
+                                        div { class: "db-queue-err", "⚠ {err}" }
                                     }
 
                                     // Inline send form

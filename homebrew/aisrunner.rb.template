@@ -17,8 +17,19 @@ class Aisrunner < Formula
 
   def install
     bin.install "ais-runner"
-    system "npm", "install", "-g", "azurite@3.30.0"
-    system "npm", "install", "-g", "azure-functions-core-tools@4", "--unsafe-perm", "true"
+
+    # Install npm tools locally — global npm installs are not allowed in Homebrew formulas
+    libexec.mkpath
+    cd libexec do
+      system "npm", "install", "azurite@3.30.0"
+      system "npm", "install", "azure-functions-core-tools@4", "--unsafe-perm", "true"
+    end
+
+    # Shims so the binaries are on PATH
+    %w[azurite azurite-blob azurite-queue azurite-table].each do |cmd|
+      (bin/cmd).write_env_script libexec/"node_modules/.bin/#{cmd}", {}
+    end
+    (bin/"func").write_env_script libexec/"node_modules/.bin/func", {}
   end
 
   test do
