@@ -2117,6 +2117,44 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
     color: var(--red);
 }
 
+/* ── Service Bus peek messages ─────────────────────────────────────────── */
+.db-peek-panel {
+    padding: 8px 10px;
+    border-top: 1px solid var(--border);
+    max-height: 300px;
+    overflow-y: auto;
+}
+.db-peek-loading, .db-peek-empty {
+    font-size: 12px;
+    color: var(--text2);
+    padding: 4px 0;
+}
+.db-peek-msg {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+}
+.db-peek-msg:last-of-type {
+    border-bottom: none;
+}
+.db-peek-idx {
+    font-size: 10px;
+    color: var(--text2);
+    min-width: 20px;
+    padding-top: 2px;
+}
+.db-peek-body {
+    font-size: 11px;
+    font-family: var(--font-mono, monospace);
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--text1);
+    flex: 1;
+}
+
 /* ── Azure queue sync badges ────────────────────────────────────────────── */
 .db-az-ok {
     font-size: 11px;

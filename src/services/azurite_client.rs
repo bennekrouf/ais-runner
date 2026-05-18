@@ -12,6 +12,7 @@ use chrono::Utc;
 use hmac::{Hmac, Mac};
 use reqwest::blocking::Client;
 use sha2::Sha256;
+use std::sync::OnceLock;
 
 use crate::services::azure_cli::BlobInfo;
 
@@ -94,11 +95,21 @@ fn auth_header(
     format!("SharedKey {}:{}", ACCOUNT, sig)
 }
 
-fn client() -> Client {
-    Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_default()
+/// Returns the shared blocking HTTP client.
+///
+/// `reqwest::blocking::Client` is expensive to construct — it spins up an
+/// internal tokio runtime with its own thread pool.  Creating one per call
+/// (the previous behaviour) caused the process to exhaust OS thread/fd limits
+/// when the blob-watcher loop ran at full speed.  A single static instance is
+/// safe: the client is `Send + Sync` and connection-pools automatically.
+fn client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("failed to build azurite HTTP client")
+    })
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

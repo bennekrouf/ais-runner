@@ -134,6 +134,9 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     let mut sb_queue_err:   Signal<HashMap<String, String>> = use_signal(HashMap::new);
     let mut sb_send_open:   Signal<HashSet<String>>   = use_signal(HashSet::new);
     let mut sb_send_bodies: Signal<HashMap<String, String>> = use_signal(HashMap::new);
+    let mut sb_peek_open:   Signal<HashSet<String>>   = use_signal(HashSet::new);
+    let mut sb_peek_msgs:   Signal<HashMap<String, Vec<String>>> = use_signal(HashMap::new);
+    let mut sb_peeking:     Signal<HashSet<String>>   = use_signal(HashSet::new);
 
     // ── Subscription (for scoped az calls) ──────────────────────────────────
     // Stored as a Signal so closures can clone it freely without move conflicts.
@@ -796,6 +799,11 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                             let queue_err      = sb_queue_err.read().get(&queue_name).cloned();
                             let is_send_open   = sb_send_open.read().contains(&queue_name);
                             let send_body      = sb_send_bodies.read().get(&queue_name).cloned().unwrap_or_default();
+                            let is_peek_open   = sb_peek_open.read().contains(&queue_name);
+                            let peek_msgs      = sb_peek_msgs.read().get(&queue_name).cloned();
+                            let is_peeking     = sb_peeking.read().contains(&queue_name);
+                            let queue_name5    = queue_name.clone();
+                            let queue_name6    = queue_name.clone();
 
                             rsx! {
                                 div { class: "db-card",
@@ -899,6 +907,32 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                 },
                                                 if is_send_open { "▲ Close" } else { "📤 Send" }
                                             }
+                                            button {
+                                                class: "btn btn-small",
+                                                title: "Peek messages in this queue (non-destructive)",
+                                                disabled: is_peeking,
+                                                onclick: move |_| {
+                                                    if sb_peek_open.read().contains(&queue_name5) {
+                                                        sb_peek_open.write().remove(&queue_name5);
+                                                    } else {
+                                                        sb_peek_open.write().insert(queue_name5.clone());
+                                                        let qn = queue_name5.clone();
+                                                        let qn2 = queue_name5.clone();
+                                                        sb_peeking.write().insert(qn.clone());
+                                                        spawn(async move {
+                                                            let result = crate::services::sb_amqp::peek_amqp_messages(
+                                                                "localhost", &qn, 10
+                                                            ).await;
+                                                            match result {
+                                                                Ok(msgs) => { sb_peek_msgs.write().insert(qn2.clone(), msgs); }
+                                                                Err(e)   => { sb_peek_msgs.write().insert(qn2.clone(), vec![format!("⚠ {e}")]); }
+                                                            }
+                                                            sb_peeking.write().remove(&qn2);
+                                                        });
+                                                    }
+                                                },
+                                                if is_peeking { "…" } else if is_peek_open { "▲ Hide" } else { "👁 Peek" }
+                                            }
                                         }
                                     }
 
@@ -949,6 +983,46 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                                             "Send"
                                                         }
                                                     }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Inline peek messages
+                                    if is_peek_open {
+                                        div { class: "db-peek-panel",
+                                            if is_peeking {
+                                                div { class: "db-peek-loading", "Loading messages…" }
+                                            } else if let Some(ref msgs) = peek_msgs {
+                                                if msgs.is_empty() {
+                                                    div { class: "db-peek-empty", "Queue is empty" }
+                                                } else {
+                                                    for (i, msg) in msgs.iter().enumerate() {
+                                                        div { class: "db-peek-msg",
+                                                            span { class: "db-peek-idx", "#{i}" }
+                                                            pre { class: "db-peek-body", "{msg}" }
+                                                        }
+                                                    }
+                                                }
+                                                button {
+                                                    class: "btn btn-small",
+                                                    style: "margin-top:6px",
+                                                    onclick: move |_| {
+                                                        let qn = queue_name6.clone();
+                                                        let qn2 = queue_name6.clone();
+                                                        sb_peeking.write().insert(qn.clone());
+                                                        spawn(async move {
+                                                            let result = crate::services::sb_amqp::peek_amqp_messages(
+                                                                "localhost", &qn, 10
+                                                            ).await;
+                                                            match result {
+                                                                Ok(msgs) => { sb_peek_msgs.write().insert(qn2.clone(), msgs); }
+                                                                Err(e)   => { sb_peek_msgs.write().insert(qn2.clone(), vec![format!("⚠ {e}")]); }
+                                                            }
+                                                            sb_peeking.write().remove(&qn2);
+                                                        });
+                                                    },
+                                                    "🔄 Refresh"
                                                 }
                                             }
                                         }

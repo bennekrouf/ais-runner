@@ -1,6 +1,18 @@
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 const BASE: &str = "http://localhost:7071/runtime/webhooks/workflow/api/management";
+
+/// Shared async HTTP client — constructed once, reused for every request.
+///
+/// `reqwest::Client` is `Clone`-cheap (Arc under the hood) and connection-pools
+/// automatically.  Building a new one per call was the root cause of the
+/// EAGAIN / thread-exhaustion crash when "copy callback URL" fired alongside
+/// the blob-watcher loop.
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
 
 // ── Workflow list ──────────────────────────────────────────────────────────
 
@@ -308,7 +320,7 @@ pub async fn get_callback_url(workflow: &str, trigger: &str) -> Result<String, S
         "{}/workflows/{}/triggers/{}/listCallbackUrl",
         BASE, workflow, trigger
     );
-    let body: serde_json::Value = reqwest::Client::new()
+    let body: serde_json::Value = http_client()
         .post(&url)
         .header("Content-Type", "application/json")
         .send()
@@ -332,7 +344,7 @@ pub async fn get_callback_url(workflow: &str, trigger: &str) -> Result<String, S
 pub async fn run_trigger_direct(workflow: &str, trigger: &str, body: &str) -> Result<(), String> {
     let url = format!("{}/workflows/{}/triggers/{}/run", BASE, workflow, trigger);
     let body_val: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
-    let resp = reqwest::Client::new()
+    let resp = http_client()
         .post(&url)
         .header("Content-Type", "application/json")
         .json(&body_val)
@@ -354,7 +366,7 @@ pub async fn run_trigger_direct(workflow: &str, trigger: &str, body: &str) -> Re
 
 pub async fn trigger_workflow(callback_url: &str, body: &str) -> Result<String, String> {
     let body_val: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
-    let resp = reqwest::Client::new()
+    let resp = http_client()
         .post(callback_url)
         .header("Content-Type", "application/json")
         .json(&body_val)

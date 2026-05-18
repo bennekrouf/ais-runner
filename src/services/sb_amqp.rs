@@ -1,4 +1,5 @@
-use fe2o3_amqp::{Connection, Session, Sender};
+use fe2o3_amqp::{Connection, Session, Sender, Receiver};
+use fe2o3_amqp::link::receiver::CreditMode;
 
 /// Returns true if the AMQP broker at `host:5672` is ready to negotiate.
 /// Used during emulator startup to distinguish "port open" from "broker ready".
@@ -46,6 +47,54 @@ pub async fn send_amqp_message(host: &str, queue: &str, body: &str) -> Result<()
     }
 
     Err(last_err)
+}
+
+/// Peek up to `max` messages from a queue without consuming them.
+/// Receives messages then releases them back to the broker.
+pub async fn peek_amqp_messages(host: &str, queue: &str, max: usize) -> Result<Vec<String>, String> {
+    let url = format!("amqp://{}:5672", host);
+
+    let mut connection = Connection::open("ais-runner-peek", url.as_str())
+        .await
+        .map_err(|e| format!("AMQP connect: {e}"))?;
+
+    let mut session = Session::begin(&mut connection)
+        .await
+        .map_err(|e| format!("AMQP session: {e}"))?;
+
+    let mut receiver = Receiver::builder()
+        .name("ais-runner-peek")
+        .source(queue)
+        .auto_accept(false)
+        .credit_mode(CreditMode::Manual)
+        .attach(&mut session)
+        .await
+        .map_err(|e| format!("AMQP attach receiver on '{}': {e}", queue))?;
+
+    // Grant credits for the messages we want to peek
+    receiver.set_credit(max as u32).await.map_err(|e| format!("set_credit: {e}"))?;
+
+    let mut messages = Vec::new();
+    let timeout = std::time::Duration::from_millis(1500);
+
+    for _ in 0..max {
+        match tokio::time::timeout(timeout, receiver.recv::<String>()).await {
+            Ok(Ok(delivery)) => {
+                let body_text = delivery.body().clone();
+                // Release the message back (non-destructive)
+                receiver.release(&delivery).await.ok();
+                messages.push(body_text);
+            }
+            Ok(Err(_)) => break,  // link error — no more messages
+            Err(_) => break,      // timeout — no more messages waiting
+        }
+    }
+
+    receiver.close().await.ok();
+    session.end().await.ok();
+    connection.close().await.ok();
+
+    Ok(messages)
 }
 
 async fn try_send(url: &str, queue: &str, body: &str) -> Result<(), String> {
