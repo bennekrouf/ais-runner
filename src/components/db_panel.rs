@@ -804,16 +804,16 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                                         div { style: "display:flex;gap:4px;align-items:center",
                                             if !q.trigger_workflows.is_empty() {
                                                 span {
-                                                    class: "db-wf-badge trigger",
-                                                    title: "{q.trigger_workflows.join(\", \")}",
+                                                    class: "tooltip-container db-wf-badge trigger",
                                                     "T:{q.trigger_workflows.len()}"
+                                                    span { class: "tooltip-text", "{q.trigger_workflows.join(\", \")}" }
                                                 }
                                             }
                                             if !q.action_workflows.is_empty() {
                                                 span {
-                                                    class: "db-wf-badge action",
-                                                    title: "{q.action_workflows.join(\", \")}",
+                                                    class: "tooltip-container db-wf-badge action",
                                                     "A:{q.action_workflows.len()}"
+                                                    span { class: "tooltip-text", "{q.action_workflows.join(\", \")}" }
                                                 }
                                             }
                                         }
