@@ -22,6 +22,8 @@ hmac        = "0.12"
 sha2        = "0.10"
 base64      = "0.22"
 fe2o3-amqp  = "0.14"
+liquid      = "0.26"
+liquid-core = "0.26"
 
 [features]
 default = []

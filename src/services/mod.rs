@@ -20,3 +20,4 @@ pub mod env_compare;
 pub mod sb_amqp;
 pub mod devops_cli;
 pub mod workflow_analysis;
+pub mod maps_check;

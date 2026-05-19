@@ -1374,10 +1374,6 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
     border: 1px solid var(--border);
     font-size: 11px;
     padding: 0 7px;
-    height: 22px;
-    line-height: 1;
-    display: flex;
-    align-items: center;
     gap: 4px;
 }
 .log-pause-btn:hover { color: var(--text1); border-color: var(--text2); }
@@ -3135,3 +3131,54 @@ body.light .wf-chip-sb    { background: #dbeafe; color: #1e40af; border-color: #
 body.light .wf-chip-blob  { background: #dcfce7; color: #15803d; border-color: #bbf7d0; }
 body.light .wf-chip-http  { background: #fef9c3; color: #854d0e; border-color: #fef08a; }
 body.light .wf-chip-timer { background: #f3f4f6; color: #374151; border-color: #e5e7eb; }
+
+/* Liquid chip */
+.wf-chip-liquid { background: #1e1a2e; color: #c084fc; border-color: #5b21b6; }
+body.light .wf-chip-liquid { background: #f5f3ff; color: #6d28d9; border-color: #ddd6fe; }
+
+/* Maps tab */
+.db-empty-msg { padding: 16px 14px; font-size: 12px; color: var(--text3); font-style: italic; }
+
+/* ── Maps tester ── */
+.maps-tester {
+    background: var(--bg0);
+    border-top: 1px solid var(--border2);
+    border-bottom: 1px solid var(--border2);
+    margin-bottom: 2px;
+}
+.maps-tester-row {
+    display: flex;
+    gap: 0;
+    min-height: 160px;
+}
+.maps-tester-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border2);
+}
+.maps-tester-col:last-child { border-right: none; }
+.maps-tester-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    padding: 5px 10px 3px;
+    border-bottom: 1px solid var(--border2);
+    flex-shrink: 0;
+}
+.maps-tester-area {
+    flex: 1;
+    font-family: monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    background: transparent;
+    border: none;
+    color: var(--text1);
+    padding: 8px 10px;
+    resize: none;
+    outline: none;
+    width: 100%;
+}
+.maps-tester-err { color: var(--red); }

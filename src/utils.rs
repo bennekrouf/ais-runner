@@ -6,6 +6,33 @@ use dioxus::prelude::{Readable, Writable};
 use crate::components::log_panel::{LogLevel, LogLine};
 use crate::services::workflows;
 
+/// Open a file path in the best available editor.
+/// Tries VS Code first (works for any file type), then falls back to the
+/// OS default text editor.
+pub fn open_in_editor(path: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        // Prefer VS Code if installed, otherwise force text editor with -t
+        if std::process::Command::new("code").arg(path).spawn().is_err() {
+            let _ = std::process::Command::new("open").args(["-t", path]).spawn();
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Prefer VS Code, fall back to notepad
+        if std::process::Command::new("code").arg(path).spawn().is_err() {
+            let _ = std::process::Command::new("notepad.exe").arg(path).spawn();
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Prefer VS Code, fall back to xdg-open
+        if std::process::Command::new("code").arg(path).spawn().is_err() {
+            let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+        }
+    }
+}
+
 /// Cross-platform temp directory for Azurite data.
 /// - macOS/Linux: `/tmp/azurite`   (Docker-accessible, consistent across sessions)
 /// - Windows:     `%TEMP%\azurite`

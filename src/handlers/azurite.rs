@@ -12,70 +12,93 @@ pub fn handle_start(
     log_lines: Signal<Vec<LogLine>>,
 ) {
     state.set(ServiceState::Starting);
-    let az_bin  = runtime_manager::resolve_tool("azurite");
-    let az_dir  = azurite_dir();
-    let az_log  = azurite_log();
-    let az_dir_s = az_dir.to_string_lossy().to_string();
-    let az_log_s = az_log.to_string_lossy().to_string();
-    let _ = std::fs::create_dir_all(&az_dir);
-    let mut push = make_push(log_lines);
-    push(
-        format!("$ {} --location {} --debug {} --skipApiVersionCheck", az_bin, az_dir_s, az_log_s),
-        LogLevel::Info,
-    );
-    match proc.read().start(
-        &az_bin,
-        &["--location", &az_dir_s, "--debug", &az_log_s, "--skipApiVersionCheck"],
-        None,
-    ) {
-        Ok((az_stdout, az_stderr)) => {
-            // Drain azurite pipes — dropping the read-ends causes SIGPIPE mid-startup,
-            // killing the process between blob.start() and queue.start().
-            let (az_tx, mut az_rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
-            crate::services::process::stream_output(az_stdout, az_stderr, az_tx, true);
-            let mut push2 = make_push(log_lines);
-            spawn(async move {
-                while let Some((line, _)) = az_rx.recv().await {
-                    if !line.trim().is_empty() {
-                        push2(line, LogLevel::Info);
-                    }
-                }
-            });
 
-            // Mark Running only once all three ports are bound.
-            let mut state2 = state;
-            let mut push3  = make_push(log_lines);
-            spawn(async move {
-                let mut up = false;
-                for _ in 0..30 {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    let all = async {
-                        for port in [10000u16, 10001, 10002] {
-                            if tokio::net::TcpStream::connect(
-                                std::net::SocketAddr::from(([127, 0, 0, 1], port))
-                            ).await.is_err() { return false; }
+    spawn(async move {
+        // ── resolve paths + create dir on a blocking thread ──────────────
+        let (az_bin, az_dir_s, az_log_s) = tokio::task::spawn_blocking(|| {
+            let bin   = runtime_manager::resolve_tool("azurite");
+            let dir   = azurite_dir();
+            let log   = azurite_log();
+            let dir_s = dir.to_string_lossy().to_string();
+            let log_s = log.to_string_lossy().to_string();
+            let _ = std::fs::create_dir_all(&dir);
+            (bin, dir_s, log_s)
+        }).await.unwrap_or_else(|_| ("azurite".into(), "/tmp/azurite".into(), "/tmp/azurite/debug.log".into()));
+
+        make_push(log_lines)(
+            format!("$ {} --location {} --debug {} --skipApiVersionCheck", az_bin, az_dir_s, az_log_s),
+            LogLevel::Info,
+        );
+
+        // ── spawn the process on a blocking thread ────────────────────────
+        // Read Arc<ManagedProcess> out of the Signal here (Signal is !Send)
+        // so the closure that goes into spawn_blocking only captures Send types.
+        let proc_arc = proc.read().clone();
+        let start_result = tokio::task::spawn_blocking({
+            let bin   = az_bin.clone();
+            let dir_s = az_dir_s.clone();
+            let log_s = az_log_s.clone();
+            move || proc_arc.start(
+                &bin,
+                &["--location", &dir_s, "--debug", &log_s, "--skipApiVersionCheck"],
+                None,
+            )
+        }).await;
+
+        match start_result {
+            Ok(Ok((az_stdout, az_stderr))) => {
+                // Drain azurite pipes — dropping the read-ends causes SIGPIPE mid-startup,
+                // killing the process between blob.start() and queue.start().
+                let (az_tx, mut az_rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
+                crate::services::process::stream_output(az_stdout, az_stderr, az_tx, true);
+                let mut push2 = make_push(log_lines);
+                spawn(async move {
+                    while let Some((line, _)) = az_rx.recv().await {
+                        if !line.trim().is_empty() {
+                            push2(line, LogLevel::Info);
                         }
-                        true
-                    }.await;
-                    if all { up = true; break; }
-                }
-                if up {
-                    state2.set(ServiceState::Running);
-                    push3("Azurite ready — blob :10000  queue :10001  table :10002".into(), LogLevel::Ok);
-                } else {
-                    state2.set(ServiceState::Stopped);
-                    push3(
-                        "⚠ Azurite process started but ports didn't bind in 15 s. Check the Azurite tab for errors.".into(),
-                        LogLevel::Error,
-                    );
-                }
-            });
+                    }
+                });
+
+                // Mark Running only once all three ports are bound.
+                let mut state2 = state;
+                let mut push3  = make_push(log_lines);
+                spawn(async move {
+                    let mut up = false;
+                    for _ in 0..30 {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        let all = async {
+                            for port in [10000u16, 10001, 10002] {
+                                if tokio::net::TcpStream::connect(
+                                    std::net::SocketAddr::from(([127, 0, 0, 1], port))
+                                ).await.is_err() { return false; }
+                            }
+                            true
+                        }.await;
+                        if all { up = true; break; }
+                    }
+                    if up {
+                        state2.set(ServiceState::Running);
+                        push3("Azurite ready — blob :10000  queue :10001  table :10002".into(), LogLevel::Ok);
+                    } else {
+                        state2.set(ServiceState::Stopped);
+                        push3(
+                            "⚠ Azurite process started but ports didn't bind in 15 s. Check the Azurite tab for errors.".into(),
+                            LogLevel::Error,
+                        );
+                    }
+                });
+            }
+            Ok(Err(e)) => {
+                state.set(ServiceState::Stopped);
+                make_push(log_lines)(format!("Azurite error: {}", e), LogLevel::Error);
+            }
+            Err(e) => {
+                state.set(ServiceState::Stopped);
+                make_push(log_lines)(format!("Azurite task error: {}", e), LogLevel::Error);
+            }
         }
-        Err(e) => {
-            state.set(ServiceState::Stopped);
-            make_push(log_lines)(format!("Azurite error: {}", e), LogLevel::Error);
-        }
-    }
+    });
 }
 
 pub fn handle_stop(

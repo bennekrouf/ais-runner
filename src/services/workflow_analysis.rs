@@ -8,6 +8,7 @@ pub struct WorkflowAnalysis {
     pub input_blobs:   Vec<String>,   // blob containers read
     pub output_blobs:  Vec<String>,   // blob containers written
     pub http_calls:    Vec<String>,   // outbound HTTP hosts (deduplicated)
+    pub liquid_maps:   Vec<String>,   // Liquid transform map names used
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -28,6 +29,7 @@ impl WorkflowAnalysis {
             && self.input_blobs.is_empty()
             && self.output_blobs.is_empty()
             && self.http_calls.is_empty()
+            && self.liquid_maps.is_empty()
     }
 
     /// All SB queues referenced (input + output, deduplicated).
@@ -181,6 +183,17 @@ fn process_action(action: &Value, out: &mut WorkflowAnalysis) {
             } else {
                 if !out.input_blobs.contains(&container) { out.input_blobs.push(container); }
             }
+        }
+        return;
+    }
+
+    // ── Liquid transform ──────────────────────────────────────────────────
+    if kind == "liquid" {
+        // map name lives at inputs.map.name (newer) or inputs.integrationAccount.map.name (older)
+        let map_name = literal_str(&action["inputs"]["map"]["name"])
+            .or_else(|| literal_str(&action["inputs"]["integrationAccount"]["map"]["name"]));
+        if let Some(name) = map_name {
+            if !out.liquid_maps.contains(&name) { out.liquid_maps.push(name); }
         }
         return;
     }

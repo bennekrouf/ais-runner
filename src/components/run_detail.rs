@@ -4,14 +4,7 @@ use crate::services::workflow_analysis::{WorkflowAnalysis, TriggerKind};
 use crate::components::log_panel::LogLine;
 use crate::components::tooltip::Tooltip;
 
-fn open_in_editor(path: &str) {
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(path).spawn();
-    #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd").args(["/c", "start", "", path]).spawn();
-    #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
-}
+use crate::utils::open_in_editor;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct RunDetailProps {
@@ -183,6 +176,13 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                                     span { class: "wf-dir wf-dir-out", "▲" }
                                     span { class: "wf-type", "HTTP" }
                                     span { class: "wf-name", "{h}" }
+                                }
+                            }
+                            // liquid transforms
+                            for m in &a.liquid_maps {
+                                span { class: "wf-chip wf-chip-liquid", title: "Liquid transform: {m}",
+                                    span { class: "wf-type", "🔄" }
+                                    span { class: "wf-name", "{m}" }
                                 }
                             }
                         }
