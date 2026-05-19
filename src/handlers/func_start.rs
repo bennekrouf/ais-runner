@@ -47,12 +47,21 @@ pub fn handle_start(
         return;
     }
 
+    // ── Everything else runs in a single spawn so we can await spawn_blocking ─
+    spawn(async move {
+    let mut push = make_push(log_lines);
+
     // ── Pre-flight: auto-fix what we can, warn about the rest ────────────
-    // One broken workflow silently blocks run-history for ALL others.
-    // Run fixes synchronously so everything is correct before func spawns.
+    // All file I/O runs in spawn_blocking so the tokio executor is never stalled.
     {
         let d = func_cwd.clone();
-        tokio::task::block_in_place(|| {
+        // Collect log messages from the blocking thread and emit them here.
+        let msgs: Vec<(String, LogLevel)> = tokio::task::spawn_blocking(move || {
+            let mut out: Vec<(String, LogLevel)> = Vec::new();
+            // Shadow the outer `push` closure so all existing push(msg, lvl) calls
+            // inside this block collect into `out` instead of touching a Dioxus signal.
+            let mut push = |msg: String, lvl: LogLevel| out.push((msg, lvl));
+            (|| {
             // 1. package.json — required by node worker runtime
             let pkg = std::path::Path::new(&d).join("package.json");
             if !pkg.exists() {
@@ -144,14 +153,15 @@ pub fn handle_start(
                     );
                 }
             }
-        });
+            })();
+            out
+        }).await.unwrap_or_default();
+        for (msg, lvl) in msgs { push(msg, lvl); }
     }
 
     func_state.set(ServiceState::Starting);
 
-    spawn(async move {
-        let mut push2 = make_push(log_lines);
-
+    {
         // Quick async port check before launching func
         let mut ready = false;
         for attempt in 0u8..6 {
@@ -165,7 +175,7 @@ pub fn handle_start(
             }.await;
             if all_up { ready = true; break; }
             if attempt == 0 {
-                push2("Waiting for Azurite storage services…".into(), LogLevel::Info);
+                push("Waiting for Azurite storage services…".into(), LogLevel::Info);
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
@@ -177,7 +187,7 @@ pub fn handle_start(
                     std::net::SocketAddr::from(([127, 0, 0, 1], port))
                 ).await.is_err() { dead.push(port.to_string()); }
             }
-            push2(
+            push(
                 format!("⚠ Azurite port(s) {} not responding — click Stop then Start on Azurite to restart it.", dead.join(", ")),
                 LogLevel::Error,
             );
@@ -185,7 +195,7 @@ pub fn handle_start(
             return;
         }
 
-        push2(format!("$ cd {} && func start", func_cwd), LogLevel::Info);
+        push(format!("$ cd {} && func start", func_cwd), LogLevel::Info);
 
         // Kill stale process on port 7071
         let _ = std::process::Command::new("/bin/sh")
@@ -196,7 +206,7 @@ pub fn handle_start(
         match proc.read().start("func", &["start"], Some(&func_cwd)) {
             Ok((stdout, stderr)) => {
                 func_state.set(ServiceState::Running);
-                push2("func start launched — waiting for workflows…".into(), LogLevel::Ok);
+                push("func start launched — waiting for workflows…".into(), LogLevel::Ok);
 
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
                 crate::services::process::stream_output(stdout, stderr, tx, true);
@@ -291,10 +301,11 @@ pub fn handle_start(
             }
             Err(e) => {
                 func_state.set(ServiceState::Stopped);
-                push2(format!("func start error: {}", e), LogLevel::Error);
+                push(format!("func start error: {}", e), LogLevel::Error);
             }
         }
-    });
+    } // end port-check block
+    }); // end spawn(async move)
 }
 
 pub fn handle_stop(

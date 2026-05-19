@@ -32,6 +32,150 @@ fn az_line_class(line: &str) -> &'static str {
     else { "log-msg info" }
 }
 
+// ── Azurite poll-noise filter ─────────────────────────────────────────────
+
+/// Returns true for HTTP access log lines that are routine job-scheduler
+/// heartbeats (GET/POST/PUT on jobdefinitions or histories with 2xx status).
+/// These repeat every ~60 s per workflow and carry no actionable information.
+pub fn is_azurite_poll_noise(line: &str) -> bool {
+    if !line.contains("HTTP/1.1") { return false; }
+    // Must be a 2xx response
+    let ok = line.ends_with(" 200 -") || line.ends_with(" 201 -") || line.ends_with(" 204 -");
+    if !ok { return false; }
+    line.contains("jobdefinitions") || line.contains("histories")
+}
+
+/// Percent-decodes a URL-encoded string (handles `%XX`).
+fn pct_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(hi), Some(lo)) = (
+                char::from(b[i + 1]).to_digit(16),
+                char::from(b[i + 2]).to_digit(16),
+            ) {
+                out.push((((hi << 4) | lo) as u8) as char);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i] as char);
+        i += 1;
+    }
+    out
+}
+
+/// Extracts a human-readable queue name from an Azurite HTTP poll line.
+///
+/// The RowKey encodes the trigger name like:
+///   `FlowTriggerJob-WHEN:5FMESSAGES:5FARE:5FAVAILABLE:5FIN:5F{QUEUE}`
+/// where `:XX` is a secondary percent-encoding (`:` = `%`).
+pub fn extract_azurite_poll_queue(line: &str) -> Option<String> {
+    // First, URL-decode the whole line so %3A → : etc.
+    let decoded_line = pct_decode(line);
+
+    let marker = "FlowTriggerJob-WHEN";
+    let start  = decoded_line.find(marker)? + marker.len();
+    let rest   = &decoded_line[start..];
+    let end    = rest.find(|c| c == '\'' || c == ')' || c == '?').unwrap_or(rest.len());
+    let raw    = &rest[..end];
+
+    // Secondary decode: treat `:` as `%` for two-hex sequences
+    let mut decoded = String::with_capacity(raw.len());
+    let rb = raw.as_bytes();
+    let mut i = 0;
+    while i < rb.len() {
+        if rb[i] == b':' && i + 2 < rb.len() {
+            if let (Some(hi), Some(lo)) = (
+                char::from(rb[i + 1]).to_digit(16),
+                char::from(rb[i + 2]).to_digit(16),
+            ) {
+                decoded.push((((hi << 4) | lo) as u8) as char);
+                i += 3;
+                continue;
+            }
+        }
+        decoded.push(rb[i] as char);
+        i += 1;
+    }
+
+    // Strip the leading `_MESSAGES_ARE_AVAILABLE_IN_` portion
+    let sep = "_MESSAGES_ARE_AVAILABLE_IN_";
+    let queue = if let Some(pos) = decoded.find(sep) {
+        decoded[pos + sep.len()..].to_string()
+    } else {
+        decoded
+    };
+
+    let queue = queue.trim().to_lowercase();
+    if queue.is_empty() { None } else { Some(queue) }
+}
+
+/// Splits the raw Azurite debug-log lines into:
+///   - `display`: lines to show verbatim (non-poll or errors)
+///   - `polling`: set of queue names actively polled (seen in last 20 poll lines)
+///   - `stale`:   queue names that appeared early but NOT in the last 20 poll lines
+///   - `poll_hidden`: total number of suppressed poll lines
+pub fn process_azurite_lines(
+    lines: &[String],
+) -> (Vec<String>, Vec<String>, Vec<String>, usize) {
+    use std::collections::{HashMap, HashSet};
+
+    let mut display: Vec<String>  = Vec::new();
+    let mut poll_hidden           = 0usize;
+    // queue → (first_seen_idx, last_seen_idx) among poll lines only
+    let mut queue_span: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut poll_count = 0usize;
+
+    for line in lines {
+        let is_noise = is_azurite_poll_noise(line);
+        // Always show errors even if they look like poll lines
+        let is_error = {
+            let s = line.trim_end();
+            // HTTP status ≥ 400
+            let status_4xx = s.ends_with(" 400 -") || s.ends_with(" 401 -") ||
+                             s.ends_with(" 403 -") || s.ends_with(" 404 -") ||
+                             s.ends_with(" 409 -") || s.ends_with(" 500 -") ||
+                             s.ends_with(" 503 -");
+            status_4xx || (!s.contains("HTTP/1.1") && (s.contains("error") || s.contains("Error")))
+        };
+
+        if is_noise && !is_error {
+            poll_hidden += 1;
+            if let Some(q) = extract_azurite_poll_queue(line) {
+                let e = queue_span.entry(q).or_insert((poll_count, poll_count));
+                e.1 = poll_count;
+            }
+            poll_count += 1;
+        } else {
+            display.push(line.clone());
+        }
+    }
+
+    // "recent" = seen in the last 20 poll-line slots
+    let recent_threshold = poll_count.saturating_sub(20);
+    let mut polling: Vec<String> = Vec::new();
+    let mut stale:   Vec<String> = Vec::new();
+
+    let mut seen_queues: HashSet<String> = queue_span.keys().cloned().collect();
+    let mut sorted: Vec<String> = seen_queues.drain().collect();
+    sorted.sort();
+
+    for q in sorted {
+        if let Some(&(_, last)) = queue_span.get(&q) {
+            if last >= recent_threshold {
+                polling.push(q);
+            } else {
+                stale.push(q);
+            }
+        }
+    }
+
+    (display, polling, stale, poll_hidden)
+}
+
 /// Returns true for .NET stack-frame lines that repeat every ~60 s and carry no
 /// actionable information (e.g. "at System.ArgumentNullException.Throw(String paramName)").
 pub fn is_stack_frame_noise(msg: &str) -> bool {
@@ -66,6 +210,21 @@ pub fn is_sb_emulator_noise(line: &str) -> bool {
     (line.contains("Trc Id=\"40065\"") || line.contains("Trc Id=\"40104\"") ||
      line.contains("Trc Id=\"40064\"") || line.contains("Trc Id=\"30588\"") ||
      line.contains("Trc Id=\"32004\"") || line.contains("Trc Id=\"30504\""))
+}
+
+/// Filters Maven build-progress and JVM deprecation lines that add no value
+/// in the ais-runner console (they're already visible in a real terminal if needed).
+pub fn is_mvn_noise(msg: &str) -> bool {
+    let t = msg.trim_start();
+    // Maven artifact download progress: "Progress (N): X kB | …"
+    if t.starts_with("Progress (") { return true; }
+    // Maven downloaded confirmation: "Downloaded from central: https://…"
+    if t.starts_with("Downloaded from ") { return true; }
+    // JVM sun.misc.Unsafe deprecation warnings (Java 17+)
+    if t.contains("sun.misc.Unsafe") { return true; }
+    if t.contains("terminally deprecated method") { return true; }
+    if t.contains("Please consider reporting this to the maintainers") { return true; }
+    false
 }
 
 pub fn is_sb_noise(msg: &str) -> bool {
@@ -180,7 +339,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     // ── New-line counts while paused ─────────────────────────────────────────
     let console_new = console_snap.read().as_ref().map(|snap| {
         let live: Vec<_> = props.lines.read().iter()
-            .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg))
+            .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg) && !is_mvn_noise(&l.msg))
             .cloned().collect();
         live.len().saturating_sub(snap.len())
     });
@@ -201,7 +360,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     let console_lines: Vec<LogLine> = match console_snap.read().clone() {
         Some(snap) => snap,
         None => props.lines.read().iter()
-            .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg))
+            .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg) && !is_mvn_noise(&l.msg))
             .cloned().collect(),
     };
     let az_display: Vec<String> = match az_snap.read().clone() {
@@ -297,7 +456,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                                             document::eval("var e=document.getElementById('log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
                                         } else {
                                             let snap = props.lines.read().iter()
-                                                .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg))
+                                                .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg) && !is_mvn_noise(&l.msg))
                                                 .cloned().collect();
                                             console_snap.set(Some(snap));
                                         }
@@ -362,14 +521,44 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                         }
                     }
                 } else {
-                    for line in az_display.iter() {
-                        {
-                            let (time, msg) = az_split(line);
-                            let cls = az_line_class(line);
-                            rsx! {
-                                div { class: "log-line",
-                                    span { class: "log-time", "{time}" }
-                                    span { class: cls, "{msg}" }
+                    {
+                        let (shown, polling, stale, hidden) = process_azurite_lines(&az_display);
+                        rsx! {
+                            // ── Poll summary banner ────────────────────────
+                            if !polling.is_empty() || !stale.is_empty() {
+                                div { class: "log-line az-poll-summary",
+                                    if !polling.is_empty() {
+                                        span { class: "az-poll-icon", "📡" }
+                                        span { class: "az-poll-label", "Polling: " }
+                                        for (i, q) in polling.iter().enumerate() {
+                                            if i > 0 { span { class: "az-poll-sep", ", " } }
+                                            span { class: "az-poll-queue", "{q}" }
+                                        }
+                                    }
+                                    if !stale.is_empty() {
+                                        span { class: "az-poll-icon", style: "margin-left:.75rem", "⚠" }
+                                        span { class: "az-poll-label warn", "Silent: " }
+                                        for (i, q) in stale.iter().enumerate() {
+                                            if i > 0 { span { class: "az-poll-sep", ", " } }
+                                            span { class: "az-poll-queue warn", "{q}" }
+                                        }
+                                    }
+                                    if hidden > 0 {
+                                        span { class: "az-poll-hidden", "({hidden} poll cycles hidden)" }
+                                    }
+                                }
+                            }
+                            // ── Actual log lines ───────────────────────────
+                            for line in shown.iter() {
+                                {
+                                    let (time, msg) = az_split(line);
+                                    let cls = az_line_class(line);
+                                    rsx! {
+                                        div { class: "log-line",
+                                            span { class: "log-time", "{time}" }
+                                            span { class: cls, "{msg}" }
+                                        }
+                                    }
                                 }
                             }
                         }

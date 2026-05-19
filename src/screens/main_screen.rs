@@ -200,9 +200,24 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     }
 
     // ── Setup ──────────────────────────────────────────────────────────────
-    let dir_for_setup = dir.clone();
-    let setup_status  = use_signal(move || setup_manager::check_setup(&dir_for_setup));
+    // Start with a neutral default; check_setup reads local.settings.json which
+    // must not block the GUI thread.
+    let mut setup_status  = use_signal(|| setup_manager::SetupStatus::MissingSettings);
     let setup_updates: Signal<HashMap<String, String>> = use_signal(HashMap::new);
+
+    // Load setup status off the GUI thread on first mount.
+    use_effect({
+        let d = dir.clone();
+        move || {
+            let d = d.clone();
+            spawn(async move {
+                let s = tokio::task::spawn_blocking(move || setup_manager::check_setup(&d))
+                    .await.unwrap_or(setup_manager::SetupStatus::MissingSettings);
+                setup_status.set(s);
+            });
+        }
+    });
+
     let _on_apply_setup = {
         let dir = dir.clone();
         let mut status  = setup_status;
@@ -215,15 +230,29 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                 if tokio::task::spawn_blocking(move || setup_manager::apply_settings(&d, u))
                     .await.ok().and_then(|r| r.ok()).is_some()
                 {
-                    status.set(setup_manager::check_setup(&d2));
+                    // Re-check setup status off the GUI thread.
+                    let s = tokio::task::spawn_blocking(move || setup_manager::check_setup(&d2))
+                        .await.unwrap_or(setup_manager::SetupStatus::MissingSettings);
+                    status.set(s);
                 }
             });
         }
     };
 
     // ── Env mode ───────────────────────────────────────────────────────────
-    let dir_for_env    = dir.clone();
-    let mut current_env = use_signal(move || env_mode::detect_mode(&dir_for_env));
+    // detect_mode reads local.settings.json — must not block the GUI thread.
+    let mut current_env = use_signal(|| env_mode::EnvMode::Local);
+    use_effect({
+        let d = dir.clone();
+        move || {
+            let d = d.clone();
+            spawn(async move {
+                let mode = tokio::task::spawn_blocking(move || env_mode::detect_mode(&d))
+                    .await.unwrap_or(env_mode::EnvMode::Local);
+                current_env.set(mode);
+            });
+        }
+    });
 
     // ── Connection / SQL / SB signals ─────────────────────────────────────
     let mut sql_wfs          = use_signal(|| HashSet::<String>::new());
@@ -274,13 +303,21 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
         let dir2     = dir.clone();
         let mut cfg2 = cfg;
         move || {
-            if cfg2.read().get_link(&dir2).is_none() {
-                if let Some(link) = crate::services::settings_file::try_bootstrap_link(&dir2) {
+            // try_bootstrap_link reads local.settings.json — must run off the GUI thread.
+            if cfg2.read().get_link(&dir2).is_some() { return; }
+            let d     = dir2.clone();
+            let dir2b = dir2.clone();  // second clone for use inside the async block
+            spawn(async move {
+                let link = tokio::task::spawn_blocking(move || {
+                    crate::services::settings_file::try_bootstrap_link(&d)
+                }).await.ok().flatten();
+                if let Some(link) = link {
                     let mut c = cfg2.write();
-                    c.set_link(dir2.clone(), link);
-                    config::save(&c);
+                    c.set_link(dir2b, link);
+                    let snap = c.clone();
+                    tokio::task::spawn_blocking(move || config::save(&snap)).await.ok();
                 }
-            }
+            });
         }
     });
 
@@ -567,10 +604,11 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                     }
                     div { id: "wf-resize-handle" }
                     RunDetail {
-                        workflow:      selected_wf.read().clone(),
-                        source_text:   source_text.read().clone(),
-                        analysis:      wf_analysis.read().clone(),
-                        source_path:   selected_wf.read().as_ref().map(|name| {
+                        workflow:       selected_wf.read().clone(),
+                        source_text:    source_text.read().clone(),
+                        analysis:       wf_analysis.read().clone(),
+                        workspace_link: workspace_link.clone(),
+                        source_path:    selected_wf.read().as_ref().map(|name| {
                             workflows::resolve_logic_apps_dir(&dir)
                                 .join(name).join("workflow.json")
                                 .to_string_lossy().to_string()
@@ -855,25 +893,28 @@ fn az_login_widget(
     let dir = dir.to_string();
 
     // Tenant badge: (label, css_class, tooltip)
+    // Only show tenant badge when a workspace tenant is configured and there's a mismatch.
+    // When no tenant is configured, hiding the badge avoids displaying the raw GUID.
     let tenant_badge: Option<(String, &'static str, String)> =
-        active_tenant.read().as_deref().map(|active| {
-            let short = &active[..active.len().min(8)];
+        active_tenant.read().as_deref().and_then(|active| {
             match &configured_tenant {
                 Some(cfg) if !cfg.is_empty() => {
+                    let short     = &active[..active.len().min(8)];
                     let cfg_short = &cfg[..cfg.len().min(8)];
                     if active.starts_with(cfg_short) || cfg.starts_with(short) {
-                        // match
-                        (format!("{}", short), "az-tenant-badge",
-                         format!("Active tenant: {}\nWorkspace tenant: {} ✓", active, cfg))
+                        // tenant matches config — no badge needed, all good
+                        None
                     } else {
-                        // mismatch
-                        (format!("⚠ {}", short), "az-tenant-badge az-tenant-mismatch",
-                         format!("Tenant mismatch!\nActive:     {}\nConfigured: {}\nClick ⟳ or re-login to fix.", active, cfg))
+                        // mismatch — show warning
+                        Some((
+                            format!("⚠ tenant mismatch"),
+                            "az-tenant-badge az-tenant-mismatch",
+                            format!("Tenant mismatch!\nActive:     {}\nConfigured: {}\nClick ⟳ or re-login to fix.", active, cfg),
+                        ))
                     }
                 }
-                // no workspace tenant configured — just show what's active
-                _ => (format!("{}", short), "az-tenant-badge az-tenant-default",
-                      format!("Active tenant: {}\nNo tenant pinned for this workspace — set one in Settings.", active)),
+                // no workspace tenant configured — don't show the raw GUID
+                _ => None,
             }
         });
 

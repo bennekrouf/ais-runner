@@ -144,10 +144,30 @@ pub fn list_release_definitions(org: &str, project: &str) -> Result<Vec<ReleaseD
     Ok(defs)
 }
 
+#[derive(Debug, Clone)]
 pub struct EnvInfo {
     pub name:               String,
     /// The release ID currently deployed to this environment (`currentRelease.id`).
     pub current_release_id: u64,
+}
+
+/// Returns the artifact alias of the first Build-type artifact in a release definition.
+/// This is the value that must be passed as `artifact_alias` when calling `create_release`.
+pub fn get_release_def_artifact_alias(org: &str, project: &str, def_id: u64) -> Result<String, AzError> {
+    let id_str = def_id.to_string();
+    let out = run_cmd(&[
+        "pipelines", "release", "definition", "show",
+        "--org", org, "--project", project,
+        "--id", &id_str,
+        "-o", "json",
+    ])?;
+    let v: serde_json::Value = serde_json::from_str(&out)
+        .map_err(|e| AzError::Other(format!("parse definition: {}", e)))?;
+    v["artifacts"].as_array()
+        .and_then(|arts| arts.iter().find(|a| a["type"].as_str() == Some("Build")))
+        .and_then(|a| a["alias"].as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| AzError::Other("No Build artifact found in release definition".into()))
 }
 
 /// Returns environments sorted by rank, each with its authoritative current release ID.
@@ -287,6 +307,54 @@ pub fn get_release_artifact(org: &str, project: &str, release_id: u64) -> Result
     Ok(ReleaseArtifact { release_id, release_name, created_on, build_number, build_id, artifact_alias, branch, commit, environments })
 }
 
+/// Returns all branch names for the repository linked to a pipeline.
+/// Calls `az pipelines show` to get the repo ID, then `az repos ref list`
+/// to enumerate every refs/heads/* ref.
+pub fn list_pipeline_branches(org: &str, project: &str, pipeline_id: u64) -> Result<Vec<String>, AzError> {
+    let id_str = pipeline_id.to_string();
+
+    // 1. Get the pipeline definition to find the repository
+    let pipe_json = run_cmd(&[
+        "pipelines", "show",
+        "--org", org, "--project", project,
+        "--id", &id_str,
+        "-o", "json",
+    ])?;
+    let pipe: serde_json::Value = serde_json::from_str(&pipe_json)
+        .map_err(|e| AzError::Other(format!("parse pipeline show: {}", e)))?;
+
+    // The repository can be identified by name or id
+    let repo_name = pipe["repository"]["name"].as_str()
+        .or_else(|| pipe["repository"]["id"].as_str())
+        .ok_or_else(|| AzError::Other("pipeline has no repository field".into()))?
+        .to_string();
+
+    // 2. List all refs/heads/* in that repo
+    let refs_json = run_cmd(&[
+        "repos", "ref", "list",
+        "--org", org, "--project", project,
+        "--repository", &repo_name,
+        "--filter", "heads",
+        "-o", "json",
+    ])?;
+    let refs: serde_json::Value = serde_json::from_str(&refs_json)
+        .map_err(|e| AzError::Other(format!("parse refs: {}", e)))?;
+
+    let mut branches: Vec<String> = refs.as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|r| {
+            r["name"].as_str().map(|n| {
+                n.trim_start_matches("refs/heads/").to_string()
+            })
+        })
+        .filter(|b| !b.is_empty())
+        .collect();
+
+    branches.sort();
+    Ok(branches)
+}
+
 /// Queues a new build run on the given pipeline and branch.
 /// Returns the new run's build number on success.
 pub fn trigger_build(org: &str, project: &str, pipeline_id: u64, branch: &str) -> Result<String, AzError> {
@@ -327,4 +395,39 @@ pub fn create_release(
     let v: serde_json::Value = serde_json::from_str(&out)
         .map_err(|e| AzError::Other(format!("parse release create: {}", e)))?;
     Ok(v["name"].as_str().unwrap_or("Release created").to_string())
+}
+
+/// Find release definitions that consume a specific build pipeline as an artifact.
+/// Checks each definition's artifact reference against the given build pipeline ID.
+/// Runs definition shows in parallel — typically fast since there aren't many defs.
+pub fn find_release_defs_for_pipeline(
+    org: &str, project: &str,
+    build_pipeline_id: u64,
+) -> Result<Vec<ReleaseDefinition>, AzError> {
+    let defs = list_release_definitions(org, project)?;
+    let mut matched = Vec::new();
+    for def in defs {
+        let id_str = def.id.to_string();
+        if let Ok(out) = run_cmd(&[
+            "pipelines", "release", "definition", "show",
+            "--org", org, "--project", project,
+            "--id", &id_str, "-o", "json",
+        ]) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) {
+                let references_pipeline = v["artifacts"].as_array()
+                    .map(|arts| arts.iter().any(|a| {
+                        a["type"].as_str() == Some("Build")
+                            && a["definitionReference"]["definition"]["id"]
+                                .as_str()
+                                .and_then(|s| s.parse::<u64>().ok())
+                                == Some(build_pipeline_id)
+                    }))
+                    .unwrap_or(false);
+                if references_pipeline {
+                    matched.push(def);
+                }
+            }
+        }
+    }
+    Ok(matched)
 }
