@@ -212,6 +212,21 @@ pub fn is_sb_emulator_noise(line: &str) -> bool {
      line.contains("Trc Id=\"32004\"") || line.contains("Trc Id=\"30504\""))
 }
 
+/// Filters Maven build-progress and JVM deprecation lines that add no value
+/// in the ais-runner console (they're already visible in a real terminal if needed).
+pub fn is_mvn_noise(msg: &str) -> bool {
+    let t = msg.trim_start();
+    // Maven artifact download progress: "Progress (N): X kB | …"
+    if t.starts_with("Progress (") { return true; }
+    // Maven downloaded confirmation: "Downloaded from central: https://…"
+    if t.starts_with("Downloaded from ") { return true; }
+    // JVM sun.misc.Unsafe deprecation warnings (Java 17+)
+    if t.contains("sun.misc.Unsafe") { return true; }
+    if t.contains("terminally deprecated method") { return true; }
+    if t.contains("Please consider reporting this to the maintainers") { return true; }
+    false
+}
+
 pub fn is_sb_noise(msg: &str) -> bool {
     msg.contains("An unhandled exception occurred in the message batch receive loop") ||
     msg.contains("aka.ms/azsdk/net/servicebus/exceptions/troubleshoot") ||
@@ -324,7 +339,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     // ── New-line counts while paused ─────────────────────────────────────────
     let console_new = console_snap.read().as_ref().map(|snap| {
         let live: Vec<_> = props.lines.read().iter()
-            .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg))
+            .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg) && !is_mvn_noise(&l.msg))
             .cloned().collect();
         live.len().saturating_sub(snap.len())
     });
@@ -345,7 +360,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     let console_lines: Vec<LogLine> = match console_snap.read().clone() {
         Some(snap) => snap,
         None => props.lines.read().iter()
-            .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg))
+            .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg) && !is_mvn_noise(&l.msg))
             .cloned().collect(),
     };
     let az_display: Vec<String> = match az_snap.read().clone() {
@@ -441,7 +456,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                                             document::eval("var e=document.getElementById('log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
                                         } else {
                                             let snap = props.lines.read().iter()
-                                                .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg))
+                                                .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg) && !is_mvn_noise(&l.msg))
                                                 .cloned().collect();
                                             console_snap.set(Some(snap));
                                         }

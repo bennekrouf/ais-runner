@@ -62,9 +62,11 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
     // env_name → (release_name, artifact) for the currently-deployed build
     let mut cur_art:       Signal<HashMap<String, (String, ReleaseArtifact)>> = use_signal(HashMap::new);
     // name of the auto-detected release pipeline
-    let mut linked_rel_name: Signal<String>                                 = use_signal(String::new);
+    let mut linked_rel_name: Signal<String>       = use_signal(String::new);
     // id of the auto-detected release definition (needed for create_release)
-    let mut linked_rel_def_id: Signal<Option<u64>>                          = use_signal(|| None);
+    let mut linked_rel_def_id: Signal<Option<u64>> = use_signal(|| None);
+    // artifact alias from the release definition (authoritative source for create_release)
+    let mut linked_artifact_alias: Signal<String>  = use_signal(String::new);
 
     // ── dialogs ───────────────────────────────────────────────────────────
     // (pipeline_id, pipeline_name, recent_branches)
@@ -74,6 +76,35 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
 
     // ── filter ────────────────────────────────────────────────────────────
     let mut show_deployed_only: Signal<bool> = use_signal(|| false);
+
+    // ── all branches for the selected pipeline's repo ─────────────────────
+    let mut repo_branches: Signal<Vec<String>> = use_signal(Vec::new);
+
+    // ── dialog-local state (hoisted — hooks must be unconditional) ─────────
+    let mut deploying    = use_signal(|| false);
+    let mut dep_status   = use_signal(|| String::new());
+    let mut dep_err      = use_signal(|| false);
+    let mut branch_input = use_signal(|| String::new());
+    let mut triggering   = use_signal(|| false);
+    let mut trig_status  = use_signal(|| String::new());
+    let mut trig_err     = use_signal(|| false);
+
+    // Reset dialog state whenever a dialog opens.
+    use_effect(move || {
+        if deploy_dialog.read().is_some() {
+            deploying.set(false);
+            dep_status.set(String::new());
+            dep_err.set(false);
+        }
+    });
+    use_effect(move || {
+        if let Some((_, _, ref branches)) = *build_dialog.read() {
+            branch_input.set(branches.first().cloned().unwrap_or_else(|| "main".into()));
+            triggering.set(false);
+            trig_status.set(String::new());
+            trig_err.set(false);
+        }
+    });
 
     // ── fetch build pipelines ─────────────────────────────────────────────
     let mut fetch_pipelines = move |o: String, p: String| {
@@ -141,8 +172,10 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
         runs.write().clear();
         def_envs.write().clear();
         cur_art.write().clear();
+        repo_branches.write().clear();
         linked_rel_name.set(String::new());
         linked_rel_def_id.set(None);
+        linked_artifact_alias.set(String::new());
         loading_runs.set(true);
         status.set(String::new()); is_err.set(false);
 
@@ -150,13 +183,15 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
         let p = project.read().trim().to_string();
 
         spawn(async move {
-            // fetch runs + find linked release definition in parallel
+            // fetch runs + find linked release definition + repo branches in parallel
             let o1 = o.clone(); let p1 = p.clone();
             let o2 = o.clone(); let p2 = p.clone();
+            let o3 = o.clone(); let p3 = p.clone();
 
-            let (runs_res, rel_res) = tokio::join!(
+            let (runs_res, rel_res, branches_res) = tokio::join!(
                 tokio::task::spawn_blocking(move || devops_cli::list_runs(&o1, &p1, id)),
                 tokio::task::spawn_blocking(move || devops_cli::find_release_defs_for_pipeline(&o2, &p2, id)),
+                tokio::task::spawn_blocking(move || devops_cli::list_pipeline_branches(&o3, &p3, id)),
             );
 
             loading_runs.set(false);
@@ -164,6 +199,10 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
             match runs_res.unwrap_or_else(|e| Err(AzError::Other(e.to_string()))) {
                 Ok(list) => runs.set(list),
                 Err(e)   => { status.set(fmt_error(&e)); is_err.set(true); }
+            }
+
+            if let Ok(Ok(branches)) = branches_res {
+                repo_branches.set(branches);
             }
 
             // use the first matched release definition
@@ -174,7 +213,12 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
                     linked_rel_name.set(def_name);
                     linked_rel_def_id.set(Some(def_id));
 
-                    // fetch env columns + current deployments
+                    // fetch artifact alias + env columns in parallel
+                    let o_alias = o.clone(); let p_alias = p.clone();
+                    let alias_res = tokio::task::spawn_blocking(move || {
+                        devops_cli::get_release_def_artifact_alias(&o_alias, &p_alias, def_id)
+                    });
+
                     if let Ok(env_list) = tokio::task::spawn_blocking({
                         let o3 = o.clone(); let p3 = p.clone();
                         move || devops_cli::get_release_definition_envs(&o3, &p3, def_id)
@@ -194,6 +238,10 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
                             });
                         }
                         def_envs.set(env_list);
+                    }
+                    // Store the artifact alias from the definition (authoritative)
+                    if let Ok(Ok(alias)) = alias_res.await {
+                        linked_artifact_alias.set(alias);
                     }
                 }
             }
@@ -327,18 +375,11 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
                                     "Deployed only"
                                 }
                             }
-                            // ▶ Run (build trigger)
+                            // ▶ Build trigger
                             {
                                 let pipe_id   = *sel_pipeline.read();
                                 let pipe_name = sel_pipe_name.clone().unwrap_or_default();
-                                let branches: Vec<String> = {
-                                    let mut seen = Vec::<String>::new();
-                                    for r in all_runs.iter() {
-                                        let b = r.source_branch.trim_start_matches("refs/heads/").to_string();
-                                        if !b.is_empty() && !seen.contains(&b) { seen.push(b); }
-                                    }
-                                    seen
-                                };
+                                let branches  = repo_branches.read().clone();
                                 rsx! {
                                     button {
                                         class: "btn btn-run btn-small",
@@ -348,7 +389,7 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
                                                 build_dialog.set(Some((id, pipe_name.clone(), branches.clone())));
                                             }
                                         },
-                                        "▶ Run"
+                                        "▶ Build"
                                     }
                                 }
                             }
@@ -385,9 +426,11 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
                                                 let branch = run.source_branch.trim_start_matches("refs/heads/").to_string();
                                                 let commit = run.source_version.get(..8).unwrap_or(&run.source_version).to_string();
                                                 let envs_ready = !env_names.is_empty();
-                                                let alias    = cur_snap.values().next()
-                                                    .map(|(_, a)| a.artifact_alias.clone())
-                                                    .unwrap_or_default();
+                                                // Alias comes from the release definition, not a deployed release
+                                                let alias = linked_artifact_alias.read().clone();
+                                                // Use this run's own pipeline run ID as the build_id
+                                                let run_build_id = run.id.to_string();
+                                                let def_id = *linked_rel_def_id.read();
 
                                                 rsx! {
                                                     tr { class: "dv-row",
@@ -405,17 +448,15 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
 
                                                         for env_name in env_names.iter() {
                                                             {
-                                                                let col      = env_name.clone();
-                                                                let build2   = build.clone();
-                                                                let branch2  = branch.clone();
-                                                                let def_id   = *linked_rel_def_id.read();
-                                                                let build_id = cur_snap.values().next()
-                                                                    .map(|(_, a)| a.build_id.clone())
-                                                                    .unwrap_or_default();
-                                                                let alias2   = alias.clone();
+                                                                let col     = env_name.clone();
+                                                                let build2  = build.clone();
+                                                                let branch2 = branch.clone();
+                                                                let bid2    = run_build_id.clone();
+                                                                let alias2  = alias.clone();
 
                                                                 if let Some(dep) = deployed.get(env_name) {
                                                                     if dep == &build {
+                                                                        // ── currently deployed — green, not clickable ──
                                                                         rsx! {
                                                                             td { class: "dv-td dv-td-env",
                                                                                 div { class: "dv-env-cell dv-env-current-ok",
@@ -425,17 +466,30 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
                                                                             }
                                                                         }
                                                                     } else {
+                                                                        // ── superseded — clickable to re-deploy ──
                                                                         rsx! {
                                                                             td { class: "dv-td dv-td-env",
-                                                                                div { class: "dv-env-cell dv-env-past",
-                                                                                    title: "Superseded in {col}", "—"
+                                                                                div {
+                                                                                    class: "dv-env-cell dv-env-past dv-env-redeploy",
+                                                                                    title: "Re-deploy #{build2} to {col}",
+                                                                                    onclick: move |_| {
+                                                                                        deploy_dialog.set(Some((
+                                                                                            build2.clone(),
+                                                                                            bid2.clone(),
+                                                                                            alias2.clone(),
+                                                                                            col.clone(),
+                                                                                            branch2.clone(),
+                                                                                        )));
+                                                                                    },
+                                                                                    "—"
                                                                                 }
                                                                             }
                                                                         }
                                                                     }
                                                                 } else if !envs_ready {
                                                                     rsx! { td { class: "dv-td dv-td-env dv-skip", "·" } }
-                                                                } else if def_id.is_some() && !build_id.is_empty() {
+                                                                } else if def_id.is_some() {
+                                                                    // ── never deployed to this env — clickable ＋ ──
                                                                     rsx! {
                                                                         td { class: "dv-td dv-td-env",
                                                                             div {
@@ -444,7 +498,7 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
                                                                                 onclick: move |_| {
                                                                                     deploy_dialog.set(Some((
                                                                                         build2.clone(),
-                                                                                        build_id.clone(),
+                                                                                        bid2.clone(),
                                                                                         alias2.clone(),
                                                                                         col.clone(),
                                                                                         branch2.clone(),
@@ -475,21 +529,26 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
         // ── Deploy Confirmation Dialog ────────────────────────────────────
         if let Some((build_num, build_id_d, alias_d, env_name, branch_d)) = deploy_dialog.read().clone() {
             {
-                let sel_def_id     = *linked_rel_def_id.read();
-                let mut deploying  = use_signal(|| false);
-                let mut dep_status = use_signal(|| String::new());
-                let mut dep_err    = use_signal(|| false);
+                let sel_def_id  = *linked_rel_def_id.read();
                 let o = org.read().trim().to_string();
                 let p = project.read().trim().to_string();
+                let is_rollback = deployed_builds.contains(&build_num);
 
                 rsx! {
                     div { id: "dialog-backdrop", onclick: move |_| deploy_dialog.set(None) }
                     div { id: "run-dialog",
                         div { id: "run-dialog-header",
                             div {
-                                h3 { "Deploy to {env_name}" }
+                                h3 {
+                                    if is_rollback { "↩ Re-deploy to {env_name}" }
+                                    else { "🚀 Deploy to {env_name}" }
+                                }
                                 span { class: "dialog-hint",
-                                    "Create a new release from build #{build_num} targeting {env_name}."
+                                    if is_rollback {
+                                        "Roll back {env_name} to build #{build_num} by creating a new release."
+                                    } else {
+                                        "Create a new release from build #{build_num} targeting {env_name}."
+                                    }
                                 }
                             }
                             button { class: "btn-icon", onclick: move |_| deploy_dialog.set(None), "×" }
@@ -580,11 +639,6 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
         // ── Build Run Dialog ──────────────────────────────────────────────
         if let Some((pipe_id, pipe_name, branches)) = build_dialog.read().clone() {
             {
-                let default_branch   = branches.first().cloned().unwrap_or_else(|| "main".into());
-                let mut branch_input = use_signal(|| default_branch);
-                let mut triggering   = use_signal(|| false);
-                let mut trig_status  = use_signal(|| String::new());
-                let mut trig_err     = use_signal(|| false);
                 let o = org.read().trim().to_string();
                 let p = project.read().trim().to_string();
 
@@ -593,22 +647,35 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
                     div { id: "run-dialog",
                         div { id: "run-dialog-header",
                             div {
-                                h3 { "▶  {pipe_name}" }
+                                h3 { "▶ Build — {pipe_name}" }
                                 span { class: "dialog-hint", "Queue a new build on Azure DevOps." }
                             }
                             button { class: "btn-icon", onclick: move |_| build_dialog.set(None), "×" }
                         }
                         div { id: "run-dialog-body",
                             label { class: "dialog-label", "Branch" }
-                            input {
-                                id: "run-dialog-blobname",
-                                value: "{branch_input}",
-                                placeholder: "e.g. main",
-                                list: "build-branch-list",
-                                oninput: move |e| branch_input.set(e.value()),
-                            }
-                            datalist { id: "build-branch-list",
-                                for b in branches.iter() { option { value: "{b}" } }
+                            if branches.is_empty() {
+                                // Branches still loading or unavailable — free-text fallback
+                                input {
+                                    style: "width:100%; box-sizing:border-box",
+                                    value: "{branch_input}",
+                                    placeholder: "e.g. main",
+                                    oninput: move |e| branch_input.set(e.value()),
+                                }
+                            } else {
+                                // Full branch list from the repo — show as scrollable select
+                                select {
+                                    style: "width:100%; box-sizing:border-box; max-height:220px",
+                                    size: "6",   // show 6 rows, scroll for the rest
+                                    onchange: move |e| branch_input.set(e.value()),
+                                    for b in branches.iter() {
+                                        option {
+                                            value: "{b}",
+                                            selected: *branch_input.read() == *b,
+                                            "{b}"
+                                        }
+                                    }
+                                }
                             }
                             if !trig_status.read().is_empty() {
                                 div {
@@ -655,7 +722,7 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
                                         });
                                     }
                                 },
-                                if *triggering.read() { "Queuing…" } else { "▶  Run" }
+                                if *triggering.read() { "Queuing…" } else { "▶ Build" }
                             }
                         }
                     }

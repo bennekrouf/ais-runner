@@ -3044,6 +3044,13 @@ body.light .dv-running { color: #1a5a9a; }
 .dv-env-pending { background: var(--bg2); color: var(--text3); border: 1px solid var(--border); }
 .dv-env-none    { color: var(--text3); cursor: pointer; font-size: 13px; }
 .dv-env-none:hover { color: var(--accent, #60a5fa); }
+/* superseded but re-deployable — subtle hover hint */
+.dv-env-redeploy { cursor: pointer; }
+.dv-env-redeploy:hover {
+    background: rgba(96,165,250,0.08);
+    color: var(--text2);
+    border-color: rgba(96,165,250,0.3);
+}
 
 body.light .dv-env-ok      { background: #d4f0d4; color: #256025; border-color: #a0d0a0; }
 body.light .dv-env-fail    { background: #f5d4d4; color: #8b2020; border-color: #e0a0a0; }
