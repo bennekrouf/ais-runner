@@ -200,8 +200,9 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     }
 
     // ── Setup ──────────────────────────────────────────────────────────────
-    let dir_for_setup = dir.clone();
-    let setup_status  = use_signal(move || setup_manager::check_setup(&dir_for_setup));
+    // Start with a neutral default; check_setup reads local.settings.json which
+    // must not block the GUI thread.
+    let setup_status  = use_signal(|| setup_manager::SetupStatus::MissingSettings);
     let setup_updates: Signal<HashMap<String, String>> = use_signal(HashMap::new);
     let _on_apply_setup = {
         let dir = dir.clone();
