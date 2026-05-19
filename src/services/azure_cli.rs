@@ -42,7 +42,7 @@ pub fn az_command(args: &[&str]) -> Command {
         #[cfg(target_os = "windows")]
         let az_path = resolve_az_windows();
         #[cfg(not(target_os = "windows"))]
-        let az_path = "az".to_string();
+        let _az_path = "az".to_string();
 
         let mut cmd = Command::new("cmd");
         cmd.args(["/c", "az"]).args(args);

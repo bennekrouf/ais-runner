@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 
 use crate::components::log_panel::{LogLevel, LogLine};
 use crate::services::{
-    azure_cli, connection_diag, payload, sb_check,
+    connection_diag, payload, sb_check,
     workflows::{self, ActionItem, RunItem, WorkflowItem},
 };
 use crate::utils::{filter_cleared, make_push, sweep_run_history};
@@ -24,18 +24,11 @@ pub fn handle_open_dialog(
     mut selected_wf: Signal<Option<String>>,
     mut source_text: Signal<String>,
     mut active_tab: Signal<String>,
-    az_status: Signal<Option<Result<String, azure_cli::AzError>>>,
     mut run_dialog: Signal<Option<(String, String, String, String, Option<String>, Option<String>)>>,
     log_lines: Signal<Vec<LogLine>>,
 ) {
-    let mut push = make_push(log_lines);
-    if !matches!(az_status.read().as_ref(), Some(Ok(_))) {
-        push(
-            "Cannot run workflow: not logged into Azure. Please click '⚠ az login' in the toolbar first.".into(),
-            LogLevel::Error,
-        );
-        return;
-    }
+    // Local workflow triggering hits localhost:7071 — no Azure credentials needed.
+    let _push = make_push(log_lines); // keep log_lines used
     selected_wf.set(Some(name.clone()));
     active_tab.set("Run".into());
     let src_path = workflows::resolve_logic_apps_dir(dir).join(&name).join("workflow.json");
@@ -54,18 +47,10 @@ pub fn handle_trigger_from_detail(
     dir: &str,
     workflows_sig: Signal<Vec<WorkflowItem>>,
     selected_wf: Signal<Option<String>>,
-    az_status: Signal<Option<Result<String, azure_cli::AzError>>>,
     mut run_dialog: Signal<Option<(String, String, String, String, Option<String>, Option<String>)>>,
     log_lines: Signal<Vec<LogLine>>,
 ) {
-    let mut push = make_push(log_lines);
-    if !matches!(az_status.read().as_ref(), Some(Ok(_))) {
-        push(
-            "Cannot run workflow: not logged into Azure. Please click '⚠ az login' in the toolbar first.".into(),
-            LogLevel::Error,
-        );
-        return;
-    }
+    let _push = make_push(log_lines);
     let Some(wf_name) = selected_wf.read().clone() else { return };
     let Some(wf) = workflows_sig.read().iter().find(|w| w.name == wf_name).cloned() else { return };
     let blob_container = blob_container_for(dir, &wf.name, &wf.trigger_type);

@@ -276,8 +276,8 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     // ── Tool check / Azure login ───────────────────────────────────────────
     let mut tool_statuses    = use_signal(|| Vec::<system_check::ToolStatus>::new());
     let mut tools_dismissed  = use_signal(|| false);
-    let mut az_status:     Signal<Option<Result<String, azure_cli::AzError>>> = use_signal(|| None);
-    let mut active_tenant: Signal<Option<String>>                          = use_signal(|| None);
+    let az_status:     Signal<Option<Result<String, azure_cli::AzError>>> = use_signal(|| None);
+    let active_tenant: Signal<Option<String>>                             = use_signal(|| None);
 
     // ══ Effects ════════════════════════════════════════════════════════════
 
@@ -287,17 +287,10 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
         });
     });
 
-    use_effect(move || {
-        spawn(async move {
-            let (result, tenant) = tokio::task::spawn_blocking(|| {
-                let r = azure_cli::check_login();
-                let t = if r.is_ok() { azure_cli::get_active_tenant().ok() } else { None };
-                (r, t)
-            }).await.unwrap_or((Err(azure_cli::AzError::Other("check failed".into())), None));
-            az_status.set(Some(result));
-            active_tenant.set(tenant);
-        });
-    });
+    // Azure login is checked lazily — only when the user clicks the login widget
+    // or when an Azure-dependent feature (DevOps, Publish, cloud SB) is invoked.
+    // Do NOT run az account show on every startup: the app works fully offline
+    // for local workflow development.
 
     use_effect({
         let dir2     = dir.clone();
@@ -597,7 +590,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                                 workflow_run::handle_open_dialog(
                                     name, trigger_name, trigger_type, &dir,
                                     selected_wf, source_text, active_tab,
-                                    az_status, run_dialog, log_lines,
+                                    run_dialog, log_lines,
                                 )
                             }
                         },
@@ -632,7 +625,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                         on_run: {
                             let dir = dir.clone();
                             move |_| workflow_run::handle_trigger_from_detail(
-                                &dir, workflows, selected_wf, az_status, run_dialog, log_lines,
+                                &dir, workflows, selected_wf, run_dialog, log_lines,
                             )
                         },
                         on_refresh:    move |_| workflow_select::handle_refresh(selected_wf, runs, actions, cleared_wfs, log_lines),

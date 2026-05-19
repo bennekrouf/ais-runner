@@ -58,16 +58,6 @@ pub struct ReleaseEnvStatus {
     pub status: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ReleaseInfo {
-    pub id:           u64,
-    pub name:         String,
-    pub build_number: String,
-    pub branch:       String,
-    pub commit:       String,
-    pub created_on:   String,
-    pub environments: Vec<ReleaseEnvStatus>,
-}
 
 // ── internal helpers ──────────────────────────────────────────────────────────
 
@@ -198,58 +188,6 @@ pub fn get_release_definition_envs(org: &str, project: &str, def_id: u64) -> Res
     Ok(envs.into_iter().map(|(_, info)| info).collect())
 }
 
-pub fn list_releases(org: &str, project: &str, def_id: u64) -> Result<Vec<ReleaseInfo>, AzError> {
-    let def_id_str = def_id.to_string();
-    let out = run_cmd(&[
-        "pipelines", "release", "list",
-        "--org", org,
-        "--project", project,
-        "--definition-id", &def_id_str,
-        "--top", "20",
-        "-o", "json",
-    ])?;
-    let v: serde_json::Value = serde_json::from_str(&out)
-        .map_err(|e| AzError::Other(format!("parse releases: {}", e)))?;
-    let items = v.as_array()
-        .or_else(|| v["value"].as_array())
-        .ok_or_else(|| AzError::Other("unexpected releases shape".into()))?;
-
-    Ok(items.iter().filter_map(|r| {
-        let id         = r["id"].as_u64()?;
-        let name       = r["name"].as_str().unwrap_or("").to_string();
-        let created_on = r["createdOn"].as_str().unwrap_or("").to_string();
-
-        let build_artifact = r["artifacts"].as_array()
-            .and_then(|arts| arts.iter().find(|a| a["type"].as_str() == Some("Build")));
-
-        let build_number = build_artifact
-            .and_then(|a| a["definitionReference"]["version"]["name"].as_str())
-            .unwrap_or("—").to_string();
-
-        let raw_branch = build_artifact
-            .and_then(|a| a["definitionReference"]["branch"]["name"].as_str())
-            .unwrap_or("").to_string();
-        let branch = raw_branch
-            .trim_start_matches("refs/heads/").to_string();
-
-        let commit = build_artifact
-            .and_then(|a| a["definitionReference"]["sourceVersion"]["id"].as_str()
-                .or_else(|| a["definitionReference"]["sourceVersion"]["name"].as_str()))
-            .map(|s| s.get(..8).unwrap_or(s).to_string())
-            .unwrap_or_default();
-
-        let environments = r["environments"].as_array()
-            .map(|envs| envs.iter().filter_map(|e| {
-                Some(ReleaseEnvStatus {
-                    name:   e["name"].as_str()?.to_string(),
-                    status: e["status"].as_str().unwrap_or("notDeployed").to_string(),
-                })
-            }).collect())
-            .unwrap_or_default();
-
-        Some(ReleaseInfo { id, name, build_number, branch, commit, created_on, environments })
-    }).collect())
-}
 /// Fetches artifact details for a single release (build number, branch, commit).
 /// Uses `az pipelines release show` which returns full artifact data.
 pub fn get_release_artifact(org: &str, project: &str, release_id: u64) -> Result<ReleaseArtifact, AzError> {
