@@ -131,10 +131,16 @@ pub async fn test_cosmos_endpoint(endpoint: &str) -> Result<u64, String> {
     };
 
     let status = resp.status().as_u16();
-    // 200 = account info returned, 401 = reachable but needs auth (also fine for connectivity check)
-    if status == 200 || status == 401 {
-        Ok(start.elapsed().as_millis() as u64)
-    } else {
-        Err(format!("HTTP {}", status))
+    match status {
+        // 200 = Cosmos emulator root responded with account info (emulator running, no auth needed)
+        200 => Ok(start.elapsed().as_millis() as u64),
+        // 401 = something answered but rejected our request — wrong key, or a different
+        //       service on that port, or a real Azure endpoint (not the local emulator).
+        401 => Err("HTTP 401 — endpoint reachable but authentication failed. \
+                    If testing the local emulator, check it is running and the key matches. \
+                    If using an Azure endpoint, the emulator is not running locally.".into()),
+        // 403 = auth error variant
+        403 => Err("HTTP 403 — endpoint reachable but access denied.".into()),
+        _ => Err(format!("HTTP {} — unexpected response from endpoint.", status)),
     }
 }
