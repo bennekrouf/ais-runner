@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 use crate::services::workflows::{self, ActionItem, RunItem, duration_ms};
 use crate::services::workflow_analysis::{WorkflowAnalysis, TriggerKind};
+use crate::services::config::WorkspaceLink;
 use crate::components::log_panel::LogLine;
 use crate::components::tooltip::Tooltip;
 
@@ -8,20 +9,21 @@ use crate::utils::open_in_editor;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct RunDetailProps {
-    pub workflow:      Option<String>,
-    pub source_text:   String,
-    pub runs:          Vec<RunItem>,
-    pub actions:       Vec<ActionItem>,
-    pub is_live:       bool,
-    pub active_tab:    Signal<String>,
-    pub health_error:  Option<String>,
-    pub logs:          Vec<LogLine>,
-    pub analysis:      WorkflowAnalysis,
-    pub source_path:   Option<String>,
-    pub on_run:        EventHandler<()>,
-    pub on_refresh:    EventHandler<()>,
-    pub on_clear_runs: EventHandler<()>,
-    pub on_select_run: EventHandler<String>,
+    pub workflow:        Option<String>,
+    pub source_text:     String,
+    pub runs:            Vec<RunItem>,
+    pub actions:         Vec<ActionItem>,
+    pub is_live:         bool,
+    pub active_tab:      Signal<String>,
+    pub health_error:    Option<String>,
+    pub logs:            Vec<LogLine>,
+    pub analysis:        WorkflowAnalysis,
+    pub source_path:     Option<String>,
+    pub workspace_link:  Option<WorkspaceLink>,
+    pub on_run:          EventHandler<()>,
+    pub on_refresh:      EventHandler<()>,
+    pub on_clear_runs:   EventHandler<()>,
+    pub on_select_run:   EventHandler<String>,
 }
 
 #[component]
@@ -36,6 +38,11 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
         .max(1);
 
     let workflow_name = props.workflow.clone().unwrap_or_default();
+
+    // ── Publish dialog state ───────────────────────────────────────────────
+    let mut publish_open   = use_signal(|| false);
+    let mut publish_busy   = use_signal(|| false);
+    let mut publish_result = use_signal(|| Option::<Result<String, String>>::None);
 
     rsx! {
         div { id: "detail",
@@ -254,10 +261,12 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                                     let text = props.source_text.clone();
                                     move |_| {
                                         let text = text.clone();
-                                        std::thread::spawn(move || {
-                                            if let Ok(mut cb) = arboard::Clipboard::new() {
-                                                let _ = cb.set_text(text);
-                                            }
+                                        spawn(async move {
+                                            tokio::task::spawn_blocking(move || {
+                                                if let Ok(mut cb) = arboard::Clipboard::new() {
+                                                    let _ = cb.set_text(text);
+                                                }
+                                            }).await.ok();
                                         });
                                     }
                                 },
@@ -274,7 +283,114 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                                     "✎"
                                 }
                             }
+                            // ── Publish button — only when Logic App is configured ──
+                            if props.workspace_link.as_ref()
+                                .and_then(|l| l.logic_app_name.as_deref())
+                                .is_some()
+                                && props.source_path.is_some()
+                                && props.workflow.is_some()
+                            {
+                                button {
+                                    class: "source-copy-btn",
+                                    title: "Publish this workflow to Azure",
+                                    onclick: move |_| {
+                                        publish_result.set(None);
+                                        publish_open.set(true);
+                                    },
+                                    "⬆"
+                                }
+                            }
                             pre { id: "source-pre", "{props.source_text}" }
+                        }
+                    }
+                }
+            }
+
+            // ── Publish confirmation modal ─────────────────────────────────
+            if *publish_open.read() {
+                if let (Some(link), Some(path), Some(wf)) = (
+                    props.workspace_link.clone(),
+                    props.source_path.clone(),
+                    props.workflow.clone(),
+                ) {
+                    if let Some(app_name) = link.logic_app_name.clone() {
+                        div { class: "az-confirm-backdrop",
+                            onclick: move |_| { if !*publish_busy.read() { publish_open.set(false); } },
+                            div { class: "az-confirm-modal",
+                                onclick: move |e| e.stop_propagation(),
+
+                                div { class: "az-confirm-title", "⬆ Publish workflow to Azure" }
+
+                                p { style: "margin: 0 0 0.25rem;",
+                                    span { style: "opacity:.7", "Workflow: " }
+                                    strong { "{wf}" }
+                                }
+                                p { style: "margin: 0 0 0.25rem;",
+                                    span { style: "opacity:.7", "Logic App: " }
+                                    strong { "{app_name}" }
+                                }
+                                p { class: "az-confirm-body",
+                                    "This replaces the live workflow definition in Azure directly, \
+                                     without a commit or CI/CD pipeline."
+                                }
+
+                                // ── result / error feedback ──────────────
+                                match publish_result.read().as_ref() {
+                                    Some(Ok(msg)) => rsx! {
+                                        p { style: "color: var(--green); margin-bottom:.75rem;", "{msg}" }
+                                    },
+                                    Some(Err(err)) => rsx! {
+                                        p { style: "color: var(--red); margin-bottom:.75rem; white-space:pre-wrap; font-size:.82rem;",
+                                            "{err}"
+                                        }
+                                    },
+                                    None => rsx! { span {} },
+                                }
+
+                                div { class: "az-confirm-actions",
+                                    button {
+                                        class: "btn btn-small",
+                                        disabled: *publish_busy.read(),
+                                        onclick: move |_| { publish_open.set(false); },
+                                        "Cancel"
+                                    }
+                                    button {
+                                        class: "btn btn-run btn-small",
+                                        disabled: *publish_busy.read(),
+                                        onclick: {
+                                            let sub  = link.subscription_id.clone();
+                                            let rg   = link.resource_group.clone();
+                                            let app  = app_name.clone();
+                                            let name = wf.clone();
+                                            let p    = path.clone();
+                                            move |_| {
+                                                let sub  = sub.clone();
+                                                let rg   = rg.clone();
+                                                let app  = app.clone();
+                                                let name = name.clone();
+                                                let p    = p.clone();
+                                                publish_busy.set(true);
+                                                publish_result.set(None);
+                                                spawn(async move {
+                                                    let res = tokio::task::spawn_blocking(move || {
+                                                        crate::services::azure_cli::publish_workflow(
+                                                            &sub, &rg, &app, &name, &p,
+                                                        )
+                                                    }).await;
+                                                    let outcome = match res {
+                                                        Ok(Ok(msg)) => Ok(msg),
+                                                        Ok(Err(e))  => Err(format!("{:?}", e)),
+                                                        Err(e)      => Err(format!("task error: {}", e)),
+                                                    };
+                                                    publish_result.set(Some(outcome));
+                                                    publish_busy.set(false);
+                                                });
+                                            }
+                                        },
+                                        if *publish_busy.read() { "Publishing…" } else { "⬆ Publish" }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

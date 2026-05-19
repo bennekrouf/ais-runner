@@ -127,13 +127,36 @@ pub enum LiquidEngine {
     Stdlib,      // liquid 0.26 + DotLiquid-compat filters — covers most cases
 }
 
-/// Returns true if `dotnet` is available on PATH.
+/// Returns true if `dotnet` CLI is available on PATH.
 pub fn dotnet_available() -> bool {
     std::process::Command::new("dotnet")
         .arg("--version")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Returns true if `dotnet-script` global tool is installed.
+pub fn dotnet_script_available() -> bool {
+    std::process::Command::new("dotnet")
+        .args(["script", "--version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Install `dotnet-script` via `dotnet tool install -g dotnet-script`.
+/// Returns Ok(()) on success or Err(message) on failure.
+pub fn install_dotnet_script() -> Result<(), String> {
+    let out = std::process::Command::new("dotnet")
+        .args(["tool", "install", "-g", "dotnet-script"])
+        .output()
+        .map_err(|e| format!("Failed to run dotnet: {}", e))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
 }
 
 /// Evaluate a Liquid template against a JSON input string.
@@ -206,6 +229,11 @@ fn eval_liquid_stdlib(template_src: &str, input_json: &str) -> Result<String, St
     let input: serde_json::Value = serde_json::from_str(input_json)
         .map_err(|e| format!("Invalid JSON input: {}", e))?;
 
+    // Strip empty whitespace-control tags like {{-  -}} or {{  }} that are valid
+    // in Azure's DotLiquid but rejected by the liquid 0.26 parser.
+    let re_empty = regex::Regex::new(r"\{\{-?\s*-?\}\}").unwrap();
+    let template_src = re_empty.replace_all(template_src, "");
+
     let parser = liquid::ParserBuilder::with_stdlib()
         .filter(JsonFilterParser)
         .filter(Base64EncodeParser)
@@ -213,7 +241,7 @@ fn eval_liquid_stdlib(template_src: &str, input_json: &str) -> Result<String, St
         .build()
         .map_err(|e| format!("Parser build: {}", e))?;
 
-    let template = parser.parse(template_src)
+    let template = parser.parse(template_src.as_ref())
         .map_err(|e| format!("Template parse: {}", e))?;
 
     let globals = json_to_liquid(&input)

@@ -567,10 +567,11 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                     }
                     div { id: "wf-resize-handle" }
                     RunDetail {
-                        workflow:      selected_wf.read().clone(),
-                        source_text:   source_text.read().clone(),
-                        analysis:      wf_analysis.read().clone(),
-                        source_path:   selected_wf.read().as_ref().map(|name| {
+                        workflow:       selected_wf.read().clone(),
+                        source_text:    source_text.read().clone(),
+                        analysis:       wf_analysis.read().clone(),
+                        workspace_link: workspace_link.clone(),
+                        source_path:    selected_wf.read().as_ref().map(|name| {
                             workflows::resolve_logic_apps_dir(&dir)
                                 .join(name).join("workflow.json")
                                 .to_string_lossy().to_string()
@@ -855,25 +856,28 @@ fn az_login_widget(
     let dir = dir.to_string();
 
     // Tenant badge: (label, css_class, tooltip)
+    // Only show tenant badge when a workspace tenant is configured and there's a mismatch.
+    // When no tenant is configured, hiding the badge avoids displaying the raw GUID.
     let tenant_badge: Option<(String, &'static str, String)> =
-        active_tenant.read().as_deref().map(|active| {
-            let short = &active[..active.len().min(8)];
+        active_tenant.read().as_deref().and_then(|active| {
             match &configured_tenant {
                 Some(cfg) if !cfg.is_empty() => {
+                    let short     = &active[..active.len().min(8)];
                     let cfg_short = &cfg[..cfg.len().min(8)];
                     if active.starts_with(cfg_short) || cfg.starts_with(short) {
-                        // match
-                        (format!("{}", short), "az-tenant-badge",
-                         format!("Active tenant: {}\nWorkspace tenant: {} ✓", active, cfg))
+                        // tenant matches config — no badge needed, all good
+                        None
                     } else {
-                        // mismatch
-                        (format!("⚠ {}", short), "az-tenant-badge az-tenant-mismatch",
-                         format!("Tenant mismatch!\nActive:     {}\nConfigured: {}\nClick ⟳ or re-login to fix.", active, cfg))
+                        // mismatch — show warning
+                        Some((
+                            format!("⚠ tenant mismatch"),
+                            "az-tenant-badge az-tenant-mismatch",
+                            format!("Tenant mismatch!\nActive:     {}\nConfigured: {}\nClick ⟳ or re-login to fix.", active, cfg),
+                        ))
                     }
                 }
-                // no workspace tenant configured — just show what's active
-                _ => (format!("{}", short), "az-tenant-badge az-tenant-default",
-                      format!("Active tenant: {}\nNo tenant pinned for this workspace — set one in Settings.", active)),
+                // no workspace tenant configured — don't show the raw GUID
+                _ => None,
             }
         });
 

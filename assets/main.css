@@ -1402,6 +1402,35 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
 .log-msg.warn  { color: var(--yellow); }
 .log-msg.error { color: var(--red); }
 
+/* ── Azurite poll-noise summary banner ── */
+.az-poll-summary {
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 3px 6px;
+    margin-bottom: 4px;
+    background: var(--bg2);
+    border-radius: 5px;
+    border-left: 2px solid var(--green);
+    font-size: 11px;
+    opacity: 0.85;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+.az-poll-icon  { font-size: 12px; }
+.az-poll-label { color: var(--text2); font-weight: 600; margin-right: 2px; }
+.az-poll-label.warn { color: var(--yellow); }
+.az-poll-queue { color: var(--green); font-family: monospace; }
+.az-poll-queue.warn { color: var(--yellow); }
+.az-poll-sep   { color: var(--text2); }
+.az-poll-hidden {
+    margin-left: auto;
+    color: var(--text2);
+    font-style: italic;
+    opacity: 0.6;
+}
+
 /* scrollbars */
 ::-webkit-scrollbar       { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -2913,65 +2942,75 @@ body.light .stage-running { background: #d4e8fb; color: #1a5a9a; border-color: #
 body.light .stage-skip    { background: #f0f0f0; color: #888; border-color: #ccc; }
 
 /* ── DevOps deployment grid ── */
-.dv-grid {
+/* ── DevOps grid — table layout (auto-sizes columns to content) ── */
+.dv-scroll-wrap {
     width: 100%;
     overflow-x: auto;
+}
+.dv-table {
+    border-collapse: collapse;
     font-size: 12px;
+    width: max-content;   /* let table be as wide as needed; scroll wrapper clips */
+    min-width: 100%;
 }
 
-.dv-header-row,
-.dv-row {
-    display: flex;
-    align-items: center;
-    border-bottom: 1px solid var(--border2);
-    min-width: max-content;
+/* header */
+.dv-table thead {
+    position: sticky;
+    top: 0;
+    z-index: 2;
 }
-.dv-header-row {
+.dv-th {
+    background: var(--bg2);
     font-size: 10px;
     font-weight: 700;
     color: var(--text3);
     text-transform: uppercase;
     letter-spacing: .06em;
-    background: var(--bg2);
-    position: sticky;
-    top: 0;
-    z-index: 2;
+    padding: 6px 10px;
+    white-space: nowrap;
+    border-bottom: 2px solid var(--border);
+    text-align: left;
+    user-select: none;
 }
-.dv-row:hover { background: var(--bg2); }
+.dv-th-status { text-align: center; padding: 6px 6px; }
+.dv-th-env    { text-align: center; min-width: 90px; }
 
-.dv-col-build  { width: 120px; flex-shrink: 0; padding: 6px 10px; }
-.dv-col-status { width: 28px;  flex-shrink: 0; padding: 6px 4px; text-align: center; }
-.dv-col-date   { width: 120px; flex-shrink: 0; padding: 6px 10px; color: var(--text3); }
-.dv-col-env    { width: 110px; flex-shrink: 0; padding: 6px 8px; text-align: center; }
+/* data rows */
+.dv-row { border-bottom: 1px solid var(--border2); }
+.dv-row:hover > td { background: var(--bg2); }
 
-.dv-build-num  { font-family: monospace; color: var(--text2); }
-
-/* ── stage cells ── */
-.dv-cell {
-    width: 110px;
-    flex-shrink: 0;
-    padding: 5px 8px;
-    text-align: center;
-    font-size: 13px;
-    border-left: 1px solid var(--border2);
+.dv-td {
+    padding: 5px 10px;
+    white-space: nowrap;
+    vertical-align: middle;
 }
+.dv-td-build  { font-family: monospace; }
+.dv-td-status { text-align: center; padding: 5px 6px; font-size: 14px; }
+.dv-td-branch {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text2);
+    font-size: 11px;
+}
+.dv-td-commit { color: var(--text3); font-size: 11px; }
+.dv-td-date   { color: var(--text3); font-size: 11px; }
+.dv-td-env    { text-align: center; padding: 4px 6px; border-left: 1px solid var(--border2); }
 
-.dv-ok      { color: #6fcf6f; }
-.dv-fail    { color: #e07070; }
-.dv-warn    { color: #f0c040; }
-.dv-running { color: #60a5fa; }
-.dv-skip    { color: var(--text3); }
-.dv-loading { color: var(--text3); letter-spacing: 2px; }
+.dv-build-num { font-family: monospace; color: var(--text2); }
+.dv-skip      { color: var(--text3); text-align: center; }
 
-/* empty = not yet deployed, clickable */
-.dv-empty {
-    color: var(--text3);
+/* ── deployed-only filter label ── */
+.dv-filter-label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--text2);
     cursor: pointer;
-    transition: background .12s, color .12s;
-}
-.dv-empty:hover {
-    background: var(--bg1);
-    color: var(--accent, #60a5fa);
+    white-space: nowrap;
+    user-select: none;
 }
 
 body.light .dv-ok      { color: #256025; }
@@ -2979,52 +3018,6 @@ body.light .dv-fail    { color: #8b2020; }
 body.light .dv-warn    { color: #7a5500; }
 body.light .dv-running { color: #1a5a9a; }
 
-/* ── DevOps grid: resizable columns (JS-driven, header only) ── */
-.dv-header-row {
-    user-select: none;
-}
-.dv-col-build  { width: 160px; min-width: 80px;  box-sizing: border-box; overflow: hidden; }
-.dv-col-date   { width: 140px; min-width: 80px;  box-sizing: border-box; overflow: hidden; }
-.dv-col-env    { width: 130px; min-width: 60px;  box-sizing: border-box; overflow: hidden; }
-.dv-col-status { width: 28px;  flex-shrink: 0;   box-sizing: border-box; }
-
-/* drag handle shown on header cells */
-.dv-header-row > div {
-    position: relative;
-    cursor: default;
-}
-.dv-col-resize-handle {
-    position: absolute;
-    right: 0; top: 0; bottom: 0;
-    width: 5px;
-    cursor: col-resize;
-    background: transparent;
-    z-index: 1;
-}
-.dv-col-resize-handle:hover,
-.dv-col-resize-handle.dragging {
-    background: var(--accent, #60a5fa);
-    opacity: 0.5;
-}
-
-.dv-col-branch {
-    width: 140px; min-width: 60px;
-    box-sizing: border-box;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    padding: 6px 10px;
-    font-size: 11px;
-    color: var(--text2);
-}
-.dv-col-commit {
-    width: 90px; min-width: 60px;
-    box-sizing: border-box;
-    overflow: hidden;
-    padding: 6px 10px;
-    font-size: 11px;
-    color: var(--text3);
-}
 
 /* ── DevOps env cells with build number ── */
 .dv-env-cell {

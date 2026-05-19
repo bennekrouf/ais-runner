@@ -260,8 +260,13 @@ fn MapsTab(props: MapsTabProps) -> Element {
     let mut test_input:  Signal<String>          = use_signal(|| "{}".to_string());
     let mut test_output: Signal<String>          = use_signal(String::new);
     let mut test_err:    Signal<bool>            = use_signal(|| false);
-    let mut test_engine: Signal<String>          = use_signal(String::new);
-    let has_dotnet = maps_check::dotnet_available();
+    let mut test_engine:    Signal<String> = use_signal(String::new);
+    let mut installing:     Signal<bool>   = use_signal(|| false);
+    let mut install_status: Signal<String> = use_signal(String::new);
+    let mut install_err:    Signal<bool>   = use_signal(|| false);
+    // Computed once — subprocess checks must NOT run on every render
+    let has_dotnet        = use_memo(|| maps_check::dotnet_available());
+    let has_dotnet_script = use_memo(move || *has_dotnet.read() && maps_check::dotnet_script_available());
 
     if maps.read().is_empty() {
         return rsx! {
@@ -277,11 +282,57 @@ fn MapsTab(props: MapsTabProps) -> Element {
                     span { style: "font-size:11px; color:var(--text3); font-weight:400; margin-left:8px",
                         "{maps.read().len()} file(s)"
                     }
-                    span { style: "font-size:10px; color:var(--text3); font-weight:400; margin-left:auto; font-style:italic",
-                        if has_dotnet {
-                            "engine: DotLiquid via dotnet"
+                    // engine status — right-aligned
+                    div { style: "margin-left:auto; display:flex; align-items:center; gap:8px",
+                        if *has_dotnet_script.read() {
+                            span { style: "font-size:10px; color:var(--green); font-style:italic",
+                                "✓ DotLiquid via dotnet-script"
+                            }
+                        } else if *has_dotnet.read() {
+                            // dotnet found but dotnet-script missing — offer install
+                            if *installing.read() {
+                                span { style: "font-size:10px; color:var(--text3); font-style:italic",
+                                    "Installing dotnet-script…"
+                                }
+                            } else if !install_status.read().is_empty() {
+                                span {
+                                    style: if *install_err.read() { "font-size:10px; color:var(--red)" } else { "font-size:10px; color:var(--green)" },
+                                    "{install_status}"
+                                }
+                            } else {
+                                span { style: "font-size:10px; color:var(--text3); font-style:italic",
+                                    "liquid 0.26"
+                                }
+                                button {
+                                    class: "btn btn-small",
+                                    style: "font-size:10px; padding:0 7px; height:22px",
+                                    title: "Install dotnet-script for exact DotLiquid compatibility",
+                                    onclick: move |_| {
+                                        installing.set(true);
+                                        install_status.set(String::new());
+                                        spawn(async move {
+                                            let res = tokio::task::spawn_blocking(maps_check::install_dotnet_script)
+                                                .await.unwrap_or_else(|e| Err(e.to_string()));
+                                            installing.set(false);
+                                            match res {
+                                                Ok(()) => {
+                                                    install_status.set("✓ dotnet-script installed — restart to use DotLiquid".into());
+                                                    install_err.set(false);
+                                                }
+                                                Err(e) => {
+                                                    install_status.set(format!("✗ {}", e));
+                                                    install_err.set(true);
+                                                }
+                                            }
+                                        });
+                                    },
+                                    "Install dotnet-script"
+                                }
+                            }
                         } else {
-                            "engine: liquid 0.26 + | json, | Base64Encode — install dotnet for exact DotLiquid"
+                            span { style: "font-size:10px; color:var(--text3); font-style:italic",
+                                "liquid 0.26 — install .NET for DotLiquid"
+                            }
                         }
                     }
                 }

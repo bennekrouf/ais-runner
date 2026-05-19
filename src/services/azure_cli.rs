@@ -374,3 +374,71 @@ pub fn storage_upload_blob(conn_str: &str, container: &str, file_path: &str, blo
     ]).map(|_| ())
 }
 
+
+// ── Logic Apps Standard — single-workflow publish ──────────────────────────
+
+/// Publishes a single workflow definition to Azure Logic Apps Standard
+/// without touching any other workflows.
+///
+/// Uses the ARM REST API:
+///   PUT …/providers/Microsoft.Web/sites/{app}/workflows/{name}?api-version=2022-03-01
+///
+/// The workflow.json content is wrapped in the required
+/// `{ "properties": { "files": { "workflow.json": <content> } } }` envelope
+/// and posted via `az rest`.
+pub fn publish_workflow(
+    subscription_id: &str,
+    resource_group:  &str,
+    logic_app_name:  &str,
+    workflow_name:   &str,
+    workflow_path:   &str,
+) -> Result<String, AzError> {
+    // 1. Read and parse the local workflow.json
+    let raw = std::fs::read_to_string(workflow_path)
+        .map_err(|e| AzError::Other(format!("Cannot read {}: {}", workflow_path, e)))?;
+    let workflow_json: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| AzError::Other(format!("workflow.json is not valid JSON: {}", e)))?;
+
+    // 2. Wrap in the ARM body envelope
+    let body = serde_json::json!({
+        "properties": {
+            "files": {
+                "workflow.json": workflow_json
+            }
+        }
+    });
+    let body_str = serde_json::to_string(&body)
+        .map_err(|e| AzError::Other(format!("JSON serialise: {}", e)))?;
+
+    // 3. Write to a temp file so az rest can read it with @path
+    let tmp = std::env::temp_dir()
+        .join(format!("ais_publish_{}.json", workflow_name));
+    std::fs::write(&tmp, &body_str)
+        .map_err(|e| AzError::Other(format!("Cannot write temp file: {}", e)))?;
+
+    // 4. Build the ARM URI
+    let uri = format!(
+        "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}\
+         /providers/Microsoft.Web/sites/{app}/workflows/{wf}?api-version=2022-03-01",
+        sub = subscription_id,
+        rg  = resource_group,
+        app = logic_app_name,
+        wf  = workflow_name,
+    );
+
+    let body_arg = format!("@{}", tmp.to_string_lossy());
+
+    let result = run(&[
+        "rest",
+        "--method",       "PUT",
+        "--uri",          &uri,
+        "--body",         &body_arg,
+        "--subscription", subscription_id,
+    ]);
+
+    // 5. Always clean up the temp file
+    let _ = std::fs::remove_file(&tmp);
+
+    result.map(|_| format!("✅ '{}' published to '{}'", workflow_name, logic_app_name))
+}
+

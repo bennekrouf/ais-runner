@@ -144,6 +144,7 @@ pub fn list_release_definitions(org: &str, project: &str) -> Result<Vec<ReleaseD
     Ok(defs)
 }
 
+#[derive(Debug, Clone)]
 pub struct EnvInfo {
     pub name:               String,
     /// The release ID currently deployed to this environment (`currentRelease.id`).
@@ -327,4 +328,39 @@ pub fn create_release(
     let v: serde_json::Value = serde_json::from_str(&out)
         .map_err(|e| AzError::Other(format!("parse release create: {}", e)))?;
     Ok(v["name"].as_str().unwrap_or("Release created").to_string())
+}
+
+/// Find release definitions that consume a specific build pipeline as an artifact.
+/// Checks each definition's artifact reference against the given build pipeline ID.
+/// Runs definition shows in parallel — typically fast since there aren't many defs.
+pub fn find_release_defs_for_pipeline(
+    org: &str, project: &str,
+    build_pipeline_id: u64,
+) -> Result<Vec<ReleaseDefinition>, AzError> {
+    let defs = list_release_definitions(org, project)?;
+    let mut matched = Vec::new();
+    for def in defs {
+        let id_str = def.id.to_string();
+        if let Ok(out) = run_cmd(&[
+            "pipelines", "release", "definition", "show",
+            "--org", org, "--project", project,
+            "--id", &id_str, "-o", "json",
+        ]) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) {
+                let references_pipeline = v["artifacts"].as_array()
+                    .map(|arts| arts.iter().any(|a| {
+                        a["type"].as_str() == Some("Build")
+                            && a["definitionReference"]["definition"]["id"]
+                                .as_str()
+                                .and_then(|s| s.parse::<u64>().ok())
+                                == Some(build_pipeline_id)
+                    }))
+                    .unwrap_or(false);
+                if references_pipeline {
+                    matched.push(def);
+                }
+            }
+        }
+    }
+    Ok(matched)
 }
