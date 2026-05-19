@@ -202,8 +202,22 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     // ── Setup ──────────────────────────────────────────────────────────────
     // Start with a neutral default; check_setup reads local.settings.json which
     // must not block the GUI thread.
-    let setup_status  = use_signal(|| setup_manager::SetupStatus::MissingSettings);
+    let mut setup_status  = use_signal(|| setup_manager::SetupStatus::MissingSettings);
     let setup_updates: Signal<HashMap<String, String>> = use_signal(HashMap::new);
+
+    // Load setup status off the GUI thread on first mount.
+    use_effect({
+        let d = dir.clone();
+        move || {
+            let d = d.clone();
+            spawn(async move {
+                let s = tokio::task::spawn_blocking(move || setup_manager::check_setup(&d))
+                    .await.unwrap_or(setup_manager::SetupStatus::MissingSettings);
+                setup_status.set(s);
+            });
+        }
+    });
+
     let _on_apply_setup = {
         let dir = dir.clone();
         let mut status  = setup_status;
@@ -216,15 +230,29 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                 if tokio::task::spawn_blocking(move || setup_manager::apply_settings(&d, u))
                     .await.ok().and_then(|r| r.ok()).is_some()
                 {
-                    status.set(setup_manager::check_setup(&d2));
+                    // Re-check setup status off the GUI thread.
+                    let s = tokio::task::spawn_blocking(move || setup_manager::check_setup(&d2))
+                        .await.unwrap_or(setup_manager::SetupStatus::MissingSettings);
+                    status.set(s);
                 }
             });
         }
     };
 
     // ── Env mode ───────────────────────────────────────────────────────────
-    let dir_for_env    = dir.clone();
-    let mut current_env = use_signal(move || env_mode::detect_mode(&dir_for_env));
+    // detect_mode reads local.settings.json — must not block the GUI thread.
+    let mut current_env = use_signal(|| env_mode::EnvMode::Local);
+    use_effect({
+        let d = dir.clone();
+        move || {
+            let d = d.clone();
+            spawn(async move {
+                let mode = tokio::task::spawn_blocking(move || env_mode::detect_mode(&d))
+                    .await.unwrap_or(env_mode::EnvMode::Local);
+                current_env.set(mode);
+            });
+        }
+    });
 
     // ── Connection / SQL / SB signals ─────────────────────────────────────
     let mut sql_wfs          = use_signal(|| HashSet::<String>::new());
@@ -275,13 +303,21 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
         let dir2     = dir.clone();
         let mut cfg2 = cfg;
         move || {
-            if cfg2.read().get_link(&dir2).is_none() {
-                if let Some(link) = crate::services::settings_file::try_bootstrap_link(&dir2) {
+            // try_bootstrap_link reads local.settings.json — must run off the GUI thread.
+            if cfg2.read().get_link(&dir2).is_some() { return; }
+            let d     = dir2.clone();
+            let dir2b = dir2.clone();  // second clone for use inside the async block
+            spawn(async move {
+                let link = tokio::task::spawn_blocking(move || {
+                    crate::services::settings_file::try_bootstrap_link(&d)
+                }).await.ok().flatten();
+                if let Some(link) = link {
                     let mut c = cfg2.write();
-                    c.set_link(dir2.clone(), link);
-                    config::save(&c);
+                    c.set_link(dir2b, link);
+                    let snap = c.clone();
+                    tokio::task::spawn_blocking(move || config::save(&snap)).await.ok();
                 }
-            }
+            });
         }
     });
 

@@ -304,28 +304,28 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
                     } else {
                         // toolbar
                         div { class: "devops-runs-toolbar",
-                            div { style: "flex:1; min-width:0",
+                            div { style: "flex:1; min-width:0; display:flex; align-items:center; gap:8px; flex-wrap:wrap",
                                 span { class: "settings-group-label", style: "border:none; padding:0",
                                     if let Some(n) = &sel_pipe_name { "{n}" }
                                 }
                                 if !linked_rel_name.read().is_empty() {
-                                    span { style: "font-size:10px; color:var(--text3); margin-left:8px",
+                                    span { style: "font-size:10px; color:var(--text3)",
                                         "→ {linked_rel_name}"
                                     }
                                 } else if !*loading_runs.read() && !all_runs.is_empty() {
-                                    span { style: "font-size:10px; color:var(--text3); font-style:italic; margin-left:8px",
+                                    span { style: "font-size:10px; color:var(--text3); font-style:italic",
                                         "no linked release pipeline found"
                                     }
                                 }
-                            }
-                            // ── Deployed-only filter ──────────────────────
-                            label { class: "dv-filter-label",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: *show_deployed_only.read(),
-                                    onchange: move |e| show_deployed_only.set(e.checked()),
+                                // ── Deployed-only filter — inline with the pipeline name ──
+                                label { class: "dv-filter-label",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: *show_deployed_only.read(),
+                                        onchange: move |e| show_deployed_only.set(e.checked()),
+                                    }
+                                    "Deployed only"
                                 }
-                                "Deployed only"
                             }
                             // ▶ Run (build trigger)
                             {
