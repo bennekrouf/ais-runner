@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Start-Process \"C:\\\\Users\\\\benek\\\\code\\\\ais-runner\\\\installer\\\\dist\\\\ais-runner-setup.exe\")"
+    ]
+  }
+}

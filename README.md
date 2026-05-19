@@ -28,10 +28,8 @@ This installs `ais-runner` plus its dependencies (Node.js, Azure CLI, Azurite, A
 
 ### Windows
 
-1. Download `ais-runner-windows.zip` from the [latest release](https://github.com/Bennekrouf/ais-runner/releases/latest)
-2. Extract the ZIP anywhere
-3. Right-click `setup-windows.ps1` → **Run with PowerShell** (first time only — installs Node.js, Azure CLI, Azurite, func)
-4. Run `ais-runner.exe`
+1. Download `ais-runner-setup.exe` from the [latest release](https://github.com/Bennekrouf/ais-runner/releases/latest)
+2. Run it — the wizard installs the app and optionally installs all runtime dependencies (Node.js ≥20, Azure CLI, Azurite, Azure Functions Core Tools) in one step
 
 ---
 
@@ -102,18 +100,33 @@ storage account. All local blob connections must share the single `AzureWebJobsS
 
 ### Prerequisites
 
-| Tool | Install |
-|------|---------|
-| **Rust** | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
-| **Dioxus CLI** (optional) | `cargo install dioxus-cli` |
+| Tool | Platform | Install |
+|------|----------|---------|
+| **Rust** | all | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| **MSYS2 + MinGW-w64** | Windows | run `scripts\setup-windows-dev.ps1` — installs automatically |
+| **Dioxus CLI** | all (optional) | `cargo install dioxus-cli` |
 
 ### Build from source
 
+**macOS:**
 ```bash
 git clone https://github.com/Bennekrouf/ais-runner.git
 cd ais-runner
 cargo build --release
 ./target/release/ais-runner
+```
+
+**Windows** (first time — sets up MSYS2/MinGW and builds in one step):
+```
+Right-click scripts\setup-windows-dev.ps1 → Run with PowerShell
+```
+
+Or manually after MSYS2 is installed:
+```powershell
+cargo build --release
+# Copy WebView2Loader.dll next to the exe (required on first build)
+Copy-Item (Get-ChildItem target\release\build\webview2-com-sys-*\out\x64\WebView2Loader.dll | Select -First 1) target\release\
+.\target\release\ais-runner.exe
 ```
 
 ### Project structure
@@ -123,7 +136,9 @@ cargo build --release
 | `src/main.rs` | App entry point and UI |
 | `src/utils.rs` | Helper functions |
 | `scripts/setup-mac.sh` | macOS dependency installer |
-| `scripts/setup-windows.ps1` | Windows dependency installer |
+| `scripts/setup-windows.ps1` | Windows dependency installer (also used by the graphical installer) |
+| `scripts/setup-windows-dev.ps1` | Windows developer build setup (MSYS2 + MinGW + cargo build) |
+| `installer/installer.iss` | Inno Setup script — produces `ais-runner-setup.exe` |
 | `.github/workflows/` | CI: Mac build, Windows build, release pipeline |
 
 ### Release process

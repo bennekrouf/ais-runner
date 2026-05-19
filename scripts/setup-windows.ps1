@@ -22,6 +22,9 @@
         If Docker is already installed and running, it is skipped automatically.
         The Service Bus emulator (AzureCosmosDB) will not work without it.
 #>
+param(
+    [switch]$NoPrompt   # Set by the graphical installer — skips all Read-Host pauses
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -227,10 +230,12 @@ if ($dockerRunning) {
     Write-Host "  It cannot be installed silently — please install it manually:" -ForegroundColor Yellow
     Write-Host "  https://www.docker.com/products/docker-desktop/" -ForegroundColor Cyan
     Write-Host ""
-    $openBrowser = Read-Host "  Open the Docker Desktop download page now? (Y/N)"
-    if ($openBrowser -eq 'Y' -or $openBrowser -eq 'y') {
-        Start-Process "https://www.docker.com/products/docker-desktop/"
-        Write-Host "  After installing Docker Desktop, re-run this script to verify." -ForegroundColor DarkGray
+    if (-not $NoPrompt) {
+        $openBrowser = Read-Host "  Open the Docker Desktop download page now? (Y/N)"
+        if ($openBrowser -eq 'Y' -or $openBrowser -eq 'y') {
+            Start-Process "https://www.docker.com/products/docker-desktop/"
+            Write-Host "  After installing Docker Desktop, re-run this script to verify." -ForegroundColor DarkGray
+        }
     }
     Write-Warn "Continuing without Docker — Service Bus emulator will not be available."
 }
@@ -280,4 +285,4 @@ if ($allOk) {
 }
 Write-Host ""
 
-Read-Host "Press Enter to close"
+if (-not $NoPrompt) { Read-Host "Press Enter to close" }

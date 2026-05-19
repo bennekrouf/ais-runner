@@ -73,26 +73,31 @@ jobs:
           if ($dll) { Copy-Item $dll.FullName "target\release\WebView2Loader.dll" -Force }
           else { Write-Error "WebView2Loader.dll not found in build output" }
 
-      - name: Package
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
         shell: pwsh
         run: |
-          $dist = "dist\ais-runner-windows"
-          New-Item -ItemType Directory -Path $dist -Force | Out-Null
-          Copy-Item "target\release\ais-runner.exe"       $dist\
-          Copy-Item "target\release\WebView2Loader.dll"   $dist\
-          Copy-Item "scripts\setup-windows.ps1"           $dist\
-          Copy-Item "README.md"                           $dist\
-          Compress-Archive -Path "$dist\*" -DestinationPath "ais-runner-windows.zip" -Force
-          $hash = (Get-FileHash ais-runner-windows.zip -Algorithm SHA256).Hash.ToLower()
-          "$hash  ais-runner-windows.zip" | Out-File "ais-runner-windows.zip.sha256" -Encoding ASCII
+          $iscc = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { Write-Error "ISCC.exe not found" }
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          & $iscc /DMyAppVersion=$version installer\installer.iss
+          $hash = (Get-FileHash dist\ais-runner-setup.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  ais-runner-setup.exe" | Out-File "dist\ais-runner-setup.exe.sha256" -Encoding ASCII
+          Write-Host "Installer: dist\ais-runner-setup.exe ($([math]::Round((Get-Item dist\ais-runner-setup.exe).Length/1MB,1)) MB)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ais-runner-windows
           path: |
-            ais-runner-windows.zip
-            ais-runner-windows.zip.sha256
+            dist\ais-runner-setup.exe
+            dist\ais-runner-setup.exe.sha256
 
   update-tap:
     needs: [build-mac, build-windows]
@@ -180,7 +185,7 @@ jobs:
           ```
 
           ### Windows
-          Download `ais-runner-windows.zip`, extract, run `setup-windows.ps1` once, then `ais-runner.exe`.
+          Download `ais-runner-setup.exe` and run it — the installer handles everything (app + optional dependencies).
           EOF
           )" \
             $FILES

@@ -33,53 +33,26 @@ jobs:
           if ($dll) { Copy-Item $dll.FullName "target\release\WebView2Loader.dll" -Force }
           else { Write-Error "WebView2Loader.dll not found in build output" }
 
-      # ── Package: exe + setup script only ────────────────────────────────
-      - name: Write README
+      # ── Graphical installer ──────────────────────────────────────────────
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
         shell: pwsh
         run: |
-          $readme = @(
-            "AIS Runner for Windows",
-            "======================",
-            "",
-            "FIRST TIME SETUP",
-            "----------------",
-            "1. Extract this ZIP anywhere.",
-            "2. Right-click setup-windows.ps1 and choose Run with PowerShell (needs internet + admin)",
-            "   Installs: Node.js 20.18.1, Azure CLI 2.65.0, Azurite 3.30.0, func 4.x",
-            "   Run once - already-installed tools are skipped automatically.",
-            "",
-            "LAUNCH",
-            "------",
-            "3. Run ais-runner.exe.",
-            "",
-            "DEPENDENCIES (installed by setup script, not bundled)",
-            "------------------------------------------------------",
-            "  Node.js    v20.18.1  https://nodejs.org",
-            "  Azure CLI  2.65.0    https://aka.ms/installazurecliwindows",
-            "  Azurite    3.30.0    npm install -g azurite@3.30.0",
-            "  func       4.x       npm install -g azure-functions-core-tools@4"
-          )
-          $readme | Out-File "README.txt" -Encoding UTF8
-
-      - name: Package ZIP
-        shell: pwsh
-        run: |
-          $dist = "dist\ais-runner-windows"
-          New-Item -ItemType Directory -Path $dist -Force | Out-Null
-
-          Copy-Item "target\release\ais-runner.exe"       $dist\
-          Copy-Item "target\release\WebView2Loader.dll"  $dist\
-          Copy-Item "scripts\setup-windows.ps1"          $dist\
-          Copy-Item "README.txt"                          $dist\
-
-          Compress-Archive -Path "$dist\*" -DestinationPath "ais-runner-windows.zip" -Force
-
-          $size = (Get-Item ais-runner-windows.zip).Length / 1MB
-          Write-Host "Package ready: ais-runner-windows.zip ($([math]::Round($size,1)) MB)"
+          $iscc = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { Write-Error "ISCC.exe not found" }
+          $version = (Select-String 'version = "(.+)"' Cargo.toml).Matches[0].Groups[1].Value
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          & $iscc /DMyAppVersion=$version installer\installer.iss
+          Write-Host "Installer: dist\ais-runner-setup.exe ($([math]::Round((Get-Item dist\ais-runner-setup.exe).Length/1MB,1)) MB)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ais-runner-windows
-          path: ais-runner-windows.zip
+          path: dist\ais-runner-setup.exe
           retention-days: 30
