@@ -39,15 +39,25 @@ fn resolve_az_windows() -> String {
 
 pub fn az_command(args: &[&str]) -> Command {
     if cfg!(target_os = "windows") {
-        // Use the resolved az.cmd path directly so GUI launches work even when
-        // the Azure CLI directory isn't in the inherited system PATH.
         #[cfg(target_os = "windows")]
-        let az = resolve_az_windows();
+        let az_path = resolve_az_windows();
         #[cfg(not(target_os = "windows"))]
-        let az = "az".to_string();
+        let az_path = "az".to_string();
 
         let mut cmd = Command::new("cmd");
-        cmd.args(["/c", &az]).args(args);
+        cmd.args(["/c", "az"]).args(args);
+
+        // If az was found outside the inherited PATH (e.g. C:\Program Files\...),
+        // inject its directory into the child's PATH so cmd.exe resolves "az" by
+        // name — avoids quoting a path with spaces which cmd /c misparses.
+        #[cfg(target_os = "windows")]
+        if az_path != "az" {
+            if let Some(dir) = std::path::Path::new(&az_path).parent() {
+                let current = std::env::var("PATH").unwrap_or_default();
+                cmd.env("PATH", format!("{};{}", dir.display(), current));
+            }
+        }
+
         cmd
     } else {
         let mut cmd = Command::new("az");

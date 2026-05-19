@@ -26,6 +26,13 @@ jobs:
       - name: Build ais-runner
         run: cargo build --release
 
+      - name: Copy WebView2Loader.dll
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem "target\release\build\webview2-com-sys-*\out\x64\WebView2Loader.dll" | Select-Object -First 1
+          if ($dll) { Copy-Item $dll.FullName "target\release\WebView2Loader.dll" -Force }
+          else { Write-Error "WebView2Loader.dll not found in build output" }
+
       # ── Package: exe + setup script only ────────────────────────────────
       - name: Write README
         shell: pwsh
@@ -60,9 +67,10 @@ jobs:
           $dist = "dist\ais-runner-windows"
           New-Item -ItemType Directory -Path $dist -Force | Out-Null
 
-          Copy-Item "target\release\ais-runner.exe" $dist\
-          Copy-Item "scripts\setup-windows.ps1"     $dist\
-          Copy-Item "README.txt"                     $dist\
+          Copy-Item "target\release\ais-runner.exe"       $dist\
+          Copy-Item "target\release\WebView2Loader.dll"  $dist\
+          Copy-Item "scripts\setup-windows.ps1"          $dist\
+          Copy-Item "README.txt"                          $dist\
 
           Compress-Archive -Path "$dist\*" -DestinationPath "ais-runner-windows.zip" -Force
 

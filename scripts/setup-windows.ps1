@@ -129,11 +129,12 @@ Write-Host ""
 
 # ── 1. Node.js ────────────────────────────────────────────────────────────────
 Write-Step "Node.js v$NODE_VERSION"
-$nodeVer = Get-InstalledVersion 'node'
-if ($nodeVer -and $nodeVer.StartsWith('20.')) {
+$nodeVer   = Get-InstalledVersion 'node'
+$nodeMajor = if ($nodeVer) { [int]($nodeVer.Split('.')[0]) } else { 0 }
+if ($nodeVer -and $nodeMajor -ge 20) {
     Write-Skip "node $nodeVer"
 } else {
-    if ($nodeVer) { Write-Warn "Found node $nodeVer - will replace with v$NODE_VERSION" }
+    if ($nodeVer) { Write-Warn "Found node $nodeVer (< v20) - will replace with v$NODE_VERSION" }
     Install-Msi $NODE_URL "Node.js v$NODE_VERSION"
     # Verify
     Refresh-Path
