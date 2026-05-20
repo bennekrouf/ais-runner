@@ -19,7 +19,18 @@ pub fn suggest_payload(logic_apps_dir: &str, workflow_name: &str) -> String {
 
     let defn = workflow.get("definition").unwrap_or(&workflow);
 
-    // 1. Trigger-level schema
+    // Detect whether this is a Service Bus triggered workflow.
+    // For SB triggers the runtime wraps the message body in { contentData: ... }.
+    // The user only needs to provide the inner content — unwrap the envelope below.
+    let is_sb_trigger = defn["triggers"].as_object()
+        .and_then(|t| t.values().next())
+        .map(|trigger| {
+            trigger["inputs"]["serviceProviderConfiguration"]["serviceProviderId"]
+                .as_str() == Some("/serviceProviders/serviceBus")
+        })
+        .unwrap_or(false);
+
+    // 1. Trigger-level schema (HTTP triggers only — SB triggers have no schema here)
     if let Some(triggers) = defn["triggers"].as_object() {
         if let Some(trigger) = triggers.values().next() {
             let schema = &trigger["inputs"]["schema"];
@@ -29,10 +40,23 @@ pub fn suggest_payload(logic_apps_dir: &str, workflow_name: &str) -> String {
         }
     }
 
-    // 2. First ParseJson action that reads triggerBody / triggerOutputs
+    // 2. First ParseJson action that reads triggerBody / triggerOutputs / contentData
     if let Some(actions) = defn["actions"].as_object() {
         if let Some(schema) = find_trigger_body_schema(actions) {
-            return pretty(schema_to_sample("", &schema));
+            let sample = schema_to_sample("", &schema);
+            // For SB triggers: if the sample has a top-level "contentData" key,
+            // unwrap it — the user posts the inner content; the SB trigger adds the
+            // envelope automatically.
+            if is_sb_trigger {
+                if let Value::Object(ref map) = sample {
+                    if map.len() == 1 {
+                        if let Some(inner) = map.get("contentData") {
+                            return pretty(inner.clone());
+                        }
+                    }
+                }
+            }
+            return pretty(sample);
         }
     }
 

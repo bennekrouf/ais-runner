@@ -16,6 +16,7 @@ pub struct SbQueueInfo {
     pub namespace:          String,
     pub trigger_workflows:  Vec<String>,
     pub action_workflows:   Vec<String>,
+    pub requires_session:   bool,
 }
 
 /// The local.settings.json key + current value for the SB connection string, if present.
@@ -204,12 +205,16 @@ pub fn detect_sb_queues(logic_apps_dir: &str) -> (String, Vec<SbQueueInfo>) {
                             .as_str() == Some("/serviceProviders/serviceBus"));
                 if is_sb_trigger {
                     if let Some(queue) = resolve_queue_name(trigger, &settings) {
+                        let is_session = trigger["inputs"]["serviceProviderConfiguration"]["operationId"]
+                            .as_str() == Some("onNewMessagesFromQueueSession");
                         let entry = queue_map.entry(queue.clone()).or_insert_with(|| SbQueueInfo {
                             queue: queue.clone(),
                             namespace: namespace.clone(),
                             trigger_workflows: vec![],
                             action_workflows: vec![],
+                            requires_session: false,
                         });
+                        if is_session { entry.requires_session = true; }
                         if !entry.trigger_workflows.contains(&wf_name) {
                             entry.trigger_workflows.push(wf_name.clone());
                         }
@@ -249,6 +254,7 @@ fn scan_sb_actions(
                         namespace: namespace.to_string(),
                         trigger_workflows: vec![],
                         action_workflows: vec![],
+                        requires_session: false,
                     });
                     if !entry.action_workflows.contains(&wf_name.to_string()) {
                         entry.action_workflows.push(wf_name.to_string());

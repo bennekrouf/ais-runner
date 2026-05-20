@@ -146,18 +146,14 @@ pub fn initialize_default(dir: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Patch `connections.json` for local development: switch every AzureBlob
-/// ServiceProvider connection from MSI to connectionString auth so Azurite
-/// can be used instead of Azure Active Directory.
+/// Patch `connections.json` for local development:
+///
+/// - AzureBlob MSI → connectionString pointing at AzureWebJobsStorage (Azurite)
+/// - ServiceBus MSI → connectionString pointing at `serviceBus_connectionString`
+///   (populated with the emulator connection string by the SB emulator start handler)
 ///
 /// MSI (`parameterSetName: "ManagedServiceIdentity"`) requires the Azure IMDS
-/// endpoint which does not exist on a developer machine.  The equivalent local
-/// form is `parameterSetName: "connectionString"` pointing to
-/// `@appsetting('<Name>_connectionString')` which resolves to
-/// `UseDevelopmentStorage=true` in local.settings.json.
-///
-/// Only connections whose `serviceProvider.id` is `/serviceProviders/AzureBlob`
-/// are touched; all others are left unchanged.
+/// endpoint which does not exist on a developer machine.
 pub fn patch_connections_for_local(raw: &str) -> String {
     let Ok(mut root) = serde_json::from_str::<serde_json::Value>(raw) else {
         return raw.to_string();
@@ -170,17 +166,13 @@ pub fn patch_connections_for_local(raw: &str) -> String {
     let keys: Vec<String> = svc.keys().cloned().collect();
     for name in keys {
         let conn = &svc[&name];
-        // Only patch AzureBlob service provider connections
-        let is_blob = conn["serviceProvider"]["id"]
-            .as_str()
-            .map(|id| id == "/serviceProviders/AzureBlob")
-            .unwrap_or(false);
+        let provider_id = conn["serviceProvider"]["id"].as_str().unwrap_or("");
         let is_msi = conn["parameterSetName"]
             .as_str()
             .map(|p| p == "ManagedServiceIdentity")
             .unwrap_or(false);
 
-        if is_blob && is_msi {
+        if is_msi && provider_id == "/serviceProviders/AzureBlob" {
             // All local blob connections must share the SAME connection key
             // (AzureWebJobsStorage).  If each connection uses its own key
             // (IgniteBlob_connectionString, KyribaBlob_connectionString, …)
@@ -198,6 +190,22 @@ pub fn patch_connections_for_local(raw: &str) -> String {
                 },
                 "serviceProvider": {
                     "id": "/serviceProviders/AzureBlob"
+                }
+            });
+        } else if is_msi && provider_id == "/serviceProviders/serviceBus" {
+            // Switch Service Bus from MSI (requires Azure IMDS) to connectionString
+            // so the local emulator can be used.  The emulator start handler writes
+            // the emulator connection string to `serviceBus_connectionString` in
+            // local.settings.json.
+            let entry = svc.get_mut(&name).unwrap();
+            *entry = serde_json::json!({
+                "displayName": entry["displayName"].clone(),
+                "parameterSetName": "connectionString",
+                "parameterValues": {
+                    "connectionString": "@appsetting('serviceBus_connectionString')"
+                },
+                "serviceProvider": {
+                    "id": "/serviceProviders/serviceBus"
                 }
             });
         }
@@ -386,14 +394,17 @@ pub fn smart_default(key: &str) -> String {
         "WORKFLOWS_LOCATION_NAME"  => "switzerlandnorth".into(),
 
         // ── Service Bus ───────────────────────────────────────────────────────
-        // An empty connection string crashes table init for ALL workflows.
-        // A syntactically-valid but unreachable string lets func start cleanly —
-        // the workflow loads as unhealthy rather than corrupting Azurite state.
-        // Replace with a real connection string when SB is needed.
+        // `serviceBus_connectionString` is the key written by patch_connections_for_local
+        // when it switches the serviceBus connection from MSI to connectionString.
+        // Pre-populate it with the emulator connection string so func starts cleanly
+        // without needing a real Azure namespace — the SB emulator start handler will
+        // overwrite it with the same value when the emulator becomes ready.
+        "serviceBus_connectionString" => {
+            crate::handlers::sb_emulator::EMULATOR_CONN_STR.into()
+        }
+        // Generic Service Bus connection string keys — same emulator default.
         k if k.to_uppercase().contains("SERVICE_BUS") && k.to_uppercase().contains("CONNECTION") => {
-            "Endpoint=sb://placeholder.servicebus.windows.net/;\
-             SharedAccessKeyName=RootManageSharedAccessKey;\
-             SharedAccessKey=cGxhY2Vob2xkZXI=".into()
+            crate::handlers::sb_emulator::EMULATOR_CONN_STR.into()
         }
 
         // ── SQL Server ────────────────────────────────────────────────────────
@@ -538,17 +549,19 @@ mod tests {
     }
 
     #[test]
-    fn patch_does_not_touch_non_blob_connections() {
+    fn patch_service_bus_msi_to_connection_string() {
         let patched = patch_connections_for_local(MSI_CONNECTIONS);
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
 
-        // serviceBus is MSI but NOT AzureBlob — must be left unchanged
+        // serviceBus: MSI → connectionString pointing at serviceBus_connectionString
         let sb = &v["serviceProviderConnections"]["serviceBus"];
-        assert_eq!(sb["parameterSetName"], "ManagedServiceIdentity");
+        assert_eq!(sb["parameterSetName"], "connectionString");
         assert_eq!(
-            sb["parameterValues"]["fullyQualifiedNamespace"],
-            "@appsetting('serviceBus_fullyQualifiedNamespace')"
+            sb["parameterValues"]["connectionString"],
+            "@appsetting('serviceBus_connectionString')"
         );
+        assert!(sb["parameterValues"]["fullyQualifiedNamespace"].is_null(), "fullyQualifiedNamespace should be removed");
+        assert!(sb["parameterValues"]["authProvider"].is_null(), "authProvider should be removed");
     }
 
     #[test]

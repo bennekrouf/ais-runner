@@ -9,21 +9,22 @@ use crate::utils::open_in_editor;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct RunDetailProps {
-    pub workflow:        Option<String>,
-    pub source_text:     String,
-    pub runs:            Vec<RunItem>,
-    pub actions:         Vec<ActionItem>,
-    pub is_live:         bool,
-    pub active_tab:      Signal<String>,
-    pub health_error:    Option<String>,
-    pub logs:            Vec<LogLine>,
-    pub analysis:        WorkflowAnalysis,
-    pub source_path:     Option<String>,
-    pub workspace_link:  Option<WorkspaceLink>,
-    pub on_run:          EventHandler<()>,
-    pub on_refresh:      EventHandler<()>,
-    pub on_clear_runs:   EventHandler<()>,
-    pub on_select_run:   EventHandler<String>,
+    pub workflow:           Option<String>,
+    pub source_text:        String,
+    pub runs:               Vec<RunItem>,
+    pub actions:            Vec<ActionItem>,
+    pub is_live:            bool,
+    pub active_tab:         Signal<String>,
+    pub health_error:       Option<String>,
+    pub logs:               Vec<LogLine>,
+    pub analysis:           WorkflowAnalysis,
+    pub source_path:        Option<String>,
+    pub workspace_link:     Option<WorkspaceLink>,
+    pub suggested_payload:  String,
+    pub on_run:             EventHandler<()>,
+    pub on_refresh:         EventHandler<()>,
+    pub on_clear_runs:      EventHandler<()>,
+    pub on_select_run:      EventHandler<String>,
 }
 
 #[component]
@@ -43,6 +44,11 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
     let mut publish_open   = use_signal(|| false);
     let mut publish_busy   = use_signal(|| false);
     let mut publish_result = use_signal(|| Option::<Result<String, String>>::None);
+
+    // ── Payload popover ────────────────────────────────────────────────────
+    let mut payload_open   = use_signal(|| false);
+    let mut copied         = use_signal(|| false);
+    let suggested          = props.suggested_payload.clone();
 
     rsx! {
         div { id: "detail",
@@ -115,6 +121,14 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                                     span { class: "wf-chip wf-chip-http", title: "HTTP trigger",
                                         span { class: "wf-dir wf-dir-in", "▼" }
                                         span { class: "wf-type", "HTTP" }
+                                        if !suggested.is_empty() && suggested != "{}" {
+                                            button {
+                                                class: "wf-chip-payload-btn",
+                                                title: "Show sample payload",
+                                                onclick: move |e| { e.stop_propagation(); payload_open.set(!payload_open()); },
+                                                "📋"
+                                            }
+                                        }
                                     }
                                 },
                                 TriggerKind::Timer { schedule } => rsx! {
@@ -129,6 +143,14 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                                         span { class: "wf-dir wf-dir-in", "▼" }
                                         span { class: "wf-type", "SB" }
                                         span { class: "wf-name", "{queue}" }
+                                        if !suggested.is_empty() && suggested != "{}" {
+                                            button {
+                                                class: "wf-chip-payload-btn",
+                                                title: "Show sample message body",
+                                                onclick: move |e| { e.stop_propagation(); payload_open.set(!payload_open()); },
+                                                "📋"
+                                            }
+                                        }
                                     }
                                 },
                                 TriggerKind::Blob { container } => rsx! {
@@ -139,6 +161,42 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                                     }
                                 },
                                 TriggerKind::Unknown => rsx! { span {} },
+                            }
+
+                            // payload popover
+                            if payload_open() {
+                                div { class: "wf-payload-popover",
+                                    div { class: "wf-payload-popover-header",
+                                        span { "Sample payload" }
+                                        div { style: "display:flex;gap:6px;align-items:center",
+                                            button {
+                                                class: "wf-payload-copy-btn",
+                                                onclick: {
+                                                    let s = suggested.clone();
+                                                    move |_| {
+                                                        let _ = document::eval(&format!(
+                                                            "navigator.clipboard.writeText({})",
+                                                            serde_json::to_string(&s).unwrap_or_default()
+                                                        ));
+                                                        copied.set(true);
+                                                        let mut c = copied;
+                                                        spawn(async move {
+                                                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                                            c.set(false);
+                                                        });
+                                                    }
+                                                },
+                                                if copied() { "✅ Copied" } else { "📋 Copy" }
+                                            }
+                                            button {
+                                                class: "btn-icon",
+                                                onclick: move |_| payload_open.set(false),
+                                                "×"
+                                            }
+                                        }
+                                    }
+                                    pre { class: "wf-payload-code", "{suggested}" }
+                                }
                             }
 
                             // input queues (excluding trigger — already shown)

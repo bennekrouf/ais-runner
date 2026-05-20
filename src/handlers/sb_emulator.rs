@@ -45,7 +45,7 @@ pub const EMULATOR_CONN_STR: &str =
 /// Write docker-compose.yml + config.json to WORK_DIR.
 /// `queues` comes from scanning the workflow's local.settings.json — we
 /// pre-create every queue the Logic App uses so it's ready on first run.
-fn write_compose_files(queues: &[String]) -> Result<PathBuf, String> {
+fn write_compose_files(queues: &[(String, bool)]) -> Result<PathBuf, String> {
     let dir = work_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
@@ -105,7 +105,8 @@ networks:
     // that were manually added via the UI to an existing config.json.
     // An empty Queues array causes a NullReferenceException in the emulator host;
     // add a sentinel if nothing is detected. Omit Topics — empty array also crashes.
-    let mut effective_queues = queues.to_vec();
+    // effective_queues: (name, requires_session)
+    let mut effective_queues: Vec<(String, bool)> = queues.to_vec();
 
     // Validate and preserve queues from an existing config.json.
     // Also check for common hand-edited mistakes and warn before Docker even starts.
@@ -124,8 +125,10 @@ networks:
             } else if let Some(arr) = v["UserConfig"]["Namespaces"][0]["Queues"].as_array() {
                 for q in arr {
                     if let Some(name) = q["Name"].as_str() {
-                        if !effective_queues.iter().any(|e| e == name) {
-                            effective_queues.push(name.to_string());
+                        if !effective_queues.iter().any(|(n, _)| n == name) {
+                            // Preserve existing session setting from config.json
+                            let session = q["Properties"]["RequiresSession"].as_bool().unwrap_or(false);
+                            effective_queues.push((name.to_string(), session));
                         }
                     }
                 }
@@ -134,10 +137,10 @@ networks:
     }
 
     if effective_queues.is_empty() {
-        effective_queues.push("ais.default".to_string());
+        effective_queues.push(("ais.default".to_string(), false));
     }
 
-    let queue_entries: String = effective_queues.iter().map(|q| format!(
+    let queue_entries: String = effective_queues.iter().map(|(q, session)| format!(
         r#"          {{
             "Name": "{q}",
             "Properties": {{
@@ -146,10 +149,11 @@ networks:
               "LockDuration": "PT1M",
               "MaxDeliveryCount": 10,
               "RequiresDuplicateDetection": false,
-              "RequiresSession": false
+              "RequiresSession": {session}
             }}
           }}"#,
-        q = q
+        q = q,
+        session = session
     )).collect::<Vec<_>>().join(",\n");
 
     // "Topics" must be present as an empty array — omitting it leaves a null
@@ -199,8 +203,9 @@ fn docker_compose_cmd(args: &[&str]) -> std::process::Command {
 // ── emulator config helpers ───────────────────────────────────────────────────
 
 /// Add a queue to the emulator's config.json.
+/// Returns Ok(true) if the queue was added, Ok(false) if it already existed.
 /// The caller is responsible for restarting the emulator to pick up the change.
-pub fn add_queue_to_emulator_config(queue_name: &str) -> Result<(), String> {
+pub fn add_queue_to_emulator_config(queue_name: &str) -> Result<bool, String> {
     let path = work_dir().join("Config.json");
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("Could not read config.json: {}", e))?;
@@ -213,7 +218,7 @@ pub fn add_queue_to_emulator_config(queue_name: &str) -> Result<(), String> {
 
     // Idempotent — don't add duplicates
     if queues.iter().any(|q| q["Name"].as_str() == Some(queue_name)) {
-        return Ok(());
+        return Ok(false);
     }
 
     queues.push(serde_json::json!({
@@ -233,7 +238,7 @@ pub fn add_queue_to_emulator_config(queue_name: &str) -> Result<(), String> {
     std::fs::write(&path, new_text)
         .map_err(|e| format!("Could not write config.json: {}", e))?;
 
-    Ok(())
+    Ok(true)
 }
 
 // ── local.settings.json patcher ──────────────────────────────────────────────
@@ -243,16 +248,17 @@ pub fn add_queue_to_emulator_config(queue_name: &str) -> Result<(), String> {
 ///
 /// For connection-string style connections the existing key is patched.
 /// For MSI-style connections (fullyQualifiedNamespace, no connectionString key)
-/// we fall back to writing `SERVICE_BUS_CONNECTION_STRING` directly so that
-/// `is_emulator_configured` can detect the emulator on the next start.
+/// we write `serviceBus_connectionString` — the key that patch_connections_for_local
+/// injects into connections.json when it switches serviceBus from MSI to connectionString.
 fn patch_local_settings_conn_str(logic_apps_dir: &str) -> Result<bool, String> {
     use crate::services::{sb_check, settings_file};
 
     // Try to find the connection-string key from connections.json.
-    // Fall back to a generic key for MSI-style connections.
+    // Fall back to `serviceBus_connectionString` for MSI-style connections —
+    // this is the key that patch_connections_for_local writes into connections.json.
     let key = sb_check::detect_sb_conn_str_key(logic_apps_dir)
         .map(|(k, _)| k)
-        .unwrap_or_else(|| "SERVICE_BUS_CONNECTION_STRING".to_string());
+        .unwrap_or_else(|| "serviceBus_connectionString".to_string());
 
     // Read current value (may be empty for the fallback key).
     let text = settings_file::read_local_settings(logic_apps_dir)
@@ -295,9 +301,9 @@ pub fn handle_start(
     // Filter out Logic Apps expression placeholders like @triggerBody()?['queueName']
     // — only keep plain queue names (no @ $ ? expressions).
     let (_, queue_infos) = crate::services::sb_check::detect_sb_queues(&logic_apps_dir);
-    let queues: Vec<String> = queue_infos.into_iter()
-        .map(|q| q.queue)
-        .filter(|q| !q.contains('@') && !q.contains('?') && !q.contains('[') && !q.is_empty())
+    let queues: Vec<(String, bool)> = queue_infos.into_iter()
+        .filter(|q| !q.queue.contains('@') && !q.queue.contains('?') && !q.queue.contains('[') && !q.queue.is_empty())
+        .map(|q| (q.queue, q.requires_session))
         .collect();
 
     let dir = match write_compose_files(&queues) {
@@ -317,7 +323,10 @@ pub fn handle_start(
     push("✅ Config.json written (namespace: sbemulatorns, logging: Console)".into(), LogLevel::Info);
 
     if !queues.is_empty() {
-        push(format!("Pre-creating queues: {}", queues.join(", ")), LogLevel::Info);
+        let queue_names: Vec<String> = queues.iter().map(|(n, s)| {
+            if *s { format!("{} (session)", n) } else { n.clone() }
+        }).collect();
+        push(format!("Pre-creating queues: {}", queue_names.join(", ")), LogLevel::Info);
     }
 
     let compose_file = dir.join("docker-compose.yml");

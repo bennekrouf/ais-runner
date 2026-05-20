@@ -69,14 +69,24 @@ pub fn handle_start(
                 push("  ✅ Created missing package.json".into(), LogLevel::Ok);
             }
 
-            // 2. connections.json ARM syntax (@{appsetting} → @appsetting)
+            // 2. connections.json — fix ARM syntax + patch MSI → local equivalents.
+            //    Done on every func start so the user never has to run Setup manually
+            //    and the file is never committed in patched form (it reverts on git checkout).
             let conn_path = std::path::Path::new(&d).join("connections.json");
             if conn_path.exists() {
                 if let Ok(raw) = std::fs::read_to_string(&conn_path) {
-                    let fixed = setup_manager::fix_connections_json(&raw);
-                    if fixed != raw {
-                        let _ = std::fs::write(&conn_path, fixed);
-                        push("  ✅ Fixed ARM template syntax in connections.json".into(), LogLevel::Ok);
+                    let syntax_fixed = setup_manager::fix_connections_json(&raw);
+                    let fully_fixed  = setup_manager::patch_connections_for_local(&syntax_fixed);
+                    if fully_fixed != raw {
+                        let _ = std::fs::write(&conn_path, &fully_fixed);
+                        let syntax_changed = syntax_fixed != raw;
+                        let msi_changed    = fully_fixed != syntax_fixed;
+                        if syntax_changed {
+                            push("  ✅ Fixed ARM template syntax in connections.json".into(), LogLevel::Ok);
+                        }
+                        if msi_changed {
+                            push("  ✅ Patched connections.json: MSI → local (AzureBlob → Azurite, ServiceBus → emulator)".into(), LogLevel::Ok);
+                        }
                     }
                 }
             }

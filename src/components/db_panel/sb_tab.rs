@@ -29,6 +29,7 @@ pub fn SbTab(props: SbTabProps) -> Element {
 
     let mut new_queue_name:     Signal<String> = use_signal(String::new);
     let mut new_queue_creating: Signal<bool>   = use_signal(|| false);
+    let mut queue_filter:       Signal<String> = use_signal(String::new);
 
     let mut status     = props.status;
     let subscription   = props.subscription;
@@ -95,9 +96,16 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                 crate::handlers::sb_emulator::add_queue_to_emulator_config(&q2)
                             }).await.unwrap_or(Err("task failed".into()));
                             match result {
-                                Ok(()) => {
+                                Ok(true) => {
                                     status.set(Some((
                                         format!("✅ '{}' added — restart SB Emulator to apply.", q),
+                                        false,
+                                    )));
+                                    new_queue_name.set(String::new());
+                                }
+                                Ok(false) => {
+                                    status.set(Some((
+                                        format!("ℹ '{}' already exists.", q),
                                         false,
                                     )));
                                     new_queue_name.set(String::new());
@@ -114,8 +122,31 @@ pub fn SbTab(props: SbTabProps) -> Element {
             }
         }
 
+        // Filter
+        div { class: "log-filter-wrap", style: "margin: 6px 0 4px;",
+            input {
+                class: "log-filter-input",
+                style: "width:100%;box-sizing:border-box;",
+                r#type: "text",
+                placeholder: "Filter queues…",
+                value: "{queue_filter}",
+                oninput: move |e| queue_filter.set(e.value()),
+            }
+            if !queue_filter.read().is_empty() {
+                button {
+                    class: "log-filter-clear",
+                    title: "Clear filter",
+                    onclick: move |_| queue_filter.set(String::new()),
+                    "×"
+                }
+            }
+        }
+
         // Queue cards (local workflows)
-        for q in props.sb_queues.clone() {
+        for q in props.sb_queues.clone().into_iter().filter(|q| {
+            let f = queue_filter.read().to_lowercase();
+            f.is_empty() || q.queue.to_lowercase().contains(&f)
+        }) {
             {
                 let sb_ns = sb_namespace_rsx.clone();
                 let queue_name  = q.queue.clone();

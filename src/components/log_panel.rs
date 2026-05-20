@@ -265,6 +265,11 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     let mut az_snap:      Signal<Option<Vec<String>>>     = use_signal(|| None);
     let mut sb_snap:      Signal<Option<(Vec<String>, Vec<LogLine>)>> = use_signal(|| None);
 
+    // ── Per-tab text filter ───────────────────────────────────────────────────
+    let mut console_filter: Signal<String> = use_signal(String::new);
+    let mut az_filter:      Signal<String> = use_signal(String::new);
+    let mut sb_filter:      Signal<String> = use_signal(String::new);
+
     // ── Auto-scroll: only when not paused ───────────────────────────────────
     use_effect(move || {
         let _n = props.lines.read().len();
@@ -356,145 +361,201 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     let sb_emu_count   = sb_emu_lines.read().len();
     let sb_count       = sb_noise_count + sb_emu_count;
 
-    // ── Rendered lines ───────────────────────────────────────────────────────
-    let console_lines: Vec<LogLine> = match console_snap.read().clone() {
-        Some(snap) => snap,
-        None => props.lines.read().iter()
-            .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg) && !is_mvn_noise(&l.msg))
-            .cloned().collect(),
+    // ── Rendered lines (with filter applied) ─────────────────────────────────
+    let cf = console_filter.read().to_lowercase();
+    let af = az_filter.read().to_lowercase();
+    let sf = sb_filter.read().to_lowercase();
+
+    let console_lines: Vec<LogLine> = {
+        let base: Vec<LogLine> = match console_snap.read().clone() {
+            Some(snap) => snap,
+            None => props.lines.read().iter()
+                .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg) && !is_mvn_noise(&l.msg))
+                .cloned().collect(),
+        };
+        if cf.is_empty() { base }
+        else { base.into_iter().filter(|l| l.msg.to_lowercase().contains(&cf)).collect() }
     };
-    let az_display: Vec<String> = match az_snap.read().clone() {
-        Some(snap) => snap,
-        None => az_lines.read().clone(),
+    let az_display: Vec<String> = {
+        let base: Vec<String> = match az_snap.read().clone() {
+            Some(snap) => snap,
+            None => az_lines.read().clone(),
+        };
+        if af.is_empty() { base }
+        else { base.into_iter().filter(|l| l.to_lowercase().contains(&af)).collect() }
     };
-    let (sb_emu_display, sb_noise_display): (Vec<String>, Vec<LogLine>) =
-        match sb_snap.read().clone() {
+    let (sb_emu_display, sb_noise_display): (Vec<String>, Vec<LogLine>) = {
+        let (base_emu, base_noise) = match sb_snap.read().clone() {
             Some(snap) => snap,
             None => (
                 sb_emu_lines.read().clone(),
                 props.lines.read().iter().filter(|l| is_sb_noise(&l.msg)).cloned().collect(),
             ),
         };
+        if sf.is_empty() {
+            (base_emu, base_noise)
+        } else {
+            (
+                base_emu.into_iter().filter(|l| l.to_lowercase().contains(&sf)).collect(),
+                base_noise.into_iter().filter(|l| l.msg.to_lowercase().contains(&sf)).collect(),
+            )
+        }
+    };
 
     rsx! {
         div { id: "log-panel",
             div { id: "log-header",
-                button {
-                    class: if tab == "console" { "log-tab active" } else { "log-tab" },
-                    onclick: move |_| {
-                        active_tab.set("console");
-                        if console_snap.read().is_none() {
-                            document::eval("var e=document.getElementById('log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
-                        }
-                    },
-                    "Console"
-                    if console_snap.read().is_some() { span { class: "log-paused-badge", "⏸" } }
-                }
-                button {
-                    class: if tab == "azurite" { "log-tab active" } else { "log-tab" },
-                    onclick: move |_| {
-                        active_tab.set("azurite");
-                        if az_snap.read().is_none() {
-                            document::eval("var e=document.getElementById('az-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
-                        }
-                    },
-                    "Azurite"
-                    if az_snap.read().is_some() { span { class: "log-paused-badge", "⏸" } }
-                }
-                button {
-                    class: if tab == "servicebus" { "log-tab active" } else { "log-tab" },
-                    onclick: move |_| {
-                        active_tab.set("servicebus");
-                        if sb_snap.read().is_none() {
-                            document::eval("var e=document.getElementById('sb-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
-                        }
-                    },
-                    if tab != "servicebus" && sb_count > 0 {
-                        "Service Bus ({sb_count})"
-                    } else {
-                        "Service Bus"
+
+                // ── Left: tab buttons ─────────────────────────────────────
+                div { class: "log-tabs-left",
+                    button {
+                        class: if tab == "console" { "log-tab active" } else { "log-tab" },
+                        onclick: move |_| {
+                            active_tab.set("console");
+                            if console_snap.read().is_none() {
+                                document::eval("var e=document.getElementById('log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+                            }
+                        },
+                        "Console"
+                        if console_snap.read().is_some() { span { class: "log-paused-badge", "⏸" } }
                     }
-                    if sb_snap.read().is_some() { span { class: "log-paused-badge", "⏸" } }
+                    button {
+                        class: if tab == "azurite" { "log-tab active" } else { "log-tab" },
+                        onclick: move |_| {
+                            active_tab.set("azurite");
+                            if az_snap.read().is_none() {
+                                document::eval("var e=document.getElementById('az-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+                            }
+                        },
+                        "Azurite"
+                        if az_snap.read().is_some() { span { class: "log-paused-badge", "⏸" } }
+                    }
+                    button {
+                        class: if tab == "servicebus" { "log-tab active" } else { "log-tab" },
+                        onclick: move |_| {
+                            active_tab.set("servicebus");
+                            if sb_snap.read().is_none() {
+                                document::eval("var e=document.getElementById('sb-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+                            }
+                        },
+                        if tab != "servicebus" && sb_count > 0 {
+                            "Service Bus ({sb_count})"
+                        } else {
+                            "Service Bus"
+                        }
+                        if sb_snap.read().is_some() { span { class: "log-paused-badge", "⏸" } }
+                    }
                 }
 
-                div { style: "flex:1" }
+                // ── Right: filter + pause + clear ─────────────────────────
+                div { class: "log-controls-right",
 
-                // ── Pause / resume button ─────────────────────────────────
-                {
-                    let (paused, new_count) = match tab {
-                        "azurite"    => (az_snap.read().is_some(),      az_new),
-                        "servicebus" => (sb_snap.read().is_some(),      sb_new),
-                        _            => (console_snap.read().is_some(), console_new),
-                    };
-                    rsx! {
-                        button {
-                            class: if paused { "btn btn-small log-pause-btn paused" } else { "btn btn-small log-pause-btn" },
-                            title: if paused { "Resume — scroll to live tail" } else { "Pause — freeze display here" },
-                            onclick: move |_| {
-                                match active_tab() {
-                                    "azurite" => {
-                                        if az_snap.read().is_some() {
-                                            az_snap.set(None);
-                                            document::eval("var e=document.getElementById('az-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
-                                        } else {
-                                            az_snap.set(Some(az_lines.read().clone()));
-                                        }
-                                    }
-                                    "servicebus" => {
-                                        if sb_snap.read().is_some() {
-                                            sb_snap.set(None);
-                                            document::eval("var e=document.getElementById('sb-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
-                                        } else {
-                                            let emu   = sb_emu_lines.read().clone();
-                                            let noise = props.lines.read().iter().filter(|l| is_sb_noise(&l.msg)).cloned().collect();
-                                            sb_snap.set(Some((emu, noise)));
-                                        }
-                                    }
-                                    _ => {
-                                        if console_snap.read().is_some() {
-                                            console_snap.set(None);
-                                            document::eval("var e=document.getElementById('log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
-                                        } else {
-                                            let snap = props.lines.read().iter()
-                                                .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg) && !is_mvn_noise(&l.msg))
-                                                .cloned().collect();
-                                            console_snap.set(Some(snap));
-                                        }
+                    // Filter input
+                    {
+                        let (mut filter_sig, placeholder) = match tab {
+                            "azurite"    => (az_filter,      "Filter Azurite…"),
+                            "servicebus" => (sb_filter,      "Filter Service Bus…"),
+                            _            => (console_filter, "Filter console…"),
+                        };
+                        let has_filter = !filter_sig.read().is_empty();
+                        rsx! {
+                            div { class: "log-filter-wrap",
+                                input {
+                                    class: "log-filter-input",
+                                    r#type: "text",
+                                    placeholder: "{placeholder}",
+                                    value: "{filter_sig}",
+                                    oninput: move |e| filter_sig.set(e.value()),
+                                }
+                                if has_filter {
+                                    button {
+                                        class: "log-filter-clear",
+                                        title: "Clear filter",
+                                        onclick: move |_| filter_sig.set(String::new()),
+                                        "×"
                                     }
                                 }
-                            },
-                            if paused {
-                                "▶"
-                                if let Some(n) = new_count { if n > 0 { span { class: "log-new-count", "+{n}" } } }
-                            } else {
-                                "⏸"
                             }
                         }
                     }
-                }
 
-                button {
-                    class: "btn btn-small",
-                    style: "background:#21262d;color:#8b949e",
-                    onclick: move |_| {
-                        // Clear also resets the pause for that tab
-                        match active_tab() {
-                            "azurite" => {
-                                az_snap.set(None);
-                                az_lines.write().clear();
-                            }
-                            "servicebus" => {
-                                sb_snap.set(None);
-                                sb_emu_lines.write().clear();
-                                props.on_clear.call(());
-                            }
-                            _ => {
-                                console_snap.set(None);
-                                props.on_clear.call(());
+                    // Pause / resume button
+                    {
+                        let (paused, new_count) = match tab {
+                            "azurite"    => (az_snap.read().is_some(),      az_new),
+                            "servicebus" => (sb_snap.read().is_some(),      sb_new),
+                            _            => (console_snap.read().is_some(), console_new),
+                        };
+                        rsx! {
+                            button {
+                                class: if paused { "btn btn-small log-pause-btn paused" } else { "btn btn-small log-pause-btn" },
+                                title: if paused { "Resume — scroll to live tail" } else { "Pause — freeze display here" },
+                                onclick: move |_| {
+                                    match active_tab() {
+                                        "azurite" => {
+                                            if az_snap.read().is_some() {
+                                                az_snap.set(None);
+                                                document::eval("var e=document.getElementById('az-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+                                            } else {
+                                                az_snap.set(Some(az_lines.read().clone()));
+                                            }
+                                        }
+                                        "servicebus" => {
+                                            if sb_snap.read().is_some() {
+                                                sb_snap.set(None);
+                                                document::eval("var e=document.getElementById('sb-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+                                            } else {
+                                                let emu   = sb_emu_lines.read().clone();
+                                                let noise = props.lines.read().iter().filter(|l| is_sb_noise(&l.msg)).cloned().collect();
+                                                sb_snap.set(Some((emu, noise)));
+                                            }
+                                        }
+                                        _ => {
+                                            if console_snap.read().is_some() {
+                                                console_snap.set(None);
+                                                document::eval("var e=document.getElementById('log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+                                            } else {
+                                                let snap = props.lines.read().iter()
+                                                    .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg) && !is_mvn_noise(&l.msg))
+                                                    .cloned().collect();
+                                                console_snap.set(Some(snap));
+                                            }
+                                        }
+                                    }
+                                },
+                                if paused {
+                                    "▶"
+                                    if let Some(n) = new_count { if n > 0 { span { class: "log-new-count", "+{n}" } } }
+                                } else {
+                                    "⏸"
+                                }
                             }
                         }
-                    },
-                    "Clear"
+                    }
+
+                    // Clear button
+                    button {
+                        class: "btn btn-small",
+                        style: "background:#21262d;color:#8b949e",
+                        onclick: move |_| {
+                            match active_tab() {
+                                "azurite" => {
+                                    az_snap.set(None);
+                                    az_lines.write().clear();
+                                }
+                                "servicebus" => {
+                                    sb_snap.set(None);
+                                    sb_emu_lines.write().clear();
+                                    props.on_clear.call(());
+                                }
+                                _ => {
+                                    console_snap.set(None);
+                                    props.on_clear.call(());
+                                }
+                            }
+                        },
+                        "Clear"
+                    }
                 }
             }
 

@@ -640,6 +640,9 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                         on_select_run: move |run_id: String| {
                             workflow_select::handle_select_run(run_id, selected_wf, actions, log_lines)
                         },
+                        suggested_payload: selected_wf.read().as_ref()
+                            .map(|name| crate::services::payload::suggest_payload(&dir, name))
+                            .unwrap_or_default(),
                     }
                 }
 

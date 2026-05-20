@@ -92,6 +92,22 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     // ── Shared status bar ────────────────────────────────────────────────────
     let mut status: Signal<Option<(String, bool)>> = use_signal(|| None);
 
+    // Auto-dismiss non-error status messages after 3 s
+    use_effect(move || {
+        if let Some((_, is_err)) = status.read().clone() {
+            if !is_err {
+                spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    // Only clear if still showing a non-error message
+                    let still_ok = matches!(status.read().clone(), Some((_, false)));
+                    if still_ok {
+                        status.set(None);
+                    }
+                });
+            }
+        }
+    });
+
 
     let dir = props.logic_apps_dir.clone();
 
