@@ -600,7 +600,6 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                         workflow:       selected_wf.read().clone(),
                         source_text:    source_text.read().clone(),
                         analysis:       wf_analysis.read().clone(),
-                        workspace_link: workspace_link.clone(),
                         source_path:    selected_wf.read().as_ref().map(|name| {
                             workflows::resolve_logic_apps_dir(&dir)
                                 .join(name).join("workflow.json")
