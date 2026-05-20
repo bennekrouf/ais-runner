@@ -7,21 +7,27 @@ use crate::services::{
 };
 
 fn fmt_az_error(e: &AzError) -> String {
-    if let AzError::Other(msg) = e {
-        if msg.contains("AuthorizationFailed") {
-            let user = msg.split("client '").nth(1)
-                .and_then(|s| s.split("' with").next())
-                .unwrap_or("your account");
-            let site = msg.split("/sites/").nth(1)
-                .and_then(|s| s.split(['\'', '"', ' ', '\\']).next())
-                .unwrap_or("the Logic App");
-            return format!(
-                "⛔ {user} is not authorized to read workflows on {site}. \
-                Activate your PIM role, then click 🔐 Re-login."
-            );
+    match e {
+        AzError::NotLoggedIn => {
+            "Not signed in to Azure — click 🔐 Re-login to authenticate. \
+             Local workflows work without Azure login.".into()
+        }
+        AzError::Other(msg) => {
+            if msg.contains("AuthorizationFailed") {
+                let user = msg.split("client '").nth(1)
+                    .and_then(|s| s.split("' with").next())
+                    .unwrap_or("your account");
+                let site = msg.split("/sites/").nth(1)
+                    .and_then(|s| s.split(['\'', '"', ' ', '\\']).next())
+                    .unwrap_or("the Logic App");
+                return format!(
+                    "⛔ {user} is not authorized to read workflows on {site}. \
+                    Activate your PIM role, then click 🔐 Re-login."
+                );
+            }
+            format!("Error: {msg}")
         }
     }
-    format!("Error: {:?}", e)
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -192,6 +198,10 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                             });
                         }
                     }
+                    Err(azure_cli::AzError::NotLoggedIn) => status.set(Some(
+                        "Not signed in to Azure — click 🔐 Re-login to load workflows. \
+                         Local workflows work without Azure login.".into()
+                    )),
                     Err(e) => status.set(Some(fmt_az_error(&e))),
                 }
             });
@@ -319,6 +329,11 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                         Some(first) => fw(first),
                         None        => status.set(Some("No Logic Apps Standard sites found in this resource group.".into())),
                     },
+                    // NotLoggedIn on auto-fetch: show the hint but don't treat it as a hard error
+                    Err(azure_cli::AzError::NotLoggedIn) => status.set(Some(
+                        "Not signed in to Azure — click 🔐 Re-login to load workflows. \
+                         Local workflows work without Azure login.".into()
+                    )),
                     Err(e) => status.set(Some(fmt_az_error(&e))),
                 }
             });

@@ -92,20 +92,6 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     // ── Shared status bar ────────────────────────────────────────────────────
     let mut status: Signal<Option<(String, bool)>> = use_signal(|| None);
 
-    // Re-check az login whenever the panel opens.
-    use_effect({
-        let is_open   = props.is_open;
-        let mut az_st = props.az_status;
-        move || {
-            if !*is_open.read() { return; }
-            spawn(async move {
-                let result = tokio::task::spawn_blocking(azure_cli::check_login)
-                    .await
-                    .unwrap_or(Err(azure_cli::AzError::Other("check failed".into())));
-                az_st.set(Some(result));
-            });
-        }
-    });
 
     let dir = props.logic_apps_dir.clone();
 
