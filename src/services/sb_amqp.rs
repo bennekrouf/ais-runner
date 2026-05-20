@@ -1,5 +1,6 @@
 use fe2o3_amqp::{Connection, Session, Sender, Receiver};
 use fe2o3_amqp::link::receiver::CreditMode;
+use fe2o3_amqp_types::messaging::{Message, Properties, Data};
 
 /// Returns true if the AMQP broker at `host:5672` is ready to negotiate.
 /// Used during emulator startup to distinguish "port open" from "broker ready".
@@ -110,8 +111,19 @@ async fn try_send(url: &str, queue: &str, body: &str) -> Result<(), String> {
         .await
         .map_err(|e| format!("AMQP attach to queue '{}': {}", queue, e))?;
 
+    // Build a proper AMQP message with content_type = application/json.
+    // Without this, the SB trigger base64-encodes the body in contentData
+    // instead of delivering it as a parsed JSON object.
+    let props = Properties::builder()
+        .content_type("application/json")
+        .build();
+    let msg = Message::builder()
+        .properties(props)
+        .data(Data::from(body.as_bytes().to_vec()))
+        .build();
+
     let outcome = sender
-        .send(body)
+        .send(msg)
         .await
         .map_err(|e| format!("AMQP send: {}", e))?;
 

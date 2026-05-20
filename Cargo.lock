@@ -39,6 +39,7 @@ dependencies = [
  "dioxus",
  "dirs 5.0.1",
  "fe2o3-amqp",
+ "fe2o3-amqp-types",
  "hmac",
  "indexmap 2.14.0",
  "liquid",

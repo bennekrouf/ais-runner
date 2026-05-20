@@ -356,6 +356,35 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
         }
     });
 
+    // ── Auto-refresh run detail for the selected workflow ─────────────────
+    // Polls every 2 s when a workflow is selected.  Lightweight: the HTTP
+    // call to list_runs is a single localhost request to the func runtime.
+    // Skips when poll_for_run is already active for this workflow.
+    use_effect(move || {
+        spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                let wf = match selected_wf.read().clone() {
+                    Some(w) => w,
+                    None => continue,
+                };
+                // Skip if the poll_for_run loop is already driving updates
+                if running_wfs.read().contains(&wf) { continue; }
+                // Fetch fresh data
+                if let Ok(r) = workflows::list_runs(&wf).await {
+                    let cleared_at = cleared_wfs.read().get(&wf).cloned();
+                    let r = crate::utils::filter_cleared(r, cleared_at.as_deref());
+                    if let Some(latest) = r.first() {
+                        if let Ok(a) = workflows::list_actions(&wf, &latest.name).await {
+                            actions.set(a);
+                        }
+                    }
+                    runs.set(r);
+                }
+            }
+        });
+    });
+
     // ══ View ═══════════════════════════════════════════════════════════════
     let dir_label = dir.clone();
 

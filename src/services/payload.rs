@@ -78,9 +78,11 @@ fn find_trigger_body_schema(actions: &serde_json::Map<String, Value>) -> Option<
             let content = action["inputs"]["content"].as_str().unwrap_or("");
             // triggerBody/triggerOutputs = HTTP/Recurrence trigger
             // contentData = Service Bus message body (item()?['contentData'])
+            // items('...') = inside a For_each that iterates over triggerBody()
             if content.contains("triggerBody")
                 || content.contains("triggerOutputs")
                 || content.contains("contentData")
+                || content.contains("items(")
             {
                 let schema = &action["inputs"]["schema"];
                 if schema.is_object() && !schema.as_object()?.is_empty() {

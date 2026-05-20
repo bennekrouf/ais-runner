@@ -266,9 +266,9 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     let mut sb_snap:      Signal<Option<(Vec<String>, Vec<LogLine>)>> = use_signal(|| None);
 
     // ── Per-tab text filter ───────────────────────────────────────────────────
-    let mut console_filter: Signal<String> = use_signal(String::new);
-    let mut az_filter:      Signal<String> = use_signal(String::new);
-    let mut sb_filter:      Signal<String> = use_signal(String::new);
+    let console_filter: Signal<String> = use_signal(String::new);
+    let az_filter:      Signal<String> = use_signal(String::new);
+    let sb_filter:      Signal<String> = use_signal(String::new);
 
     // ── Auto-scroll: only when not paused ───────────────────────────────────
     use_effect(move || {
