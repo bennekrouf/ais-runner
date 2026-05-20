@@ -24,16 +24,19 @@ fi
 
 info "Detected distro family: $DISTRO"
 
-# ── WebKitGTK (runtime dependency for ais-runner) ────────────────────────────
+# ── Runtime dependencies (WebKitGTK + libxdo) ────────────────────────────────
 case "$DISTRO" in
   debian)
-    if ! dpkg -l libwebkit2gtk-4.1-0 &>/dev/null && ! dpkg -l libwebkit2gtk-4.0-0 &>/dev/null; then
-      info "Installing WebKitGTK runtime..."
+    PKGS=()
+    dpkg -l libwebkit2gtk-4.1-0 &>/dev/null || dpkg -l libwebkit2gtk-4.0-0 &>/dev/null || PKGS+=(libwebkit2gtk-4.1-0)
+    dpkg -l libxdo3 &>/dev/null || PKGS+=(libxdo3)
+    if [ ${#PKGS[@]} -gt 0 ]; then
+      info "Installing runtime libs: ${PKGS[*]}"
       apt-get update -qq
-      apt-get install -y libwebkit2gtk-4.1-0 2>/dev/null || apt-get install -y libwebkit2gtk-4.0-0
-      ok "WebKitGTK installed"
+      apt-get install -y "${PKGS[@]}" 2>/dev/null || apt-get install -y libwebkit2gtk-4.0-0 libxdo3
+      ok "Runtime libs installed"
     else
-      skip "WebKitGTK already installed"
+      skip "Runtime libs already installed"
     fi
     ;;
   fedora)
@@ -44,6 +47,8 @@ case "$DISTRO" in
     else
       skip "WebKitGTK already installed"
     fi
+    # xdotool provides libxdo on Fedora
+    rpm -q xdotool &>/dev/null || dnf install -y xdotool
     ;;
   arch)
     if ! pacman -Qi webkit2gtk-4.1 &>/dev/null && ! pacman -Qi webkit2gtk &>/dev/null; then
@@ -53,6 +58,7 @@ case "$DISTRO" in
     else
       skip "WebKitGTK already installed"
     fi
+    pacman -Qi xdotool &>/dev/null || pacman -S --noconfirm xdotool
     ;;
 esac
 
