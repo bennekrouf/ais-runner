@@ -154,15 +154,6 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
                                             on_open.call(dir);
                                         } else {
                                             picked_dir.set(Some(dir));
-                                            fetching.set(true);
-                                            let res = tokio::task::spawn_blocking(|| {
-                                                azure_sync::list_logic_app_sites(None)
-                                            }).await.unwrap_or(Err(azure_cli::AzError::Other("Task failed".into())));
-                                            fetching.set(false);
-                                            match res {
-                                                Ok(list) => rg_list.set(list),
-                                                Err(e)   => error.set(Some(format!("Azure error: {:?}", e))),
-                                            }
                                         }
                                     }
                                 });

@@ -100,6 +100,11 @@ pub fn initialize_from_template(dir: &str) -> Result<(), String> {
 pub fn initialize_default(dir: &str) -> Result<(), String> {
     let p = crate::services::workflows::resolve_logic_apps_dir(dir);
 
+    // Ensure the target directory exists
+    if !p.exists() {
+        fs::create_dir_all(&p).map_err(|e| format!("Cannot create {}: {}", p.display(), e))?;
+    }
+
     // 1. local.settings.json
     let settings_path = p.join("local.settings.json");
     let settings_content = r#"{
