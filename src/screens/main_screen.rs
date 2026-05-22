@@ -13,6 +13,7 @@ use crate::components::{
     db_panel::DbPanel,
     azure_panel::AzurePanel,
     devops_panel::DevOpsPanel,
+    graph_panel::GraphPanel,
 };
 use crate::services::{
     azure_cli, azure_sync, blob_check, config, connection_diag, cosmos_check,
@@ -531,6 +532,12 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                         onclick: move |_| current_view.set("DevOps".into()),
                         "DevOps"
                     }
+                    button {
+                        class: if *current_view.read() == "Graph" { "view-btn active" } else { "view-btn" },
+                        title: "Workflow chain graph — interactive D3.js visualization",
+                        onclick: move |_| current_view.set("Graph".into()),
+                        "Graph"
+                    }
                 }
 
                 // ── panel toggles: Connections + Azure ────────────────────────
@@ -595,6 +602,10 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                 // DevOps — always mounted so signals (cache) survive tab switches
                 div { style: if *current_view.read() == "DevOps" { "display:contents" } else { "display:none" },
                     DevOpsPanel { logic_apps_dir: dir.clone() }
+                }
+                // Graph — chain visualization
+                div { style: if *current_view.read() == "Graph" { "display:contents" } else { "display:none" },
+                    GraphPanel { logic_apps_dir: dir.clone(), is_light: is_light }
                 }
                 // Workflows — always mounted; hidden when another view is active
                 div { style: if *current_view.read() == "Workflows" { "display:contents" } else { "display:none" },
@@ -843,6 +854,29 @@ fn setup_banner(
                         move |_| setup::handle_initialize_default(&dir, setup_status, log_lines, link.clone())
                     },
                     "Bootstrap Default Settings"
+                }
+            }
+        },
+        setup_manager::SetupStatus::RemoteStorage => rsx! {
+            div { class: "setup-banner",
+                span { "⚠ AzureWebJobsStorage points to a remote Azure account — func cannot start locally." }
+                button {
+                    class: "setup-banner-btn",
+                    onclick: {
+                        let dir = dir.clone();
+                        move |_| {
+                            let d  = dir.clone();
+                            let d2 = dir.clone();
+                            let mut push = make_push(log_lines);
+                            spawn(async move {
+                                match tokio::task::spawn_blocking(move || setup_manager::fix_remote_storage(&d)).await.unwrap_or(Err("task panicked".into())) {
+                                    Ok(_)  => { push("✅ AzureWebJobsStorage → UseDevelopmentStorage=true".into(), LogLevel::Ok); ss.set(setup_manager::check_setup(&d2)); }
+                                    Err(e) => push(format!("Failed: {}", e), LogLevel::Error),
+                                }
+                            });
+                        }
+                    },
+                    "Fix → UseDevelopmentStorage=true"
                 }
             }
         },

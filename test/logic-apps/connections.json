@@ -1,22 +1,22 @@
 {
   "serviceProviderConnections": {
     "AzureBlob": {
+      "displayName": "AzureBlob",
       "parameterValues": {
         "connectionString": "@appsetting('AzureWebJobsStorage')"
       },
       "serviceProvider": {
         "id": "/serviceProviders/AzureBlob"
-      },
-      "displayName": "AzureBlob"
+      }
     },
     "serviceBus": {
+      "displayName": "serviceBus",
       "parameterValues": {
         "connectionString": "@appsetting('SERVICE_BUS_CONNECTION_STRING')"
       },
       "serviceProvider": {
         "id": "/serviceProviders/serviceBus"
-      },
-      "displayName": "serviceBus"
+      }
     }
   }
 }

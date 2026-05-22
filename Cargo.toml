@@ -25,6 +25,7 @@ fe2o3-amqp       = "0.14"
 fe2o3-amqp-types = "0.14"
 liquid      = "0.26"
 liquid-core = "0.26"
+ais-chain   = { path = "../ais-chain" }
 
 [features]
 default = []

@@ -9,6 +9,9 @@ use crate::services::{
 pub enum SetupStatus {
     MissingSettings,
     NeedsInitialization,
+    /// AzureWebJobsStorage points to a remote Azure storage account instead of
+    /// UseDevelopmentStorage=true — func will fail to start locally.
+    RemoteStorage,
     NeedsConfiguration(usize),
     MissingKeys(Vec<String>),
     Ready,
@@ -30,6 +33,21 @@ pub fn check_setup(dir: &str) -> SetupStatus {
     let settings_text = fs::read_to_string(&settings_path).unwrap_or_default();
     let settings: serde_json::Value = serde_json::from_str(&settings_text).unwrap_or_default();
     let vals = settings["Values"].as_object();
+
+    // Auto-fix AzureWebJobsStorage pointing to a remote account — this blocks func start locally
+    if let Some(v) = vals {
+        if let Some(aws) = v.get("AzureWebJobsStorage").and_then(|v| v.as_str()) {
+            if !aws.is_empty()
+                && aws != "UseDevelopmentStorage=true"
+                && (aws.contains("core.windows.net") || aws.contains("AccountName="))
+            {
+                if fix_remote_storage(dir).is_ok() {
+                    return check_setup(dir); // re-check with corrected file
+                }
+                return SetupStatus::RemoteStorage; // fix failed, show banner
+            }
+        }
+    }
 
     let mut missing_count = 0;
     if let Some(v) = vals {
@@ -82,6 +100,20 @@ pub fn check_setup(dir: &str) -> SetupStatus {
     }
 
     SetupStatus::Ready
+}
+
+/// Switch AzureWebJobsStorage from a remote connection string to UseDevelopmentStorage=true.
+pub fn fix_remote_storage(dir: &str) -> Result<(), String> {
+    let p = crate::services::workflows::resolve_logic_apps_dir(dir);
+    let settings_path = p.join("local.settings.json");
+    let text = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
+    let mut json: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    if let Some(vals) = json.get_mut("Values").and_then(|v| v.as_object_mut()) {
+        vals.insert("AzureWebJobsStorage".into(), serde_json::json!("UseDevelopmentStorage=true"));
+    }
+    let out = serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?;
+    fs::write(&settings_path, out).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn initialize_from_template(dir: &str) -> Result<(), String> {

@@ -14,6 +14,35 @@ pub fn handle_start(
     state.set(ServiceState::Starting);
 
     spawn(async move {
+        // ── kill stale azurite if port 10000 is already taken ────────────
+        if tokio::net::TcpStream::connect("127.0.0.1:10000").await.is_ok() {
+            make_push(log_lines)(
+                "Port 10000 already in use — killing stale azurite process…".into(),
+                LogLevel::Warn,
+            );
+            tokio::task::spawn_blocking(|| {
+                // pkill is best-effort; ignore errors
+                let _ = std::process::Command::new("pkill").args(["-f", "azurite"]).status();
+            }).await.ok();
+            // Wait for port to be freed
+            let mut freed = false;
+            for _ in 0..10 {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                if tokio::net::TcpStream::connect("127.0.0.1:10000").await.is_err() {
+                    freed = true;
+                    break;
+                }
+            }
+            if !freed {
+                state.set(ServiceState::Stopped);
+                make_push(log_lines)(
+                    "⚠ Port 10000 still in use after killing azurite. Another process may be using it.".into(),
+                    LogLevel::Error,
+                );
+                return;
+            }
+        }
+
         // ── resolve paths + create dir on a blocking thread ──────────────
         let (az_bin, az_dir_s, az_log_s) = tokio::task::spawn_blocking(|| {
             let bin   = runtime_manager::resolve_tool("azurite");
