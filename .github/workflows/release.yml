@@ -178,20 +178,14 @@ jobs:
     if: always() && !failure() && !cancelled()
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            arch:   x86_64
-          - target: aarch64-unknown-linux-gnu
-            arch:   arm64
+    # x86_64 only — cross-compiling GTK/WebKit for ARM64 Linux requires a full
+    # ARM64 sysroot which is impractical on ubuntu-latest runners.
+    # macOS Apple Silicon users are covered by the build-mac job (aarch64-apple-darwin).
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -200,7 +194,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: release-linux-${{ matrix.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
+          key: release-linux-x86_64-cargo-${{ hashFiles('Cargo.lock') }}
 
       - name: Install build dependencies
         run: |
@@ -211,20 +205,17 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libxdo-dev \
-            pkg-config \
-            ${{ matrix.arch == 'arm64' && 'gcc-aarch64-linux-gnu' || '' }}
+            pkg-config
 
       - name: Build
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.arch == 'arm64' && 'aarch64-linux-gnu-gcc' || '' }}
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target x86_64-unknown-linux-gnu
 
       - name: Package tar.gz
         run: |
-          NAME="ais-runner-linux-${{ matrix.arch }}"
+          NAME="ais-runner-linux-x86_64"
           DIST="dist/$NAME"
           mkdir -p "$DIST"
-          cp target/${{ matrix.target }}/release/ais-runner "$DIST/"
+          cp target/x86_64-unknown-linux-gnu/release/ais-runner "$DIST/"
           cp scripts/setup-linux.sh "$DIST/"
           cp README.md "$DIST/"
           chmod +x "$DIST/setup-linux.sh"
@@ -235,10 +226,10 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ais-runner-linux-${{ matrix.arch }}
+          name: ais-runner-linux-x86_64
           path: |
-            ais-runner-linux-${{ matrix.arch }}.tar.gz
-            ais-runner-linux-${{ matrix.arch }}.tar.gz.sha256
+            ais-runner-linux-x86_64.tar.gz
+            ais-runner-linux-x86_64.tar.gz.sha256
 
   update-tap:
     needs: [build-mac, build-windows]
