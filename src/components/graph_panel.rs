@@ -178,19 +178,19 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
                     }
                     div { style: "position:absolute; bottom:16px; left:16px; background:{theme.panel_bg}; border:1px solid {theme.border}; border-radius:8px; padding:12px 16px; color:{theme.text_muted}; font-size:11px; z-index:5;",
                         div { style: "margin:4px 0; display:flex; align-items:center; gap:8px;",
-                            span { style: "width:12px; height:12px; border-radius:50%; display:inline-block; background:{theme.node_http};" }
+                            span { style: "width:12px; height:12px; border-radius:50%; display:inline-block; background:{theme.node_fill_http}; border:2px solid {theme.node_http}; box-sizing:border-box;" }
                             "HTTP trigger"
                         }
                         div { style: "margin:4px 0; display:flex; align-items:center; gap:8px;",
-                            span { style: "width:12px; height:12px; border-radius:50%; display:inline-block; background:{theme.node_queue};" }
+                            span { style: "width:12px; height:12px; border-radius:50%; display:inline-block; background:{theme.node_fill_queue}; border:2px solid {theme.node_queue}; box-sizing:border-box;" }
                             "Queue trigger"
                         }
                         div { style: "margin:4px 0; display:flex; align-items:center; gap:8px;",
-                            span { style: "width:12px; height:12px; border-radius:50%; display:inline-block; background:{theme.node_blob};" }
+                            span { style: "width:12px; height:12px; border-radius:50%; display:inline-block; background:{theme.node_fill_blob}; border:2px solid {theme.node_blob}; box-sizing:border-box;" }
                             "Blob trigger"
                         }
                         div { style: "margin:4px 0; display:flex; align-items:center; gap:8px;",
-                            span { style: "width:12px; height:12px; border-radius:50%; display:inline-block; background:{theme.node_recurrence};" }
+                            span { style: "width:12px; height:12px; border-radius:50%; display:inline-block; background:{theme.node_fill_recurrence}; border:2px solid {theme.node_recurrence}; box-sizing:border-box;" }
                             "Recurrence"
                         }
                         div { style: "margin:4px 0; display:flex; align-items:center; gap:8px;",
