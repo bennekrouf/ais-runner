@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 use std::collections::HashSet;
 use std::path::Path;
+use std::collections::HashMap;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct GraphPanelProps {
@@ -30,8 +31,12 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
     let dir = props.logic_apps_dir.clone();
     let is_light = props.is_light;
     let graph_data = use_signal(|| Option::<GraphData>::None);
-    let mut selected_chain = use_signal(|| "All".to_string());
-    let mut show_all_pills = use_signal(|| false);
+    let mut selected_chain  = use_signal(|| "All".to_string());
+    let mut show_all_pills  = use_signal(|| false);
+    // Excluded nodes — empty means all are visible (all included by default)
+    let mut excluded_nodes: Signal<HashSet<String>> = use_signal(HashSet::new);
+    let mut filter_open     = use_signal(|| false);
+    let mut filter_search   = use_signal(String::new);
 
     use_effect({
         let dir = dir.clone();
@@ -69,30 +74,38 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
             // Clone data for the effect closure
             let eff_data = data.clone();
             use_effect(move || {
-                // Read signals inside effect so Dioxus tracks them as dependencies
-                let sel = selected_chain.read().clone();
-                let light = *is_light.read();
-                let theme = Theme::from_light(light);
+                let sel      = selected_chain.read().clone();
+                let light    = *is_light.read();
+                let excluded = excluded_nodes.read().clone();
+                let theme    = Theme::from_light(light);
 
-                let (filtered_nodes, filtered_edges) = if sel == "All" {
-                    (eff_data.nodes_json.clone(), eff_data.edges_json.clone())
+                // Step 1 — chain filter: which node IDs are in the selected chain?
+                let chain_ids: HashSet<String> = if sel == "All" {
+                    eff_data.node_objects.iter().map(|(id, _)| id.clone()).collect()
                 } else if let Some(chain) = eff_data.chains.iter().find(|c| c.label == sel) {
-                    let wfs = &chain.workflows;
-                    let nodes: Vec<&str> = eff_data.node_objects.iter()
-                        .filter(|(id, _)| wfs.contains(id))
-                        .map(|(_, json)| json.as_str())
-                        .collect();
-                    let edges: Vec<&str> = eff_data.edge_objects.iter()
-                        .filter(|(from, to, _)| wfs.contains(from) && wfs.contains(to))
-                        .map(|(_, _, json)| json.as_str())
-                        .collect();
-                    (format!("[{}]", nodes.join(",")), format!("[{}]", edges.join(",")))
+                    chain.workflows.clone()
                 } else {
-                    (eff_data.nodes_json.clone(), eff_data.edges_json.clone())
+                    eff_data.node_objects.iter().map(|(id, _)| id.clone()).collect()
                 };
 
-                let js = build_d3_script(&filtered_nodes, &filtered_edges, &theme);
-                document::eval(&js);
+                // Step 2 — exclusion filter
+                let visible: HashSet<&str> = chain_ids.iter()
+                    .filter(|id| !excluded.contains(*id))
+                    .map(|s| s.as_str())
+                    .collect();
+
+                let nodes: Vec<&str> = eff_data.node_objects.iter()
+                    .filter(|(id, _)| visible.contains(id.as_str()))
+                    .map(|(_, json)| json.as_str())
+                    .collect();
+                let edges: Vec<&str> = eff_data.edge_objects.iter()
+                    .filter(|(from, to, _)| visible.contains(from.as_str()) && visible.contains(to.as_str()))
+                    .map(|(_, _, json)| json.as_str())
+                    .collect();
+
+                let fn_str = format!("[{}]", nodes.join(","));
+                let fe_str = format!("[{}]", edges.join(","));
+                document::eval(&build_d3_script(&fn_str, &fe_str, &theme));
             });
 
             let chains = data.chains.clone();
@@ -107,6 +120,23 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
                         // Title
                         span { style: "color:{theme.accent}; font-size:14px; font-weight:600; white-space:nowrap; margin-right:4px;",
                             "ais-chain"
+                        }
+                        // ── Filter toggle button ──────────────────────────
+                        {
+                            let excl_count = excluded_nodes.read().len();
+                            let open = *filter_open.read();
+                            let btn_bg  = if open || excl_count > 0 { theme.accent } else { "transparent" };
+                            let btn_col = if open || excl_count > 0 {
+                                if light { "#fff" } else { "#0d1117" }
+                            } else { theme.text_muted };
+                            rsx! {
+                                button {
+                                    title: "Show / hide nodes",
+                                    style: "padding:2px 9px; font-size:11px; font-weight:500; border:1px solid {theme.border}; background:{btn_bg}; color:{btn_col}; cursor:pointer; border-radius:10px; font-family:inherit; line-height:1.3; flex-shrink:0;",
+                                    onclick: move |_| filter_open.set(!filter_open()),
+                                    if excl_count > 0 { "⊞ Filter ({excl_count} hidden)" } else { "⊞ Filter" }
+                                }
+                            }
                         }
                         // Pills
                         {
@@ -206,6 +236,139 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
                             "Invoke (child)"
                         }
                     }
+                    // ── Filter panel (floating, top-right) ───────────────
+                    if *filter_open.read() {
+                        if let Some(gd) = graph_data.read().as_ref() {
+                            {
+                                let all_nodes: Vec<String> = {
+                                    let mut v: Vec<String> = gd.node_objects.iter()
+                                        .map(|(id, _)| id.clone()).collect();
+                                    v.sort();
+                                    v
+                                };
+                                // Build group map for trigger-type dots
+                                let group_map: HashMap<String, String> = gd.node_objects.iter()
+                                    .filter_map(|(id, json)| {
+                                        let g = json.split(r#""group": ""#).nth(1)?
+                                            .split('"').next()?.to_string();
+                                        Some((id.clone(), g))
+                                    }).collect();
+
+                                let search = filter_search.read().to_lowercase();
+                                let visible_nodes: Vec<String> = all_nodes.iter()
+                                    .filter(|n| search.is_empty() || n.to_lowercase().contains(&search))
+                                    .cloned().collect();
+
+                                let excl_count = excluded_nodes.read().len();
+                                let total = all_nodes.len();
+
+                                let dot_color = |group: &str| match group {
+                                    "http"       => theme.node_http,
+                                    "queue"      => theme.node_queue,
+                                    "blob"       => theme.node_blob,
+                                    "recurrence" => theme.node_recurrence,
+                                    _            => theme.node_generic,
+                                };
+
+                                rsx! {
+                                    div {
+                                        style: "position:absolute; top:44px; left:16px; z-index:20; \
+                                                background:{theme.panel_bg}; border:1px solid {theme.border}; \
+                                                border-radius:10px; width:260px; max-height:420px; \
+                                                display:flex; flex-direction:column; \
+                                                box-shadow: 0 4px 24px rgba(0,0,0,0.25);",
+
+                                        // Header
+                                        div {
+                                            style: "padding:10px 12px 8px; border-bottom:1px solid {theme.border}; display:flex; align-items:center; justify-content:space-between; flex-shrink:0;",
+                                            span { style: "font-size:12px; font-weight:600; color:{theme.text};",
+                                                "{total} nodes"
+                                                if excl_count > 0 { " · {excl_count} hidden" }
+                                            }
+                                            div { style: "display:flex; gap:6px;",
+                                                if excl_count > 0 {
+                                                    button {
+                                                        style: "font-size:10px; color:{theme.accent}; background:none; border:none; cursor:pointer; padding:0; font-family:inherit;",
+                                                        onclick: move |_| excluded_nodes.write().clear(),
+                                                        "Show all"
+                                                    }
+                                                }
+                                                button {
+                                                    style: "font-size:10px; color:{theme.text_muted}; background:none; border:none; cursor:pointer; padding:0; font-family:inherit;",
+                                                    onclick: {
+                                                        let nodes = all_nodes.clone();
+                                                        move |_| {
+                                                            let mut ex = excluded_nodes.write();
+                                                            if ex.len() == nodes.len() {
+                                                                ex.clear();
+                                                            } else {
+                                                                *ex = nodes.iter().cloned().collect();
+                                                            }
+                                                        }
+                                                    },
+                                                    if excl_count == total { "Show all" } else { "Hide all" }
+                                                }
+                                            }
+                                        }
+
+                                        // Search
+                                        div { style: "padding:7px 10px; flex-shrink:0;",
+                                            input {
+                                                style: "width:100%; box-sizing:border-box; background:{theme.bg}; border:1px solid {theme.border}; border-radius:6px; padding:4px 8px; font-size:11px; color:{theme.text}; font-family:inherit; outline:none;",
+                                                placeholder: "Search nodes…",
+                                                value: "{filter_search}",
+                                                oninput: move |e| filter_search.set(e.value()),
+                                            }
+                                        }
+
+                                        // Node list
+                                        div { style: "overflow-y:auto; flex:1; padding:4px 0;",
+                                            for node_id in visible_nodes.iter() {
+                                                {
+                                                    let nid    = node_id.clone();
+                                                    let nid2   = nid.clone();
+                                                    let is_vis = !excluded_nodes.read().contains(&nid);
+                                                    let grp    = group_map.get(&nid).map(|s| s.as_str()).unwrap_or("generic");
+                                                    let dot_c  = dot_color(grp);
+                                                    let row_bg = if is_vis { "transparent" } else {
+                                                        if light { "rgba(0,0,0,0.04)" } else { "rgba(255,255,255,0.03)" }
+                                                    };
+                                                    let lbl_op = if is_vis { "1" } else { "0.4" };
+                                                    rsx! {
+                                                        label {
+                                                            key: "{nid}",
+                                                            style: "display:flex; align-items:center; gap:8px; padding:4px 12px; cursor:pointer; background:{row_bg}; user-select:none;",
+                                                            input {
+                                                                r#type: "checkbox",
+                                                                checked: is_vis,
+                                                                style: "cursor:pointer; flex-shrink:0;",
+                                                                onchange: move |e| {
+                                                                    let mut ex = excluded_nodes.write();
+                                                                    if e.checked() { ex.remove(&nid2); }
+                                                                    else           { ex.insert(nid2.clone()); }
+                                                                },
+                                                            }
+                                                            span { style: "width:8px; height:8px; border-radius:50%; background:{dot_c}; flex-shrink:0;" }
+                                                            span {
+                                                                style: "font-size:11px; color:{theme.text}; opacity:{lbl_op}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
+                                                                "{nid}"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if visible_nodes.is_empty() {
+                                                div { style: "padding:12px; font-size:11px; color:{theme.text_muted}; text-align:center;",
+                                                    "No matches"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     svg { id: "graph-svg", style: "width:100%; height:100%;" }
                     div { id: "graph-tooltip",
                         style: "position:fixed; background:{theme.panel_bg}; border:1px solid {theme.border}; color:{theme.text}; padding:8px 12px; border-radius:6px; font-size:12px; pointer-events:none; z-index:10; display:none;",
