@@ -1,17 +1,10 @@
 # AIS Runner
 
-A desktop tool for running and testing **Azure Logic Apps Standard** workflows locally, built with [Dioxus](https://dioxuslabs.com/) (Rust).
+A desktop tool for developing and testing **Azure Logic Apps Standard** workflows locally — without pushing to Azure.
 
-## What it does
+Built with [Dioxus](https://dioxuslabs.com/) (Rust) · macOS · Windows · Linux
 
-- **Start / stop** Azurite and `func start` from a single UI
-- **Browse** all 100+ workflows in your `logic_apps/` folder, with health status and trigger type
-- **Filter** the workflow list by name
-- **View source** (`workflow.json`) for any workflow with one click
-- **Run** any workflow with an auto-generated JSON payload (derived from the trigger schema), editable before sending
-- **Live polling** — action timeline updates in real time until the run completes
-- **Settings editor** — edit `local.settings.json` key-value pairs, with Azure CLI integration to fetch Service Bus connection strings and browse subscriptions/namespaces
-- **Tool check** — warns on launch if `func`, `azurite`, `az`, or `node` are missing from PATH
+[![Release](https://img.shields.io/github/v/release/Bennekrouf/ais-runner?label=latest)](https://github.com/Bennekrouf/ais-runner/releases/latest)
 
 ---
 
@@ -24,33 +17,94 @@ brew tap Bennekrouf/aisrunner
 brew install aisrunner
 ```
 
-This installs `ais-runner` plus its dependencies (Node.js, Azure CLI, Azurite, Azure Functions Core Tools).
+Or manually:
+
+```bash
+curl -L https://github.com/Bennekrouf/ais-runner/releases/latest/download/ais-runner-macos-arm64.tar.gz | tar xz
+cd ais-runner-macos-arm64
+./setup-mac.sh && ./ais-runner
+```
 
 ### Windows
 
-1. Download `ais-runner-setup.exe` from the [latest release](https://github.com/Bennekrouf/ais-runner/releases/latest)
-2. Run it — the wizard installs the app and optionally installs all runtime dependencies (Node.js ≥20, Azure CLI, Azurite, Azure Functions Core Tools) in one step
+Download [`ais-runner-setup.exe`](https://github.com/Bennekrouf/ais-runner/releases/latest/download/ais-runner-setup.exe) and run it.  
+The wizard installs the app and optionally installs all runtime dependencies in one step.
+
+### Linux (x86\_64)
+
+```bash
+curl -L https://github.com/Bennekrouf/ais-runner/releases/latest/download/ais-runner-linux-x86_64.tar.gz | tar xz
+cd ais-runner-linux-x86_64
+sudo ./setup-linux.sh && ./ais-runner
+```
+
+`setup-linux.sh` detects your distro (Debian/Ubuntu, Fedora, Arch) and installs WebKitGTK, Node.js 20, Azure CLI, Azurite, and Azure Functions Core Tools.
+
+---
+
+## What it does
+
+### Workflows
+
+- Browse all workflows in your `logic_apps/` folder, with health status and trigger type chips
+- Filter by name, navigate with ↑ / ↓ arrow keys
+- **Analysis bar** — see trigger type, Service Bus queues read/written, blob containers, HTTP calls, and Liquid maps
+- **Source tab** — view `workflow.json`, copy to clipboard or open in VS Code / system editor
+- **Run tab** — trigger any workflow with an auto-generated JSON payload; live action timeline updates in real time
+- **Logs tab** — filter app logs to only the selected workflow
+
+### Services (toolbar)
+
+| Button | What it does |
+|--------|-------------|
+| **Azurite** | Start / stop / reset the local storage emulator |
+| **SB Emulator** | Start / stop / reset the Azure Service Bus Docker emulator |
+| **▶ func** | `func start` for Node.js Logic Apps (with pre-flight fixes: package.json, connections.json ARM syntax, stub missing settings) |
+| **☕ Java** | `mvn package -DskipTests` then `mvn azure-functions:run` for Java function apps |
+
+### Connections tab
+
+- **Service Bus** — list queues with message counts, dead-letter counts, and send test messages
+- **SQL** — list detected SQL connections
+- **Cosmos DB** — test Cosmos endpoints (emulator or Azure)
+- **Blob** — browse containers, upload/delete blobs
+- **Maps** — list `.liquid` / `.xslt` templates, see which workflows use each, test with auto-suggested input, choose DotLiquid or Liquid engine
+- **SFTP** — list detected SFTP connections
+
+### DevOps tab
+
+Connects to Azure DevOps via the `az pipelines` CLI:
+
+- Left panel: build pipelines grouped by folder
+- Right panel: **unified grid** — rows = build runs, columns = environments from the linked release definition
+  - 🟢 green = currently deployed in that environment
+  - `＋` = click to create a new release
+  - `—` = superseded, click to re-deploy (rollback)
+- **▶ Build** — pick any branch from the repo and queue a new build
+- **Deployed only** filter to focus on what's live
+
+### Logs
+
+| Tab | Content |
+|-----|---------|
+| **Console** | func / Java output; SB noise, Maven progress, .NET stack frames filtered out |
+| **Azurite** | Azurite debug.log; 60 s poll cycles collapsed into a `📡 Polling: queue.name` banner |
+| **Service Bus** | SB Emulator Docker output with Windows Fabric noise filtered |
 
 ---
 
 ## Usage
 
 1. Launch `ais-runner`
-2. Select your `logic_apps/` folder
-3. The app starts Azurite and `func start`, then lists all discovered workflows
-4. Click any workflow to view its source, run it, or inspect its action timeline
+2. Select your platform folder (first open) or pick from recents
+3. Start **Azurite** then **▶ func** from the toolbar
+4. Click any workflow on the left to view, run, and inspect it
 
-Configuration is stored in:
-- **macOS:** `~/.config/ais-runner/config.json`
-- **Windows:** `%APPDATA%\ais-runner\config.json`
+Config is stored in `~/.config/ais-runner/config.json` (macOS/Linux) or `%APPDATA%\ais-runner\config.json` (Windows).
 
 ---
 
 ## Service Bus Emulator — known pitfalls
-
-The Azure Service Bus Emulator runs via Docker Compose. ais-runner generates `Config.json`
-automatically, but if you ever edit it by hand or use the emulator outside ais-runner, keep
-these rules in mind:
 
 ### 1. Namespace name must be exactly `sbemulatorns`
 
@@ -62,37 +116,23 @@ these rules in mind:
 ### 2. Logging key is `Logging`, not `LoggingConfig`
 
 ```json
-{ "Logging": { "Type": "Console" } }     ✅
-{ "LoggingConfig": { "Type": "console" } }  ❌  "Logging config cannot be null"
+{ "Logging": { "Type": "Console" } }        ✅
+{ "LoggingConfig": { "Type": "console" } }   ❌
 ```
 
-### 3. Do not include an empty `Topics` array
-
-Omit `Topics` entirely, or the emulator throws a `NullReferenceException` on startup.
+### 3. Do not include an empty `Topics` array — omit it entirely
 
 ### 4. "Ready" ≠ "AMQP broker ready"
 
-The port `:5672` opens as soon as the container network stack starts, but the AMQP
-broker needs SQL Edge to finish initialising first (10–30 s longer). Wait for the
-**"Service Bus emulator ready"** message in ais-runner before sending messages — it
-probes the actual AMQP handshake, not just the TCP port.
+Port `:5672` opens when the container starts, but the AMQP broker needs SQL Edge to finish initialising (10–30 s longer). Wait for **"Service Bus emulator ready"** in the console.
 
 ### 5. SB polling triggers fire on a 1-minute recurrence
 
-If your workflow uses `receiveQueueMessages` or `onNewMessagesFromQueueSession`, it
-polls every minute by default. ais-runner waits up to 75 s for a run to appear after
-you send a test message — do not restart before that window expires.
+`receiveQueueMessages` triggers poll every minute. ais-runner waits up to 75 s — don't restart before that window expires.
 
 ### 6. MSI connections do not work locally
 
-The Azure IMDS endpoint (`169.254.169.254`) does not exist on a developer machine.
-Click **⚙ Setup** in ais-runner to patch `connections.json` — it switches all
-`AzureBlob` connections from `ManagedServiceIdentity` to `connectionString`
-(pointing to `AzureWebJobsStorage = UseDevelopmentStorage=true`).
-
-Using a **separate connection string per blob connection** causes a
-`ListenerFactoryContext` DI conflict when two blob triggers share the same underlying
-storage account. All local blob connections must share the single `AzureWebJobsStorage` key.
+Use **Settings → Connections** to switch `AzureBlob` connections from `ManagedServiceIdentity` to `connectionString` (`UseDevelopmentStorage=true`).
 
 ---
 
@@ -100,77 +140,61 @@ storage account. All local blob connections must share the single `AzureWebJobsS
 
 ### Prerequisites
 
-| Tool | Platform | Install |
-|------|----------|---------|
-| **Rust** | all | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
-| **MSYS2 + MinGW-w64** | Windows | run `scripts\setup-windows-dev.ps1` — installs automatically |
-| **Dioxus CLI** | all (optional) | `cargo install dioxus-cli` |
+| Tool | Install |
+|------|---------|
+| **Rust** | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| **MSYS2 + MinGW-w64** (Windows) | `scripts\setup-windows-dev.ps1` |
 
 ### Build from source
 
-**macOS:**
 ```bash
 git clone https://github.com/Bennekrouf/ais-runner.git
 cd ais-runner
 cargo build --release
-./target/release/ais-runner
+./target/release/ais-runner   # macOS / Linux
 ```
 
-**Windows** (first time — sets up MSYS2/MinGW and builds in one step):
-```
-Right-click scripts\setup-windows-dev.ps1 → Run with PowerShell
-```
+Windows — after running `setup-windows-dev.ps1` once:
 
-Or manually after MSYS2 is installed:
 ```powershell
 cargo build --release
-# Copy WebView2Loader.dll next to the exe (required on first build)
 Copy-Item (Get-ChildItem target\release\build\webview2-com-sys-*\out\x64\WebView2Loader.dll | Select -First 1) target\release\
 .\target\release\ais-runner.exe
 ```
 
-### Project structure
+### Project layout
 
-| Path | Description |
-|------|-------------|
-| `src/main.rs` | App entry point and UI |
-| `src/utils.rs` | Helper functions |
-| `scripts/setup-mac.sh` | macOS dependency installer |
-| `scripts/setup-windows.ps1` | Windows dependency installer (also used by the graphical installer) |
-| `scripts/setup-windows-dev.ps1` | Windows developer build setup (MSYS2 + MinGW + cargo build) |
-| `installer/installer.iss` | Inno Setup script — produces `ais-runner-setup.exe` |
-| `.github/workflows/` | CI: Mac build, Windows build, release pipeline |
-
-### Release process
-
-Releases are fully automated. To publish a new version:
-
-```bash
-# 1. Bump version in Cargo.toml
-# 2. Commit and tag
-git tag v0.2.0
-git push origin v0.2.0
+```
+src/
+  components/   UI — workflow list, run detail, log panel, DevOps, Connections…
+  handlers/     Event handlers — func start, azurite, Java, workflow run…
+  screens/      Top-level screens — welcome, main
+  services/     Azure CLI wrappers, config, workflow parsing, analysis…
+crates/
+  ais-chain/    Workflow dependency graph (inlined local crate)
+scripts/
+  release.sh          Cut a release (bump version, tag, push → triggers CI)
+  setup-mac.sh        macOS runtime dependency installer
+  setup-linux.sh      Linux runtime dependency installer (Debian/Fedora/Arch)
+  setup-windows.ps1   Windows runtime dependency installer
+installer/
+  installer.iss       Inno Setup script → ais-runner-setup.exe
+.github/workflows/
+  release.yml         Build all platforms, publish release, update Homebrew tap
+  build-mac.yml       CI on push to main
+  build-windows.yml
 ```
 
-This triggers the release workflow which:
-- Builds macOS (arm64) and Windows binaries
-- Creates a GitHub Release with all assets
-- Auto-updates the Homebrew formula with the new sha256
-
-### Cross-compiling for Windows from macOS
-
-The easiest way is to push to GitHub and let the CI build it. For local builds:
+### Releasing
 
 ```bash
-# Option A: cargo cross (requires Docker)
-cargo install cross
-cross build --release --target x86_64-pc-windows-gnu
-
-# Option B: mingw (may have linker issues with WebView2)
-rustup target add x86_64-pc-windows-gnu
-brew install mingw-w64
-cargo build --release --target x86_64-pc-windows-gnu
+./scripts/release.sh            # auto-bump patch, confirm, push
+./scripts/release.sh --minor    # bump minor
+./scripts/release.sh 1.0.0      # explicit version
+./scripts/release.sh --dry-run  # preview only
 ```
+
+Pushing a `v*` tag triggers CI which builds all platforms, creates the GitHub Release, and auto-updates the [Homebrew tap](https://github.com/Bennekrouf/homebrew-aisrunner).
 
 ---
 
@@ -179,7 +203,10 @@ cargo build --release --target x86_64-pc-windows-gnu
 | | |
 |--|--|
 | UI framework | [Dioxus 0.6](https://dioxuslabs.com/) — Rust, renders via WebView |
-| HTTP client | [reqwest](https://github.com/seanmonstar/reqwest) |
 | Async runtime | [Tokio](https://tokio.rs/) |
-| JSON | [serde_json](https://github.com/serde-rs/json) |
+| HTTP client | [reqwest](https://github.com/seanmonstar/reqwest) |
+| JSON | [serde / serde_json](https://serde.rs/) |
+| Liquid templates | [liquid 0.26](https://github.com/cobalt-org/liquid-rust) |
+| AMQP | [fe2o3-amqp](https://github.com/minghuaw/fe2o3-amqp) |
 | File picker | [rfd](https://github.com/PolyMeilex/rfd) |
+| Clipboard | [arboard](https://github.com/1Password/arboard) |
