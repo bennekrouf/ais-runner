@@ -52,9 +52,6 @@ Name: "desktopicon"; \
 Source: "..\target\release\ais-runner.exe";     DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\WebView2Loader.dll";  DestDir: "{app}"; Flags: ignoreversion
 Source: "..\scripts\setup-windows.ps1";          DestDir: "{app}"; Flags: ignoreversion
-; WebView2 Evergreen Bootstrapper — installs silently if runtime is missing.
-; Downloaded from https://go.microsoft.com/fwlink/p/?LinkId=2124703
-Source: "..\installer\MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Icons]
 Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"
@@ -62,13 +59,6 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{commondesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-; Install WebView2 runtime silently if not already present.
-; /silent = no UI, /install = install if needed, exit 0 if already installed.
-Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; \
-  Parameters: "/silent /install"; \
-  StatusMsg: "Installing WebView2 runtime..."; \
-  Flags: waituntilterminated
-
 ; Always install runtime dependencies — the script skips anything already present
 ; (completes in seconds if tools are installed, a few minutes on a fresh machine).
 Filename: "powershell.exe"; \

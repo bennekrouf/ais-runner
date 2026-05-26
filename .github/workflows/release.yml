@@ -150,14 +150,6 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
-      - name: Download WebView2 bootstrapper
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path installer -Force | Out-Null
-          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" `
-            -OutFile "installer\MicrosoftEdgeWebview2Setup.exe"
-          Write-Host "WebView2 bootstrapper: $([math]::Round((Get-Item installer\MicrosoftEdgeWebview2Setup.exe).Length/1KB,0)) KB"
-
       - name: Build installer
         shell: pwsh
         run: |
