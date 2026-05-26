@@ -17,3 +17,6 @@ local.settings.json
 
 # Claude Code worktrees (ephemeral, never project files)
 .claude/worktrees/
+
+# WebView2 bootstrapper (downloaded by CI, not committed)
+installer/MicrosoftEdgeWebview2Setup.exe

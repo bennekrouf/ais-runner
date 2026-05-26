@@ -23,7 +23,7 @@ AppUpdatesURL={#MyAppURL}/releases/latest
 ; The app + WebView2 data dir are both in user-writable space, so
 ; "cannot create data directory" errors never occur.
 ; Use /ALLUSERS on the command line to override to a system-wide install.
-DefaultDirName={localappdata}\Programs\{#MyAppName}
+DefaultDirName={localappdata}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=..\dist
@@ -56,6 +56,9 @@ Name: "installdeps"; \
 Source: "..\target\release\ais-runner.exe";     DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\WebView2Loader.dll";  DestDir: "{app}"; Flags: ignoreversion
 Source: "..\scripts\setup-windows.ps1";          DestDir: "{app}"; Flags: ignoreversion
+; WebView2 Evergreen Bootstrapper — installs silently if runtime is missing.
+; Downloaded from https://go.microsoft.com/fwlink/p/?LinkId=2124703
+Source: "..\installer\MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Icons]
 Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"
@@ -63,9 +66,15 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{commondesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+; Install WebView2 runtime silently if not already present.
+; /silent = no UI, /install = install if needed, exit 0 if already installed.
+Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; \
+  Parameters: "/silent /install"; \
+  StatusMsg: "Installing WebView2 runtime..."; \
+  Flags: waituntilterminated
+
 ; Install runtime dependencies during setup if the user checked the box.
 ; setup-windows.ps1 -NoPrompt skips all Read-Host pauses and closes automatically.
-; The installer already runs elevated so the script proceeds without re-launching.
 Filename: "powershell.exe"; \
   Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\setup-windows.ps1"" -NoPrompt"; \
   Tasks: installdeps; \
