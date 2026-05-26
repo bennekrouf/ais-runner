@@ -2,6 +2,7 @@ use dioxus::prelude::*;
 use std::collections::HashSet;
 use std::path::Path;
 use std::collections::HashMap;
+use crate::services::config;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct GraphPanelProps {
@@ -30,14 +31,38 @@ struct GraphData {
 pub fn GraphPanel(props: GraphPanelProps) -> Element {
     let dir = props.logic_apps_dir.clone();
     let is_light = props.is_light;
+
+    // ── Restore saved preferences ────────────────────────────────────────────
+    let saved = config::load().get_graph_prefs(&dir);
+
     let mut graph_data      = use_signal(|| Option::<GraphData>::None);
-    let mut selected_chain  = use_signal(|| "All".to_string());
+    let mut selected_chain  = use_signal(|| saved.selected_chain.clone().unwrap_or_else(|| "All".to_string()));
     let mut show_all_pills  = use_signal(|| false);
-    let mut excluded_nodes: Signal<HashSet<String>> = use_signal(HashSet::new);
+    let mut excluded_nodes: Signal<HashSet<String>> = use_signal(|| saved.excluded_nodes.clone());
     let mut filter_open     = use_signal(|| false);
     let mut filter_search   = use_signal(String::new);
     // Incrementing this re-runs the data-load effect
     let mut refresh_tick: Signal<u32> = use_signal(|| 0);
+
+    // ── Persist preferences whenever they change ─────────────────────────────
+    use_effect({
+        let dir = dir.clone();
+        move || {
+            let sel  = selected_chain.read().clone();
+            let excl = excluded_nodes.read().clone();
+            let d    = dir.clone();
+            spawn(async move {
+                tokio::task::spawn_blocking(move || {
+                    let mut cfg = config::load();
+                    cfg.set_graph_prefs(d, config::GraphPrefs {
+                        selected_chain: if sel == "All" { None } else { Some(sel) },
+                        excluded_nodes: excl,
+                    });
+                    config::save(&cfg);
+                }).await.ok();
+            });
+        }
+    });
 
     use_effect({
         let dir = dir.clone();
@@ -79,35 +104,43 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
                 let sel      = selected_chain.read().clone();
                 let light    = *is_light.read();
                 let excluded = excluded_nodes.read().clone();
-                let theme    = Theme::from_light(light);
+                let data_ref = eff_data.clone();
 
-                // Step 1 — chain filter: which node IDs are in the selected chain?
-                let chain_ids: HashSet<String> = if sel == "All" {
-                    eff_data.node_objects.iter().map(|(id, _)| id.clone()).collect()
-                } else if let Some(chain) = eff_data.chains.iter().find(|c| c.label == sel) {
-                    chain.workflows.clone()
-                } else {
-                    eff_data.node_objects.iter().map(|(id, _)| id.clone()).collect()
-                };
+                spawn(async move {
+                    // Build the D3 script off the GUI thread — avoids freezing
+                    // the render loop on large graphs or slow WebView JS injection.
+                    let script = tokio::task::spawn_blocking(move || {
+                        let theme = Theme::from_light(light);
 
-                // Step 2 — exclusion filter
-                let visible: HashSet<&str> = chain_ids.iter()
-                    .filter(|id| !excluded.contains(*id))
-                    .map(|s| s.as_str())
-                    .collect();
+                        let chain_ids: HashSet<String> = if sel == "All" {
+                            data_ref.node_objects.iter().map(|(id, _)| id.clone()).collect()
+                        } else if let Some(chain) = data_ref.chains.iter().find(|c| c.label == sel) {
+                            chain.workflows.clone()
+                        } else {
+                            data_ref.node_objects.iter().map(|(id, _)| id.clone()).collect()
+                        };
 
-                let nodes: Vec<&str> = eff_data.node_objects.iter()
-                    .filter(|(id, _)| visible.contains(id.as_str()))
-                    .map(|(_, json)| json.as_str())
-                    .collect();
-                let edges: Vec<&str> = eff_data.edge_objects.iter()
-                    .filter(|(from, to, _)| visible.contains(from.as_str()) && visible.contains(to.as_str()))
-                    .map(|(_, _, json)| json.as_str())
-                    .collect();
+                        let visible: HashSet<&str> = chain_ids.iter()
+                            .filter(|id| !excluded.contains(*id))
+                            .map(|s| s.as_str())
+                            .collect();
 
-                let fn_str = format!("[{}]", nodes.join(","));
-                let fe_str = format!("[{}]", edges.join(","));
-                document::eval(&build_d3_script(&fn_str, &fe_str, &theme));
+                        let nodes: Vec<&str> = data_ref.node_objects.iter()
+                            .filter(|(id, _)| visible.contains(id.as_str()))
+                            .map(|(_, json)| json.as_str())
+                            .collect();
+                        let edges: Vec<&str> = data_ref.edge_objects.iter()
+                            .filter(|(from, to, _)| visible.contains(from.as_str()) && visible.contains(to.as_str()))
+                            .map(|(_, _, json)| json.as_str())
+                            .collect();
+
+                        let fn_str = format!("[{}]", nodes.join(","));
+                        let fe_str = format!("[{}]", edges.join(","));
+                        build_d3_script(&fn_str, &fe_str, &theme)
+                    }).await.unwrap_or_default();
+
+                    document::eval(&script);
+                });
             });
 
             let chains = data.chains.clone();

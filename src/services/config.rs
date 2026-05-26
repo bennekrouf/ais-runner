@@ -1,9 +1,20 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const MAX_RECENT: usize = 5;
+
+/// Persisted graph-panel preferences, keyed by logic_apps_dir in AppConfig.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct GraphPrefs {
+    /// Last selected chain pill ("All" or a workflow name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_chain: Option<String>,
+    /// Node IDs hidden via the filter panel.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub excluded_nodes: HashSet<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct WorkspaceLink {
@@ -23,6 +34,8 @@ pub struct WorkspaceLink {
 pub struct AppConfig {
     pub recent_dirs: Vec<String>,
     pub workspace_links: HashMap<String, WorkspaceLink>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub graph_prefs: HashMap<String, GraphPrefs>,
 }
 
 impl AppConfig {
@@ -38,6 +51,14 @@ impl AppConfig {
 
     pub fn set_link(&mut self, dir: String, link: WorkspaceLink) {
         self.workspace_links.insert(dir, link);
+    }
+
+    pub fn get_graph_prefs(&self, dir: &str) -> GraphPrefs {
+        self.graph_prefs.get(dir).cloned().unwrap_or_default()
+    }
+
+    pub fn set_graph_prefs(&mut self, dir: String, prefs: GraphPrefs) {
+        self.graph_prefs.insert(dir, prefs);
     }
 }
 
