@@ -30,24 +30,26 @@ struct GraphData {
 pub fn GraphPanel(props: GraphPanelProps) -> Element {
     let dir = props.logic_apps_dir.clone();
     let is_light = props.is_light;
-    let graph_data = use_signal(|| Option::<GraphData>::None);
+    let mut graph_data      = use_signal(|| Option::<GraphData>::None);
     let mut selected_chain  = use_signal(|| "All".to_string());
     let mut show_all_pills  = use_signal(|| false);
-    // Excluded nodes — empty means all are visible (all included by default)
     let mut excluded_nodes: Signal<HashSet<String>> = use_signal(HashSet::new);
     let mut filter_open     = use_signal(|| false);
     let mut filter_search   = use_signal(String::new);
+    // Incrementing this re-runs the data-load effect
+    let mut refresh_tick: Signal<u32> = use_signal(|| 0);
 
     use_effect({
         let dir = dir.clone();
         move || {
+            let _tick = *refresh_tick.read(); // reactive dependency
             let d = dir.clone();
-            let mut data_sig = graph_data;
+            graph_data.set(None);             // show "Loading…" while scanning
             spawn(async move {
                 let data = tokio::task::spawn_blocking(move || {
                     build_graph_data(&d)
                 }).await.ok().flatten();
-                data_sig.set(data);
+                graph_data.set(data);
             });
         }
     });
@@ -120,6 +122,17 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
                         // Title
                         span { style: "color:{theme.accent}; font-size:14px; font-weight:600; white-space:nowrap; margin-right:4px;",
                             "ais-chain"
+                        }
+                        // Refresh button
+                        button {
+                            title: "Re-scan workflows",
+                            style: "padding:2px 7px; font-size:11px; border:1px solid {theme.border}; background:transparent; color:{theme.text_muted}; cursor:pointer; border-radius:10px; font-family:inherit; line-height:1.3; flex-shrink:0;",
+                            onclick: move |_| {
+                                selected_chain.set("All".into());
+                                excluded_nodes.write().clear();
+                                refresh_tick.set(refresh_tick() + 1);
+                            },
+                            "⟳"
                         }
                         // ── Filter toggle button ──────────────────────────
                         {
