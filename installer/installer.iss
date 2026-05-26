@@ -47,10 +47,6 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; \
   Description: "Create a &desktop shortcut"; \
   GroupDescription: "Additional shortcuts:"
-Name: "installdeps"; \
-  Description: "Install runtime dependencies  (Node.js >=20, Azure CLI, Azurite, Azure Functions Core Tools)"; \
-  GroupDescription: "Runtime dependencies:"; \
-  Flags: checkedonce
 
 [Files]
 Source: "..\target\release\ais-runner.exe";     DestDir: "{app}"; Flags: ignoreversion
@@ -73,12 +69,11 @@ Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; \
   StatusMsg: "Installing WebView2 runtime..."; \
   Flags: waituntilterminated
 
-; Install runtime dependencies during setup if the user checked the box.
-; setup-windows.ps1 -NoPrompt skips all Read-Host pauses and closes automatically.
+; Always install runtime dependencies — the script skips anything already present
+; (completes in seconds if tools are installed, a few minutes on a fresh machine).
 Filename: "powershell.exe"; \
   Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\setup-windows.ps1"" -NoPrompt"; \
-  Tasks: installdeps; \
-  StatusMsg: "Installing runtime dependencies (this may take a few minutes)..."; \
+  StatusMsg: "Installing runtime dependencies — skipping already-installed tools..."; \
   Flags: waituntilterminated
 
 ; Offer to launch the app on the Finish page

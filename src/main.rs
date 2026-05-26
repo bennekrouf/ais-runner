@@ -13,17 +13,57 @@ use screens::{WelcomeScreen, MainScreen};
 const MAIN_CSS: &str = include_str!("../assets/main.css");
 
 fn main() {
-    tracing_subscriber::fmt::init();
-    // WebView2 needs a writable data directory.
-    // Preference order:
-    //   1. %LOCALAPPDATA%\AIS Runner  (standard user-space, always writable)
-    //   2. %TEMP%\AIS Runner          (fallback if LOCALAPPDATA unavailable)
-    // We never use the exe directory — it may be C:\Program Files (read-only).
-    let webview_data_dir = dirs::data_local_dir()
-        .or_else(|| std::env::temp_dir().into())
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
+    // ── Crash log — written before anything else so startup panics are visible ──
+    // On Windows GUI apps there is no console; this file lets us diagnose crashes.
+    let log_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| std::env::temp_dir())
         .join("AIS Runner");
-    let _ = std::fs::create_dir_all(&webview_data_dir);
+    let _ = std::fs::create_dir_all(&log_dir);
+    let crash_log = log_dir.join("crash.log");
+
+    // Overwrite with a "started OK" marker; on crash the panic hook replaces it.
+    let _ = std::fs::write(&crash_log, format!(
+        "[{}] ais-runner starting\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    ));
+
+    {
+        let crash_log2 = crash_log.clone();
+        std::panic::set_hook(Box::new(move |info| {
+            let msg = format!(
+                "[{}] PANIC: {}\n",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                info
+            );
+            let _ = std::fs::write(&crash_log2, &msg);
+            // Also try a Windows message box so non-technical users see something
+            #[cfg(target_os = "windows")]
+            {
+                let title  = "AIS Runner — Startup Error\0";
+                let text   = format!("{}\n\nSee crash.log in:\n{}\0", info, crash_log2.display());
+                unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxA(
+                        std::ptr::null_mut(),
+                        text.as_ptr(),
+                        title.as_ptr(),
+                        windows_sys::Win32::UI::WindowsAndMessaging::MB_OK |
+                        windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+                    );
+                }
+            }
+        }));
+    }
+
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
+
+    let webview_data_dir = log_dir.clone();
+
+    let _ = std::fs::write(&crash_log, format!(
+        "[{}] WebView2 data dir: {}\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+        webview_data_dir.display()
+    ));
 
     let cfg = dioxus::desktop::Config::new()
         .with_data_directory(webview_data_dir)
