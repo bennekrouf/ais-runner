@@ -19,7 +19,11 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases/latest
-DefaultDirName={autopf}\{#MyAppName}
+; Install per-user into %LOCALAPPDATA%\Programs — no UAC prompt needed.
+; The app + WebView2 data dir are both in user-writable space, so
+; "cannot create data directory" errors never occur.
+; Use /ALLUSERS on the command line to override to a system-wide install.
+DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=..\dist
@@ -27,7 +31,8 @@ OutputBaseFilename=ais-runner-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ; Windows 10 1809+ required for WebView2

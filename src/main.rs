@@ -14,11 +14,16 @@ const MAIN_CSS: &str = include_str!("../assets/main.css");
 
 fn main() {
     tracing_subscriber::fmt::init();
-    // WebView2 needs a writable data directory. The default is next to the exe,
-    // which fails when installed in C:\Program Files (restricted for non-admins).
+    // WebView2 needs a writable data directory.
+    // Preference order:
+    //   1. %LOCALAPPDATA%\AIS Runner  (standard user-space, always writable)
+    //   2. %TEMP%\AIS Runner          (fallback if LOCALAPPDATA unavailable)
+    // We never use the exe directory — it may be C:\Program Files (read-only).
     let webview_data_dir = dirs::data_local_dir()
+        .or_else(|| std::env::temp_dir().into())
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("AIS Runner");
+    let _ = std::fs::create_dir_all(&webview_data_dir);
 
     let cfg = dioxus::desktop::Config::new()
         .with_data_directory(webview_data_dir)
