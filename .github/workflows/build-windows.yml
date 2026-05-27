@@ -11,6 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout ais-chain (path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: Bennekrouf/ais-chain
+          path: ../ais-chain
+
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry
