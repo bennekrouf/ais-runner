@@ -1626,6 +1626,8 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
     overflow: hidden;
     position: relative;
 }
+.env-th-check { display: inline-flex; align-items: center; margin-right: 4px; cursor: pointer; vertical-align: middle; }
+.env-th-check input { margin: 0; cursor: pointer; }
 .env-th-key, .env-th-val { cursor: col-resize; }
 /* subtle resize handle hint on hover */
 .env-th-key:hover, .env-th-val:hover { border-right: 2px solid var(--border2); }
@@ -1654,6 +1656,31 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
 /* Flash green briefly after copy */
 .env-cell-copied { background: color-mix(in srgb, var(--green) 15%, transparent) !important; cursor: default; }
 .env-cell-copied span { color: var(--green) !important; font-style: normal !important; }
+
+/* Cell detail popup */
+.env-detail-overlay {
+    position: absolute; inset: 0; z-index: 50;
+    background: rgba(0,0,0,.35);
+    display: flex; align-items: center; justify-content: center;
+}
+.env-detail-box {
+    background: var(--bg1); border: 1px solid var(--border);
+    border-radius: 8px; box-shadow: 0 8px 32px rgba(0,0,0,.4);
+    min-width: 340px; max-width: 80%; max-height: 60%;
+    display: flex; flex-direction: column; overflow: hidden;
+}
+.env-detail-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+}
+.env-detail-key  { font-weight: 600; font-size: 13px; color: var(--text1); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.env-detail-col  { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: .04em; }
+.env-detail-value {
+    margin: 0; padding: 12px; font-size: 12px; font-family: monospace;
+    color: var(--text1); white-space: pre-wrap; word-break: break-all;
+    overflow: auto; flex: 1;
+}
+.env-detail-hint { padding: 6px 12px; font-size: 11px; color: var(--green); border-top: 1px solid var(--border); }
 
 .settings-header {
     display: flex;
@@ -1825,12 +1852,15 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
 
 .ns-dropdown {
     grid-column: 2;
+    justify-self: end;
     background: var(--bg1);
     border: 1px solid var(--border);
     border-radius: 5px;
     overflow: hidden;
     max-height: 180px;
     overflow-y: auto;
+    min-width: 220px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.25);
 }
 .ns-option {
     font-size: 13px;
@@ -3297,3 +3327,61 @@ body.light .wf-chip-liquid { background: #f5f3ff; color: #6d28d9; border-color: 
     width: 100%;
 }
 .maps-tester-err { color: var(--red); }
+
+/* ── Event Grid panel ─────────────────────────────────────────────────── */
+.eg-panel { padding: 12px 16px; flex: 1; min-height: 0; overflow-y: auto; }
+.eg-header { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.eg-filter { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; color: var(--text1); padding: 4px 8px; font-size: 12px; width: 220px; }
+.eg-hint { color: var(--text3); font-size: 12px; }
+.eg-env-label { font-weight: 600; color: var(--cyan); margin: 10px 0 6px; font-size: 13px; }
+.eg-topic-block { margin-bottom: 16px; background: var(--bg2); border-radius: 6px; padding: 10px 12px; }
+.eg-topic-name { font-weight: 600; color: var(--text1); font-size: 13px; }
+.eg-topic-type { color: var(--text3); font-weight: 400; font-size: 11px; }
+.eg-topic-source { color: var(--text3); font-size: 11px; margin-bottom: 8px; }
+.eg-empty { color: var(--text3); font-style: italic; font-size: 12px; }
+.eg-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.eg-table th { text-align: left; color: var(--text3); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.eg-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); color: var(--text1); vertical-align: top; }
+.eg-table tr:hover td { background: var(--bg3); }
+.eg-events { font-size: 11px; color: var(--text2); max-width: 200px; }
+.eg-filters { font-size: 11px; max-width: 220px; }
+.eg-endpoint { cursor: pointer; color: var(--blue); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.eg-endpoint:hover { text-decoration: underline; }
+.eg-state-ok { color: var(--green); }
+.eg-state-warn { color: var(--yellow); }
+.eg-section-label { font-weight: 600; color: var(--text1); font-size: 14px; margin: 8px 0 6px; }
+.eg-count { color: var(--text3); font-weight: 400; font-size: 12px; }
+.eg-endpoint-inline { color: var(--blue); font-size: 11px; word-break: break-all; }
+.eg-topic-rg { color: var(--text3); font-size: 11px; padding: 0 0 2px 0; font-style: italic; }
+
+/* ── Compare bar & grid ─────────────────────────────────────────────── */
+.eg-compare-bar { display: flex; align-items: center; gap: 8px; padding: 8px 0; flex-wrap: wrap; }
+.eg-compare-label { color: var(--text2); font-weight: 600; font-size: 13px; }
+.eg-compare-vs { color: var(--text3); font-size: 14px; }
+.eg-select {
+    background: var(--bg2); color: var(--text1); border: 1px solid var(--border);
+    border-radius: 4px; padding: 4px 8px; font-size: 12px; min-width: 220px;
+}
+.eg-compare-panel { margin: 8px 0 16px; }
+.eg-compare-grid {
+    display: grid;
+    grid-template-columns: 160px 1fr 1fr;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+.eg-compare-col-header {
+    font-weight: 600; font-size: 12px; color: var(--text1);
+    padding: 8px 10px; background: var(--bg2); border-bottom: 1px solid var(--border);
+}
+.eg-compare-row {
+    padding: 6px 10px; border-bottom: 1px solid var(--border);
+    font-size: 12px; min-height: 32px;
+}
+.eg-compare-name { color: var(--text2); font-weight: 500; display: flex; align-items: center; }
+.eg-compare-diff { background: color-mix(in srgb, var(--yellow) 8%, transparent); }
+.eg-compare-missing { color: var(--text3); font-style: italic; }
+.eg-compare-cell { display: flex; flex-direction: column; gap: 2px; }
+.eg-compare-events { color: var(--text2); font-size: 11px; }
+.eg-compare-filters { color: var(--text3); font-size: 11px; }

@@ -2,6 +2,7 @@ use dioxus::prelude::*;
 use indexmap::IndexMap;
 use crate::services::{azure_cli, config, settings_file};
 use crate::components::env_compare_panel::EnvComparePanel;
+use crate::components::eventgrid_panel::EventGridPanel;
 
 const DEFAULT_SUBSCRIPTION: &str = "b4c0de7e-1fe0-4d3b-90c7-e3e9c9e4b9db";
 
@@ -137,12 +138,21 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                     onclick: move |_| active_tab.set("compare"),
                     "⊞ Compare Environments"
                 }
+                button {
+                    class: if tab == "eventgrid" { "settings-tab active" } else { "settings-tab" },
+                    onclick: move |_| active_tab.set("eventgrid"),
+                    "⚡ Event Grid"
+                }
             }
 
             if tab == "compare" {
                 EnvComparePanel {
                     logic_apps_dir: props.logic_apps_dir.clone(),
                     local_pairs:    pairs,
+                }
+            } else if tab == "eventgrid" {
+                EventGridPanel {
+                    logic_apps_dir: props.logic_apps_dir.clone(),
                 }
             } else {
 
@@ -186,7 +196,15 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
             }
 
             // ── Azure config ────────────────────────────────────────────
-            div { class: "settings-azure-cfg",
+            div {
+                class: "settings-azure-cfg",
+                tabindex: -1,
+                onkeydown: move |e: KeyboardEvent| {
+                    if e.key() == Key::Escape {
+                        sub_options.set(vec![]);
+                        ns_options.set(vec![]);
+                    }
+                },
                 label { class: "settings-cfg-label", "Tenant ID" }
                 div { class: "settings-cfg-ns-wrap",
                     input {

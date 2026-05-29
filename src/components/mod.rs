@@ -10,3 +10,4 @@ pub mod devops_panel;
 pub mod tooltip;
 pub mod env_compare_panel;
 pub mod graph_panel;
+pub mod eventgrid_panel;

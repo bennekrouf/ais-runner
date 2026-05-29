@@ -49,10 +49,20 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
     // Filter + diff toggle
     let mut filter:     Signal<String>                         = use_signal(String::new);
     let mut only_diff:  Signal<bool>                           = use_signal(|| false);
+    // Per-column diff toggle: columns active for "Differences only" comparison.
+    // "azure" = Azure cloud column; group names for DevOps columns.
+    // All columns are active by default (added when the column is created).
+    let mut diff_cols:  Signal<HashSet<String>>                = use_signal(|| {
+        let mut s = HashSet::new();
+        s.insert("local".into());
+        s
+    });
     // Secret key visibility
     let mut show_keys:  Signal<HashSet<String>>                = use_signal(HashSet::new);
     // Clipboard flash: stores "key::col_index" of the last copied cell
     let mut copied_cell: Signal<Option<String>>                = use_signal(|| None);
+    // Cell detail popup: (key, column_label, full_value)
+    let mut detail_cell: Signal<Option<(String, String, String)>> = use_signal(|| None);
 
     // Auto-detect DevOps URL from git remote on mount
     use_effect({
@@ -80,10 +90,10 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                 let res = tokio::task::spawn_blocking(move || {
                     env_compare::fetch_azure_app_settings(&s, &r, &n)
                 }).await.unwrap_or_else(|_| Err(azure_cli::AzError::Other("task failed".into())));
-                az_state.set(match res {
-                    Ok(v)  => FetchState::Done(v),
-                    Err(e) => FetchState::Err(format!("{:?}", e)),
-                });
+                match res {
+                    Ok(v)  => { az_state.set(FetchState::Done(v)); diff_cols.write().insert("azure".into()); }
+                    Err(e) => { az_state.set(FetchState::Err(format!("{:?}", e))); }
+                };
             });
         }
     };
@@ -111,7 +121,8 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
     // Add a group as a column (data is already in vg_all)
     let mut add_column = move |name: String| {
         let mut order = col_order.write();
-        if !order.contains(&name) { order.push(name); }
+        if !order.contains(&name) { order.push(name.clone()); }
+        diff_cols.write().insert(name);
         browse_open.set(false);
     };
 
@@ -126,6 +137,7 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
     let order      = col_order.read().clone();
     let all_groups = vg_all.read();
     let query      = filter.read().to_lowercase();
+    let active_diff = diff_cols.read().clone();
     let diff_on    = *only_diff.read() && (az_vals.is_some() || !order.is_empty());
 
     // Build column value maps in order
@@ -151,14 +163,33 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
         .filter(|k| query.is_empty() || k.to_lowercase().contains(&query))
         .filter(|k| {
             if !diff_on { return true; }
-            let lv = local.get(k).map(|s| s.as_str()).unwrap_or("");
-            let az_diff = az_vals.as_ref()
-                .map(|m| m.get(k).map(|v| v.as_str()).unwrap_or("") != lv)
-                .unwrap_or(false);
-            let col_diff = col_maps.iter().any(|(_, vals)| {
-                vals.as_ref().map(|m| m.get(k).map(|v| v.as_str()).unwrap_or("") != lv).unwrap_or(false)
-            });
-            az_diff || col_diff
+            let local_active = active_diff.contains("local");
+            if local_active {
+                // Compare each active column against local
+                let lv = local.get(k).map(|s| s.as_str()).unwrap_or("");
+                let az_diff = active_diff.contains("azure") && az_vals.as_ref()
+                    .map(|m| m.get(k).map(|v| v.as_str()).unwrap_or("") != lv)
+                    .unwrap_or(false);
+                let col_diff = col_maps.iter().any(|(name, vals)| {
+                    active_diff.contains(name) &&
+                    vals.as_ref().map(|m| m.get(k).map(|v| v.as_str()).unwrap_or("") != lv).unwrap_or(false)
+                });
+                az_diff || col_diff
+            } else {
+                // Local unchecked: compare active columns against each other
+                let mut vals: Vec<&str> = Vec::new();
+                if active_diff.contains("azure") {
+                    vals.push(az_vals.as_ref()
+                        .and_then(|az| az.get(k)).map(|v| v.as_str()).unwrap_or(""));
+                }
+                for (name, col_vals) in &col_maps {
+                    if active_diff.contains(name) {
+                        vals.push(col_vals.as_ref()
+                            .and_then(|v| v.get(k)).map(|v| v.as_str()).unwrap_or(""));
+                    }
+                }
+                vals.len() >= 2 && vals.iter().any(|v| *v != vals[0])
+            }
         })
         .collect();
 
@@ -319,13 +350,55 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                         thead {
                             tr {
                                 th { class: "env-th-key", "Key" }
-                                th { class: "env-th-val", "Local" }
+                                th { class: "env-th-val",
+                                    label { class: "env-th-check",
+                                        input {
+                                            r#type: "checkbox",
+                                            checked: diff_cols.read().contains("local"),
+                                            onchange: move |_| {
+                                                let mut dc = diff_cols.write();
+                                                if dc.contains("local") { dc.remove("local"); } else { dc.insert("local".into()); }
+                                            },
+                                        }
+                                    }
+                                    "Local"
+                                }
                                 if az_vals.is_some() {
-                                    th { class: "env-th-val", "☁ {site_def}" }
+                                    th { class: "env-th-val",
+                                        label { class: "env-th-check",
+                                            input {
+                                                r#type: "checkbox",
+                                                checked: diff_cols.read().contains("azure"),
+                                                onchange: move |_| {
+                                                    let mut dc = diff_cols.write();
+                                                    if dc.contains("azure") { dc.remove("azure"); } else { dc.insert("azure".into()); }
+                                                },
+                                            }
+                                        }
+                                        "☁ {site_def}"
+                                    }
                                 }
                                 for (name, _) in &col_maps {
                                     if all_groups.iter().any(|g| &g.name == name) {
-                                        th { class: "env-th-val", "{name}" }
+                                        {
+                                            let n = name.clone();
+                                            let n2 = name.clone();
+                                            rsx! {
+                                                th { class: "env-th-val",
+                                                    label { class: "env-th-check",
+                                                        input {
+                                                            r#type: "checkbox",
+                                                            checked: diff_cols.read().contains(&n),
+                                                            onchange: move |_| {
+                                                                let mut dc = diff_cols.write();
+                                                                if dc.contains(&n2) { dc.remove(&n2); } else { dc.insert(n2.clone()); }
+                                                            },
+                                                        }
+                                                    }
+                                                    "{name}"
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -349,16 +422,16 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                                     });
                                     let row_class = if row_has_diff { "env-compare-row has-diff" } else { "env-compare-row" };
 
-                                    // Helper: copy raw value to clipboard and flash the cell
-                                    let mut copy_val = move |cell_id: String, raw: String| {
+                                    // Helper: show detail popup, copy to clipboard, flash the cell
+                                    let mut copy_val = move |cell_id: String, raw: String, key_name: String, col_label: String| {
                                         if raw.is_empty() { return; }
+                                        detail_cell.set(Some((key_name, col_label, raw.clone())));
                                         std::thread::spawn(move || {
                                             if let Ok(mut cb) = arboard::Clipboard::new() {
                                                 let _ = cb.set_text(raw);
                                             }
                                         });
                                         copied_cell.set(Some(cell_id.clone()));
-                                        // Clear the flash after 1.2 s
                                         spawn(async move {
                                             tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
                                             if copied_cell.read().as_deref() == Some(&cell_id) {
@@ -397,7 +470,8 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                                                 onclick: {
                                                     let id  = cell_local_id.clone();
                                                     let raw = if secret && !visible { String::new() } else { lv.clone() };
-                                                    move |_| copy_val(id.clone(), raw.clone())
+                                                    let kn = key.clone();
+                                                    move |_| copy_val(id.clone(), raw.clone(), kn.clone(), "Local".into())
                                                 },
                                                 { render_local(&lv, secret && !visible) }
                                             }
@@ -410,6 +484,7 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                                                     let copyable = !raw.is_empty() && !(secret && !visible);
                                                     let td_class: &str = if flashed { "env-col-val env-cell-copied" } else if copyable { "env-col-val env-cell-copyable" } else { "env-col-val" };
                                                     let td_title: &str = if copyable { "Click to copy" } else { "" };
+                                                    let az_label = format!("☁ {}", site_def);
                                                     rsx! {
                                                         td {
                                                             class: "{td_class}",
@@ -417,7 +492,8 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                                                             onclick: {
                                                                 let id  = cell_id.clone();
                                                                 let r   = if secret && !visible { String::new() } else { raw.clone() };
-                                                                move |_| copy_val(id.clone(), r.clone())
+                                                                let kn = key.clone(); let cl = az_label.clone();
+                                                                move |_| copy_val(id.clone(), r.clone(), kn.clone(), cl.clone())
                                                             },
                                                             { render_diff(&lv, az_vals.as_ref().and_then(|m| m.get(&key)).map(|s| s.as_str()), secret && !visible) }
                                                         }
@@ -425,7 +501,7 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                                                 }
                                             }
                                             // DevOps group columns
-                                            for (col_idx, (_, vals)) in col_maps.iter().enumerate() {
+                                            for (col_idx, (col_name, vals)) in col_maps.iter().enumerate() {
                                                 if vals.is_some() || all_groups.iter().any(|g| order.contains(&g.name)) {
                                                     {
                                                         let cell_id  = format!("{}::{}", key, col_idx + 2);
@@ -441,7 +517,8 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                                                                 onclick: {
                                                                     let id = cell_id.clone();
                                                                     let r  = if secret && !visible { String::new() } else { raw.clone() };
-                                                                    move |_| copy_val(id.clone(), r.clone())
+                                                                    let kn = key.clone(); let cl = col_name.clone();
+                                                                    move |_| copy_val(id.clone(), r.clone(), kn.clone(), cl.clone())
                                                                 },
                                                                 { render_diff(&lv, vals.as_ref().and_then(|m| m.get(&key)).map(|s| s.as_str()), secret && !visible) }
                                                             }
@@ -454,6 +531,30 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            // ── Cell detail popup ─────────────────────────────────────
+            if let Some((ref dk, ref dl, ref dv)) = *detail_cell.read() {
+                div {
+                    class: "env-detail-overlay",
+                    onclick: move |_| detail_cell.set(None),
+                    onkeydown: move |e: KeyboardEvent| { if e.key() == Key::Escape { detail_cell.set(None); } },
+                    div {
+                        class: "env-detail-box",
+                        onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                        div { class: "env-detail-header",
+                            span { class: "env-detail-key", "{dk}" }
+                            span { class: "env-detail-col", "{dl}" }
+                            button {
+                                class: "btn-icon",
+                                onclick: move |_| detail_cell.set(None),
+                                "×"
+                            }
+                        }
+                        pre { class: "env-detail-value", "{dv}" }
+                        div { class: "env-detail-hint", "📋 Copied to clipboard" }
                     }
                 }
             }
