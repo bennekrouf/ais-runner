@@ -25,13 +25,10 @@ fe2o3-amqp       = "0.14"
 fe2o3-amqp-types = "0.14"
 liquid      = "0.26"
 liquid-core = "0.26"
-ais-chain   = { path = "crates/ais-chain" }
+ais-chain   = { path = "../ais-chain" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }
-
-[workspace]
-members = ["crates/ais-chain"]
 
 [features]
 default = []

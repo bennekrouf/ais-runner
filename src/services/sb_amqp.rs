@@ -1,6 +1,6 @@
 use fe2o3_amqp::{Connection, Session, Sender, Receiver};
 use fe2o3_amqp::link::receiver::CreditMode;
-use fe2o3_amqp_types::messaging::{Message, Properties, Data};
+use fe2o3_amqp_types::messaging::{Message, Properties, Data, Body};
 
 /// Returns true if the AMQP broker at `host:5672` is ready to negotiate.
 /// Used during emulator startup to distinguish "port open" from "broker ready".
@@ -79,15 +79,14 @@ pub async fn peek_amqp_messages(host: &str, queue: &str, max: usize) -> Result<V
     let timeout = std::time::Duration::from_millis(1500);
 
     for _ in 0..max {
-        match tokio::time::timeout(timeout, receiver.recv::<String>()).await {
+        match tokio::time::timeout(timeout, receiver.recv::<Body<String>>()).await {
             Ok(Ok(delivery)) => {
-                let body_text = delivery.body().clone();
-                // Release the message back (non-destructive)
+                let body_text = body_to_string(delivery.body());
                 receiver.release(&delivery).await.ok();
                 messages.push(body_text);
             }
-            Ok(Err(_)) => break,  // link error — no more messages
-            Err(_) => break,      // timeout — no more messages waiting
+            Ok(Err(_)) => break,
+            Err(_) => break,
         }
     }
 
@@ -96,6 +95,34 @@ pub async fn peek_amqp_messages(host: &str, queue: &str, max: usize) -> Result<V
     connection.close().await.ok();
 
     Ok(messages)
+}
+
+/// Extract a human-readable string from an AMQP Body.
+/// Handles Data (binary), Value (AMQP value), and Sequence sections.
+/// For Data sections the bytes are decoded as UTF-8; if the result is
+/// valid JSON it is pretty-printed.
+/// Extract a human-readable string from an AMQP Body.
+/// Handles Data (binary), Value (AMQP value), and Sequence sections.
+/// For Data sections the bytes are decoded as UTF-8; if the result is
+/// valid JSON it is pretty-printed.
+fn body_to_string(body: &Body<String>) -> String {
+    let raw = match body {
+        Body::Data(batch) => {
+            let bytes: Vec<u8> = batch.iter()
+                .flat_map(|d| d.0.iter().cloned())
+                .collect();
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+        Body::Value(v) => format!("{:?}", v),
+        Body::Sequence(s) => format!("{:?}", s),
+        Body::Empty => String::new(),
+    };
+    // Pretty-print if it's valid JSON
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+        serde_json::to_string_pretty(&v).unwrap_or(raw)
+    } else {
+        raw
+    }
 }
 
 async fn try_send(url: &str, queue: &str, body: &str) -> Result<(), String> {

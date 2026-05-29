@@ -77,6 +77,13 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     let mut traced_wfs  = use_signal(|| HashSet::<String>::new());
     let mut cleared_wfs = use_signal(|| HashMap::<String, String>::new());
     let mut auto_watch  = use_signal(|| true);
+    // Track which views have been opened — panels are lazy-mounted on first visit
+    // but stay in the DOM afterwards so their state (caches, signals) survives tab switches.
+    let mut visited_views: Signal<HashSet<String>> = use_signal(|| {
+        let mut s = HashSet::new();
+        s.insert("Workflows".to_string());
+        s
+    });
 
     // ── Log ────────────────────────────────────────────────────────────────
     let mut log_lines = use_signal(|| Vec::<LogLine>::new());
@@ -112,66 +119,65 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
             }
         });
 
-        // Channel: OS thread → UI coroutine.
-        // Capacity 16 is plenty; we never burst more than a handful of events.
-        let (tx, rx) = tokio::sync::mpsc::channel::<(String, String)>(16);
+        // Channel + OS thread: Arc<Mutex<Option>> ensures the thread is spawned
+        // exactly once (use_hook requires Clone; the Mutex lets us take() the
+        // receiver on the first coroutine run).
+        let rx_holder = use_hook(|| {
+            let (tx, rx) = tokio::sync::mpsc::channel::<(String, String)>(16);
 
-        // Dedicated OS thread — all blocking HTTP to Azurite happens here.
-        let bg_dir   = dir.clone();
-        let bg_watch = Arc::clone(&watch_flag);
-        let bg_func  = Arc::clone(&func_flag);
-        std::thread::Builder::new()
-            .name("ais-blob-watcher".into())
-            .spawn(move || {
-                use std::collections::{HashMap, HashSet};
+            let bg_dir   = dir.clone();
+            let bg_watch = Arc::clone(&watch_flag);
+            let bg_func  = Arc::clone(&func_flag);
+            std::thread::Builder::new()
+                .name("ais-blob-watcher".into())
+                .spawn(move || {
+                    use std::collections::{HashMap, HashSet};
 
-                let trigger_map = workflows::scan_all_blob_triggers(&bg_dir);
+                    let trigger_map = workflows::scan_all_blob_triggers(&bg_dir);
 
-                // Initial snapshot — pre-existing blobs are ignored.
-                let mut seen: HashMap<String, HashSet<String>> = trigger_map.iter()
-                    .map(|(c, _)| {
-                        let names = crate::services::azurite_client::list_blobs(c)
-                            .unwrap_or_default().into_iter()
-                            .filter(|b| !b.name.ends_with("/.keep"))
-                            .map(|b| b.name).collect();
-                        (c.clone(), names)
-                    })
-                    .collect();
-
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(3));
-
-                    if !bg_watch.load(Ordering::Relaxed) || !bg_func.load(Ordering::Relaxed) {
-                        continue;
-                    }
-
-                    // One pass: list all containers sequentially on this thread.
-                    for (container, wf_name) in &trigger_map {
-                        let current: HashSet<String> =
-                            crate::services::azurite_client::list_blobs(container)
+                    let mut seen: HashMap<String, HashSet<String>> = trigger_map.iter()
+                        .map(|(c, _)| {
+                            let names = crate::services::azurite_client::list_blobs(c)
                                 .unwrap_or_default().into_iter()
                                 .filter(|b| !b.name.ends_with("/.keep"))
-                                .map(|b| b.name)
-                                .collect();
+                                .map(|b| b.name).collect();
+                            (c.clone(), names)
+                        })
+                        .collect();
 
-                        let prev = seen.entry(container.clone()).or_default();
-                        let has_new = current.iter().any(|n| !prev.contains(n));
-                        *prev = current;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(3));
 
-                        if has_new {
-                            // Non-blocking send — drop the event if channel is full.
-                            let _ = tx.try_send((container.clone(), wf_name.clone()));
+                        if !bg_watch.load(Ordering::Relaxed) || !bg_func.load(Ordering::Relaxed) {
+                            continue;
+                        }
+
+                        for (container, wf_name) in &trigger_map {
+                            let current: HashSet<String> =
+                                crate::services::azurite_client::list_blobs(container)
+                                    .unwrap_or_default().into_iter()
+                                    .filter(|b| !b.name.ends_with("/.keep"))
+                                    .map(|b| b.name)
+                                    .collect();
+
+                            let prev = seen.entry(container.clone()).or_default();
+                            let has_new = current.iter().any(|n| !prev.contains(n));
+                            *prev = current;
+
+                            if has_new {
+                                let _ = tx.try_send((container.clone(), wf_name.clone()));
+                            }
                         }
                     }
-                }
-            })
-            .ok(); // ignore spawn failure (non-critical background task)
+                })
+                .ok();
+
+            Arc::new(std::sync::Mutex::new(Some(rx)))
+        });
 
         // UI coroutine — only wakes when the OS thread found something new.
-        // rx is not Copy so we use Option to move it into the async block once.
-        let rx_opt = std::cell::Cell::new(Some(rx));
         use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| {
-            let mut rx = rx_opt.take().expect("coroutine called twice");
+            let mut rx = rx_holder.lock().unwrap().take().expect("coroutine called twice");
             async move {
                 while let Some((container, wf_name)) = rx.recv().await {
                     if running_wfs.read().contains(&wf_name) { continue; }
@@ -523,19 +529,19 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                     button {
                         class: if *current_view.read() == "Settings" { "view-btn active" } else { "view-btn" },
                         title: "Edit local.settings.json",
-                        onclick: move |_| current_view.set("Settings".into()),
+                        onclick: move |_| { visited_views.write().insert("Settings".into()); current_view.set("Settings".into()); },
                         "Settings"
                     }
                     button {
                         class: if *current_view.read() == "DevOps" { "view-btn active" } else { "view-btn" },
                         title: "Azure DevOps pipelines and runs",
-                        onclick: move |_| current_view.set("DevOps".into()),
+                        onclick: move |_| { visited_views.write().insert("DevOps".into()); current_view.set("DevOps".into()); },
                         "DevOps"
                     }
                     button {
                         class: if *current_view.read() == "Graph" { "view-btn active" } else { "view-btn" },
                         title: "Workflow chain graph — interactive D3.js visualization",
-                        onclick: move |_| current_view.set("Graph".into()),
+                        onclick: move |_| { visited_views.write().insert("Graph".into()); current_view.set("Graph".into()); },
                         "Graph"
                     }
                 }
@@ -595,17 +601,23 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
 
             // ── Main content ──────────────────────────────────────────────
             div { id: "main",
-                // Settings — always mounted; hidden when not active
-                div { style: if *current_view.read() == "Settings" { "display:contents" } else { "display:none" },
-                    SettingsEditor { logic_apps_dir: dir.clone() }
+                // Lazy-mounted panels: only created on first visit, then kept alive
+                // so caches/signals survive tab switches.  This avoids the heavy
+                // initial DOM build that caused a multi-second freeze on project open.
+                if visited_views.read().contains("Settings") {
+                    div { style: if *current_view.read() == "Settings" { "display:contents" } else { "display:none" },
+                        SettingsEditor { logic_apps_dir: dir.clone() }
+                    }
                 }
-                // DevOps — always mounted so signals (cache) survive tab switches
-                div { style: if *current_view.read() == "DevOps" { "display:contents" } else { "display:none" },
-                    DevOpsPanel { logic_apps_dir: dir.clone() }
+                if visited_views.read().contains("DevOps") {
+                    div { style: if *current_view.read() == "DevOps" { "display:contents" } else { "display:none" },
+                        DevOpsPanel { logic_apps_dir: dir.clone() }
+                    }
                 }
-                // Graph — chain visualization
-                div { style: if *current_view.read() == "Graph" { "display:contents" } else { "display:none" },
-                    GraphPanel { logic_apps_dir: dir.clone(), is_light: is_light }
+                if visited_views.read().contains("Graph") {
+                    div { style: if *current_view.read() == "Graph" { "display:contents" } else { "display:none" },
+                        GraphPanel { logic_apps_dir: dir.clone(), is_light: is_light }
+                    }
                 }
                 // Workflows — always mounted; hidden when another view is active
                 div { style: if *current_view.read() == "Workflows" { "display:contents" } else { "display:none" },

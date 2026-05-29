@@ -426,7 +426,15 @@ body.light .tool-banner-item code { background: #f0f3f6; color: #9a6700; }
 .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .dot.running  { background: var(--green);  box-shadow: 0 0 5px var(--green); }
 .dot.stopped  { background: var(--text3); }
-.dot.starting { background: var(--yellow); box-shadow: 0 0 5px var(--yellow); }
+.dot.starting {
+  background: transparent;
+  border: 2px solid var(--yellow);
+  border-top-color: transparent;
+  animation: dot-spin 0.6s linear infinite;
+  width: 9px; height: 9px;
+  margin: -1px;
+}
+@keyframes dot-spin { to { transform: rotate(360deg); } }
 
 .btn {
     font-family: inherit;
