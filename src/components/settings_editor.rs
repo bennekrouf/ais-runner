@@ -3,6 +3,7 @@ use indexmap::IndexMap;
 use crate::services::{azure_cli, config, settings_file};
 use crate::components::env_compare_panel::EnvComparePanel;
 use crate::components::eventgrid_panel::EventGridPanel;
+use crate::components::sb_compare_panel::SbComparePanel;
 
 const DEFAULT_SUBSCRIPTION: &str = "b4c0de7e-1fe0-4d3b-90c7-e3e9c9e4b9db";
 
@@ -143,6 +144,11 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                     onclick: move |_| active_tab.set("eventgrid"),
                     "⚡ Event Grid"
                 }
+                button {
+                    class: if tab == "servicebus" { "settings-tab active" } else { "settings-tab" },
+                    onclick: move |_| active_tab.set("servicebus"),
+                    "🚌 Service Bus"
+                }
             }
 
             if tab == "compare" {
@@ -152,6 +158,10 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                 }
             } else if tab == "eventgrid" {
                 EventGridPanel {
+                    logic_apps_dir: props.logic_apps_dir.clone(),
+                }
+            } else if tab == "servicebus" {
+                SbComparePanel {
                     logic_apps_dir: props.logic_apps_dir.clone(),
                 }
             } else {

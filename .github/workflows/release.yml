@@ -84,12 +84,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Checkout ais-chain (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: Bennekrouf/ais-chain
-          path: ../ais-chain
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
@@ -131,12 +125,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Checkout ais-chain (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: Bennekrouf/ais-chain
-          path: ../ais-chain
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -196,12 +184,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Checkout ais-chain (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: Bennekrouf/ais-chain
-          path: ../ais-chain
 
       - uses: dtolnay/rust-toolchain@stable
 

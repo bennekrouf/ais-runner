@@ -3385,3 +3385,17 @@ body.light .wf-chip-liquid { background: #f5f3ff; color: #6d28d9; border-color: 
 .eg-compare-cell { display: flex; flex-direction: column; gap: 2px; }
 .eg-compare-events { color: var(--text2); font-size: 11px; }
 .eg-compare-filters { color: var(--text3); font-size: 11px; }
+
+/* ── Service Bus compare ─────────────────────── */
+.sb-msg-badge {
+    display: inline-block; margin-left: 6px; font-size: 10px;
+    padding: 1px 5px; border-radius: 8px;
+    background: color-mix(in srgb, var(--blue) 15%, transparent);
+    color: var(--blue);
+}
+.sb-msg-badge.sb-dlq {
+    background: color-mix(in srgb, var(--red) 15%, transparent);
+    color: var(--red);
+}
+.sb-prop-row td { padding-top: 1px !important; padding-bottom: 1px !important; }
+.sb-prop-key { font-size: 11px; color: var(--text3); font-style: italic; }

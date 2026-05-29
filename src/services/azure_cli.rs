@@ -289,6 +289,55 @@ pub fn sb_queue_stats(rg: &str, namespace_fqdn: &str, queue: &str) -> Result<SbQ
 }
 
 
+/// List all queues in a Service Bus namespace.
+/// Returns queue names sorted alphabetically.
+pub fn sb_list_queues(subscription: &str, rg: &str, namespace: &str) -> Result<Vec<SbQueueDetail>, AzError> {
+    let short_name = namespace.split('.').next().unwrap_or(namespace);
+    let out = run(&[
+        "servicebus", "queue", "list",
+        "--subscription", subscription,
+        "--resource-group", rg,
+        "--namespace-name", short_name,
+        "--query", "[].{name:name,status:status,maxSize:maxSizeInMegabytes,msgCount:countDetails.activeMessageCount,dlq:countDetails.deadLetterMessageCount,requiresSession:requiresSession,maxDelivery:maxDeliveryCount,lockDuration:lockDuration,defaultTtl:defaultMessageTimeToLive,autoDelete:autoDeleteOnIdle}",
+        "-o", "json",
+    ])?;
+    let arr: serde_json::Value =
+        serde_json::from_str(&out).map_err(|e| AzError::Other(e.to_string()))?;
+    let mut result = Vec::new();
+    if let Some(items) = arr.as_array() {
+        for item in items {
+            result.push(SbQueueDetail {
+                name:             item["name"].as_str().unwrap_or("").to_string(),
+                status:           item["status"].as_str().unwrap_or("Active").to_string(),
+                max_size_mb:      item["maxSize"].as_u64().unwrap_or(0),
+                active_messages:  item["msgCount"].as_u64().unwrap_or(0),
+                dead_letter:      item["dlq"].as_u64().unwrap_or(0),
+                requires_session: item["requiresSession"].as_bool().unwrap_or(false),
+                max_delivery:     item["maxDelivery"].as_u64().unwrap_or(10) as u32,
+                lock_duration:    item["lockDuration"].as_str().unwrap_or("").to_string(),
+                default_ttl:      item["defaultTtl"].as_str().unwrap_or("").to_string(),
+                auto_delete:      item["autoDelete"].as_str().unwrap_or("").to_string(),
+            });
+        }
+    }
+    result.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(result)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SbQueueDetail {
+    pub name:             String,
+    pub status:           String,
+    pub max_size_mb:      u64,
+    pub active_messages:  u64,
+    pub dead_letter:      u64,
+    pub requires_session: bool,
+    pub max_delivery:     u32,
+    pub lock_duration:    String,
+    pub default_ttl:      String,
+    pub auto_delete:      String,
+}
+
 /// Sets the active subscription for subsequent az commands.
 pub fn set_subscription(subscription_id: &str) -> Result<(), AzError> {
     run(&["account", "set", "--subscription", subscription_id]).map(|_| ())
