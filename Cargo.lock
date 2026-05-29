@@ -41,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "ais-runner"
-version = "0.3.17"
+version = "0.3.20"
 dependencies = [
  "ais-chain",
  "arboard",
