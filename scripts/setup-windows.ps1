@@ -115,7 +115,11 @@ $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIden
     [Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Host "Requesting administrator privileges..." -ForegroundColor Yellow
-    Start-Process powershell "-ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    # -Wait: block the caller (installer's waituntilterminated) until the
+    #        elevated session actually finishes installing all tools.
+    # -NoPrompt: don't pause for "Press Enter" when called from the installer.
+    $elevArgs = "-ExecutionPolicy Bypass -NoProfile -File `"$PSCommandPath`" -NoPrompt"
+    Start-Process powershell $elevArgs -Verb RunAs -Wait
     exit
 }
 

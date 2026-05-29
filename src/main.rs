@@ -12,7 +12,35 @@ use screens::{WelcomeScreen, MainScreen};
 
 const MAIN_CSS: &str = include_str!("../assets/main.css");
 
+/// On Windows, MSI installers (Node.js, Azure CLI, func) update PATH in the
+/// registry but not in the current process. ais-runner is launched right after
+/// the installer, so it inherits a stale PATH. Read the real combined PATH from
+/// the registry via PowerShell and apply it before any tool checks.
+#[cfg(windows)]
+fn refresh_windows_path() {
+    let result = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile", "-NonInteractive", "-Command",
+            "[Environment]::GetEnvironmentVariable('PATH','Machine') + ';' + \
+             [Environment]::GetEnvironmentVariable('PATH','User')",
+        ])
+        .output();
+    if let Ok(out) = result {
+        if out.status.success() {
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !path.is_empty() {
+                std::env::set_var("PATH", path);
+            }
+        }
+    }
+}
+
 fn main() {
+    // Refresh PATH from the Windows registry so tools installed by the setup
+    // script (Node, Azure CLI, func, azurite) are visible when we probe them.
+    #[cfg(windows)]
+    refresh_windows_path();
+
     // ── Crash log — written before anything else so startup panics are visible ──
     // On Windows GUI apps there is no console; this file lets us diagnose crashes.
     let log_dir = dirs::data_local_dir()
