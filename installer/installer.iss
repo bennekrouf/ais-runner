@@ -32,13 +32,9 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; Windows 10 1809+ required for WebView2
 MinVersion=10.0.17763
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
-; Kill running instance before upgrade, restart after if it was running
 CloseApplications=yes
-; Clean install: remove files that are no longer part of the new version
-; (Inno writes the file list into the uninstall log; this flag uses that list)
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -59,8 +55,7 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{commondesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-; Always install runtime dependencies — the script skips anything already present
-; (completes in seconds if tools are installed, a few minutes on a fresh machine).
+; Always install runtime dependencies — the script skips anything already present.
 Filename: "powershell.exe"; \
   Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\setup-windows.ps1"" -NoPrompt"; \
   StatusMsg: "Installing runtime dependencies — skipping already-installed tools..."; \
@@ -71,19 +66,18 @@ Filename: "{app}\{#MyAppExeName}"; \
   Description: "Launch {#MyAppName}"; \
   Flags: nowait postinstall skipifsilent
 
-; ── Pascal script ─────────────────────────────────────────────────────────────
-; Detects an existing install, asks the user to confirm the upgrade, and
-; performs a clean uninstall of the previous version before copying new files.
+; ── Upgrade detection ─────────────────────────────────────────────────────────
+; Reads the previously installed version from the registry, shows a confirmation
+; dialog with both version numbers, and silently removes the old install before
+; copying new files. Settings/data are preserved (not managed by Inno).
 [Code]
 
-// Registry key written by Inno for per-user installs
 function GetInstalledVersion(): String;
 var
   RegKey: String;
-  Ver: String;
+  Ver:    String;
 begin
-  RegKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' +
-            '{8B4F5C2A-3D1E-4F7B-9A6C-E2D8F3B1C4A5}_is1';
+  RegKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8B4F5C2A-3D1E-4F7B-9A6C-E2D8F3B1C4A5}_is1';
   if not RegQueryStringValue(HKCU, RegKey, 'DisplayVersion', Ver) then
     Ver := '';
   Result := Ver;
@@ -91,19 +85,15 @@ end;
 
 function GetUninstallString(): String;
 var
-  RegKey: String;
+  RegKey:   String;
   UninstStr: String;
 begin
-  RegKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' +
-            '{8B4F5C2A-3D1E-4F7B-9A6C-E2D8F3B1C4A5}_is1';
+  RegKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8B4F5C2A-3D1E-4F7B-9A6C-E2D8F3B1C4A5}_is1';
   if not RegQueryStringValue(HKCU, RegKey, 'QuietUninstallString', UninstStr) then
     UninstStr := '';
   Result := UninstStr;
 end;
 
-// Called before the wizard pages are shown.
-// If a previous version is found: show a confirmation dialog listing both
-// versions, then silently uninstall the old one before proceeding.
 function InitializeSetup(): Boolean;
 var
   InstalledVer: String;
@@ -111,33 +101,31 @@ var
   Msg:          String;
   UninstStr:    String;
   ResultCode:   Integer;
+  NL:           String;
 begin
-  Result := True;   // default: proceed with install
+  Result := True;
+  NL := #13#10;
 
   InstalledVer := GetInstalledVersion();
   if InstalledVer = '' then
-    Exit;   // fresh install — nothing to do
+    Exit;   // fresh install
 
   NewVer := '{#MyAppVersion}';
 
   if InstalledVer = NewVer then
-    Msg := 'Version ' + InstalledVer + ' of {#MyAppName} is already installed.' + #13#10 +
-           #13#10 +
+    Msg := 'Version ' + InstalledVer + ' of {#MyAppName} is already installed.' + NL + NL +
            'Do you want to reinstall it?'
   else
-    Msg := '{#MyAppName} is already installed.' + #13#10 +
-           #13#10 +
-           '  Installed version:  ' + InstalledVer + #13#10 +
-           '  New version:        ' + NewVer + #13#10 +
-           #13#10 +
-           'The old version will be removed before installing the new one.' + #13#10 +
-           'Your settings and data will be preserved.' + #13#10 +
-           #13#10 +
+    Msg := '{#MyAppName} is already installed.' + NL + NL +
+           '  Installed version:  ' + InstalledVer + NL +
+           '  New version:        ' + NewVer + NL + NL +
+           'The old version will be removed before installing the new one.' + NL +
+           'Your settings and data will be preserved.' + NL + NL +
            'Continue?';
 
   if MsgBox(Msg, mbConfirmation, MB_YESNO) = IDNO then
   begin
-    Result := False;   // user cancelled
+    Result := False;
     Exit;
   end;
 
@@ -145,9 +133,7 @@ begin
   UninstStr := GetUninstallString();
   if UninstStr <> '' then
   begin
-    // QuietUninstallString already contains /SILENT — just run it
     Exec('>', UninstStr, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    // Give the OS a moment to finish cleaning up file handles
     Sleep(500);
   end;
 end;
