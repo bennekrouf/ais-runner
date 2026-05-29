@@ -38,7 +38,12 @@ pub struct MainScreenProps {
 pub fn MainScreen(mut props: MainScreenProps) -> Element {
     let dir            = props.logic_apps_dir.clone();
     let cfg            = use_signal(config::load);
-    let workspace_link = cfg.read().get_link(&dir).cloned();
+    // Derive workspace_link directly rather than via cfg.read() — in Dioxus 0.6
+    // the signal holds an internal write lock during hook initialisation, so
+    // reading the same signal on the very next line causes AlreadyBorrowedMut
+    // on Windows.  config::load() is a cheap file read; calling it twice here
+    // is the simplest way to sidestep the re-entrant borrow.
+    let workspace_link = config::load().get_link(&dir).cloned();
 
     // ── Service states & processes ─────────────────────────────────────────
     let azurite_state   = use_signal(|| ServiceState::Stopped);
