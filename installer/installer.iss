@@ -19,8 +19,11 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases/latest
-; Install per-user into %LOCALAPPDATA%\AIS Runner — no UAC prompt needed.
-DefaultDirName={localappdata}\{#MyAppName}
+; Admin install — UAC appears once at startup so the dependency script
+; (Node.js, Azure CLI, func, azurite) can install without self-elevation tricks.
+; ais-runner.exe itself is installed to Program Files but stores all runtime
+; data in %LOCALAPPDATA%\AIS Runner\ (created at launch by Rust code).
+DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=..\dist
@@ -28,8 +31,7 @@ OutputBaseFilename=ais-runner-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=commandline
+PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
@@ -55,11 +57,12 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{commondesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-; Always install runtime dependencies — the script skips anything already present.
+; Installer already runs elevated — the script runs as admin directly,
+; no self-elevation needed.  Skips already-installed tools in seconds.
 Filename: "powershell.exe"; \
   Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\setup-windows.ps1"" -NoPrompt"; \
-  StatusMsg: "Installing runtime dependencies — skipping already-installed tools..."; \
-  Flags: waituntilterminated
+  StatusMsg: "Installing runtime dependencies (Node, Azure CLI, func, azurite)..."; \
+  Flags: waituntilterminated runhidden
 
 ; Offer to launch the app on the Finish page
 Filename: "{app}\{#MyAppExeName}"; \
@@ -78,19 +81,21 @@ var
   Ver:    String;
 begin
   RegKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8B4F5C2A-3D1E-4F7B-9A6C-E2D8F3B1C4A5}_is1';
-  if not RegQueryStringValue(HKCU, RegKey, 'DisplayVersion', Ver) then
-    Ver := '';
+  if not RegQueryStringValue(HKLM, RegKey, 'DisplayVersion', Ver) then
+    if not RegQueryStringValue(HKCU, RegKey, 'DisplayVersion', Ver) then
+      Ver := '';
   Result := Ver;
 end;
 
 function GetUninstallString(): String;
 var
-  RegKey:   String;
+  RegKey:    String;
   UninstStr: String;
 begin
   RegKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8B4F5C2A-3D1E-4F7B-9A6C-E2D8F3B1C4A5}_is1';
-  if not RegQueryStringValue(HKCU, RegKey, 'QuietUninstallString', UninstStr) then
-    UninstStr := '';
+  if not RegQueryStringValue(HKLM, RegKey, 'QuietUninstallString', UninstStr) then
+    if not RegQueryStringValue(HKCU, RegKey, 'QuietUninstallString', UninstStr) then
+      UninstStr := '';
   Result := UninstStr;
 end;
 
