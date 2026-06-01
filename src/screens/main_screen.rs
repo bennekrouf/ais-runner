@@ -593,7 +593,13 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                                 for t in missing {
                                     span { class: "tool-banner-item",
                                         strong { "{t.name}" }
-                                        " not found — install: "
+                                        // version present = installed but not running (e.g. Docker daemon stopped)
+                                        // version absent  = not installed at all
+                                        if t.version.is_some() {
+                                            " not running — "
+                                        } else {
+                                            " not found — "
+                                        }
                                         code { "{t.install_hint}" }
                                     }
                                 }
