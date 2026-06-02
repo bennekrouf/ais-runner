@@ -81,6 +81,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     let mut run_dialog  = use_signal(|| Option::<(String, String, String, String, Option<String>, Option<String>)>::None);
     let mut traced_wfs  = use_signal(|| HashSet::<String>::new());
     let mut cleared_wfs = use_signal(|| HashMap::<String, String>::new());
+    let mut last_ran: Signal<HashMap<String, u64>> = use_signal(HashMap::new);
     let mut auto_watch  = use_signal(|| true);
     // Track which views have been opened — panels are lazy-mounted on first visit
     // but stay in the DOM afterwards so their state (caches, signals) survives tab switches.
@@ -197,6 +198,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                     cleared_wfs.write().insert(wf_name.clone(), trigger_ts.clone());
                     traced_wfs.write().insert(wf_name.clone());
                     running_wfs.write().insert(wf_name.clone());
+                    last_ran.write().insert(wf_name.clone(), epoch_now());
 
                     let wf     = wf_name.clone();
                     let cleared = cleared_wfs;
@@ -523,13 +525,19 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                 // ── spacer pushes the right group to the far edge ─────────────
                 div { style: "flex:1; min-width:0" }
 
-                // ── view switch: Workflows | Settings | DevOps ────────────────
+                // ── view switch: Workflows | Graph | Settings | DevOps ───────────
                 div { class: "view-switch",
                     button {
                         class: if *current_view.read() == "Workflows" { "view-btn active" } else { "view-btn" },
                         title: "Workflow list and run detail",
                         onclick: move |_| current_view.set("Workflows".into()),
                         "Workflows"
+                    }
+                    button {
+                        class: if *current_view.read() == "Graph" { "view-btn active" } else { "view-btn" },
+                        title: "Workflow chain graph — interactive D3.js visualization",
+                        onclick: move |_| { visited_views.write().insert("Graph".into()); current_view.set("Graph".into()); },
+                        "Graph"
                     }
                     button {
                         class: if *current_view.read() == "Settings" { "view-btn active" } else { "view-btn" },
@@ -542,12 +550,6 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                         title: "Azure DevOps pipelines and runs",
                         onclick: move |_| { visited_views.write().insert("DevOps".into()); current_view.set("DevOps".into()); },
                         "DevOps"
-                    }
-                    button {
-                        class: if *current_view.read() == "Graph" { "view-btn active" } else { "view-btn" },
-                        title: "Workflow chain graph — interactive D3.js visualization",
-                        onclick: move |_| { visited_views.write().insert("Graph".into()); current_view.set("Graph".into()); },
-                        "Graph"
                     }
                 }
 
@@ -640,6 +642,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                         sql_wfs:    sql_wfs.read().clone(),
                         msi_wfs:    msi_wfs.read().clone(),
                         connectors: wf_connectors.read().clone(),
+                        last_ran:   last_ran.read().clone(),
                         on_select: {
                             let dir = dir.clone();
                             move |name: String| workflow_select::handle_select(
@@ -845,13 +848,20 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                             wf_name.clone(), trigger_name.clone(), trigger_type.clone(),
                             queue_or_blob, body, &dir,
                             runs, actions, log_lines, running_wfs, active_tab,
-                            traced_wfs, cleared_wfs, run_dialog,
+                            traced_wfs, cleared_wfs, run_dialog, last_ran,
                         )
                     },
                 }
             }
         }
     }
+}
+
+fn epoch_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 // ── Setup banner ──────────────────────────────────────────────────────────────

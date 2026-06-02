@@ -12,6 +12,7 @@ pub struct WorkflowListProps {
     pub sql_wfs:     HashSet<String>,
     pub msi_wfs:     HashSet<String>,
     pub connectors:  HashMap<String, Vec<ConnectorKind>>,
+    pub last_ran:    HashMap<String, u64>,
     pub on_select:   EventHandler<String>,
     pub on_run:      EventHandler<(String, String, String)>,
 }
@@ -130,7 +131,7 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
 
     let mode = *filter_mode.read();
 
-    let visible: Vec<_> = with_cat.iter()
+    let mut visible: Vec<_> = with_cat.iter()
         .filter(|(wf, cat)| {
             if !query.is_empty() && !wf.name.to_lowercase().contains(&query) {
                 return false;
@@ -151,6 +152,21 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
             }
         })
         .collect();
+
+    // Sort: currently running first, then by last_ran descending, then alphabetically.
+    visible.sort_by(|(a, _), (b, _)| {
+        let a_running = props.running.contains(&a.name);
+        let b_running = props.running.contains(&b.name);
+        if a_running != b_running {
+            return b_running.cmp(&a_running);
+        }
+        let a_ts = props.last_ran.get(&a.name).copied().unwrap_or(0);
+        let b_ts = props.last_ran.get(&b.name).copied().unwrap_or(0);
+        if a_ts != b_ts {
+            return b_ts.cmp(&a_ts);
+        }
+        a.name.to_lowercase().cmp(&b.name.to_lowercase())
+    });
 
     let shown = visible.len();
 

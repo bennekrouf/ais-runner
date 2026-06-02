@@ -30,17 +30,10 @@ pub fn suggest_payload(logic_apps_dir: &str, workflow_name: &str) -> String {
         })
         .unwrap_or(false);
 
-    // 1. Trigger-level schema (HTTP triggers only — SB triggers have no schema here)
-    if let Some(triggers) = defn["triggers"].as_object() {
-        if let Some(trigger) = triggers.values().next() {
-            let schema = &trigger["inputs"]["schema"];
-            if schema.is_object() && !schema.as_object().map(|m| m.is_empty()).unwrap_or(true) {
-                return pretty(schema_to_sample("", schema));
-            }
-        }
-    }
-
-    // 2. First ParseJson action that reads triggerBody / triggerOutputs / contentData
+    // 1. First ParseJson action that reads triggerBody / triggerOutputs / contentData.
+    //    Checked before the trigger schema because it tends to be stricter (e.g. it
+    //    adds `items` constraints on arrays that the trigger schema leaves open), and
+    //    validation failures happen against this schema, not the trigger schema.
     if let Some(actions) = defn["actions"].as_object() {
         if let Some(schema) = find_trigger_body_schema(actions) {
             let sample = schema_to_sample("", &schema);
@@ -57,6 +50,17 @@ pub fn suggest_payload(logic_apps_dir: &str, workflow_name: &str) -> String {
                 }
             }
             return pretty(sample);
+        }
+    }
+
+    // 2. Trigger-level schema (HTTP triggers only — SB triggers have no schema here).
+    //    Used as a fallback when no ParseJson action is present.
+    if let Some(triggers) = defn["triggers"].as_object() {
+        if let Some(trigger) = triggers.values().next() {
+            let schema = &trigger["inputs"]["schema"];
+            if schema.is_object() && !schema.as_object().map(|m| m.is_empty()).unwrap_or(true) {
+                return pretty(schema_to_sample("", schema));
+            }
         }
     }
 

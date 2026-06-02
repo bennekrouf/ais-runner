@@ -20,6 +20,8 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
     let mut error: Signal<Option<String>> = use_signal(|| None);
     // true once the user explicitly asks to link to Azure
     let mut linking: Signal<bool> = use_signal(|| false);
+    // az account that will be used for the resource list — checked before fetching
+    let mut az_account: Signal<Option<String>> = use_signal(|| None);
 
     rsx! {
         div { id: "welcome",
@@ -56,15 +58,23 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
                                         linking.set(true);
                                         fetching.set(true);
                                         error.set(None);
+                                        az_account.set(None);
+                                        rg_list.write().clear();
                                         spawn(async move {
-                                            let res = tokio::task::spawn_blocking(|| {
-                                                azure_sync::list_logic_app_sites(None)
-                                            }).await.unwrap_or(Err(azure_cli::AzError::Other("Task failed".into())));
+                                            // Check who is logged in first so the user
+                                            // can confirm or switch account before we
+                                            // enumerate their Azure resources.
+                                            let account = tokio::task::spawn_blocking(|| {
+                                                let out = std::process::Command::new("az")
+                                                    .args(["account", "show", "--query", "user.name", "-o", "tsv"])
+                                                    .output().ok()?;
+                                                if out.status.success() {
+                                                    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                                                    if s.is_empty() { None } else { Some(s) }
+                                                } else { None }
+                                            }).await.unwrap_or(None);
                                             fetching.set(false);
-                                            match res {
-                                                Ok(list) => rg_list.set(list),
-                                                Err(e)   => error.set(Some(format!("{:?}", e))),
-                                            }
+                                            az_account.set(account);
                                         });
                                     },
                                     "🔗 Link to Azure…"
@@ -78,11 +88,89 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
                         } else {
                             // ── Step 2: pick the Azure Logic App site ──────
                             h3 { "🔗 Link to Azure Logic App" }
-                            p { class: "onboarding-hint",
-                                "Select the Logic App site for this project:"
-                            }
                             if *fetching.read() {
-                                div { class: "onboarding-loading", "Fetching sites from Azure…" }
+                                div { class: "onboarding-loading",
+                                    if rg_list.read().is_empty() && az_account.read().is_none() {
+                                        "Checking Azure session…"
+                                    } else {
+                                        "Fetching Logic App sites…"
+                                    }
+                                }
+                            } else if az_account.read().is_none() && error.read().is_none() && rg_list.read().is_empty() {
+                                // Not logged in — ask user to sign in first
+                                div { class: "onboarding-hint",
+                                    "You are not signed in to Azure CLI."
+                                    br {}
+                                    "Sign in to list your Logic App sites."
+                                }
+                                div { class: "onboarding-actions",
+                                    button {
+                                        class: "btn btn-run",
+                                        onclick: move |_| {
+                                            spawn(async move { azure_cli::launch_az_login(None, None); });
+                                            // poll until logged in
+                                            fetching.set(true);
+                                            spawn(async move {
+                                                loop {
+                                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                                    let account = tokio::task::spawn_blocking(|| {
+                                                        let out = std::process::Command::new("az")
+                                                            .args(["account", "show", "--query", "user.name", "-o", "tsv"])
+                                                            .output().ok()?;
+                                                        if out.status.success() {
+                                                            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                                                            if s.is_empty() { None } else { Some(s) }
+                                                        } else { None }
+                                                    }).await.unwrap_or(None);
+                                                    if account.is_some() {
+                                                        az_account.set(account);
+                                                        fetching.set(false);
+                                                        break;
+                                                    }
+                                                }
+                                            });
+                                        },
+                                        "🔐 Sign in to Azure"
+                                    }
+                                }
+                            } else if let Some(account) = az_account.read().clone() {
+                                if rg_list.read().is_empty() && error.read().is_none() {
+                                    // Logged in — show who and let them fetch sites
+                                    div { class: "onboarding-hint",
+                                        "Signed in as "
+                                        strong { "{account}" }
+                                        br {}
+                                        "Fetch all Logic App sites accessible to this account."
+                                    }
+                                    div { class: "onboarding-actions",
+                                        button {
+                                            class: "btn btn-run",
+                                            onclick: move |_| {
+                                                fetching.set(true);
+                                                error.set(None);
+                                                spawn(async move {
+                                                    let res = tokio::task::spawn_blocking(|| {
+                                                        azure_sync::list_logic_app_sites(None)
+                                                    }).await.unwrap_or(Err(azure_cli::AzError::Other("Task failed".into())));
+                                                    fetching.set(false);
+                                                    match res {
+                                                        Ok(list) => rg_list.set(list),
+                                                        Err(e)   => error.set(Some(format!("{:?}", e))),
+                                                    }
+                                                });
+                                            },
+                                            "↻ Fetch Logic Apps"
+                                        }
+                                        button {
+                                            class: "btn btn-small",
+                                            onclick: move |_| {
+                                                az_account.set(None);
+                                                spawn(async move { azure_cli::launch_az_login(None, None); });
+                                            },
+                                            "Switch account"
+                                        }
+                                    }
+                                }
                             } else if let Some(err) = error.read().clone() {
                                 div { class: "onboarding-error",
                                     "{err}"
@@ -91,6 +179,39 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
                                         style: "margin-left:10px",
                                         onclick: move |_| {
                                             error.set(None);
+                                            spawn(async move { azure_cli::launch_az_login(None, None); });
+                                        },
+                                        "🔐 az login"
+                                    }
+                                }
+                            } else if rg_list.read().is_empty() {
+                                div { class: "onboarding-error",
+                                    "No Logic App sites found in your Azure subscriptions."
+                                    br {}
+                                    "Make sure you are logged in and have access to Logic Apps Standard resources."
+                                    button {
+                                        class: "btn btn-small",
+                                        style: "margin-left:10px",
+                                        onclick: move |_| {
+                                            fetching.set(true);
+                                            error.set(None);
+                                            spawn(async move {
+                                                let res = tokio::task::spawn_blocking(|| {
+                                                    azure_sync::list_logic_app_sites(None)
+                                                }).await.unwrap_or(Err(azure_cli::AzError::Other("Task failed".into())));
+                                                fetching.set(false);
+                                                match res {
+                                                    Ok(list) => rg_list.set(list),
+                                                    Err(e)   => error.set(Some(format!("{:?}", e))),
+                                                }
+                                            });
+                                        },
+                                        "↻ Retry"
+                                    }
+                                    button {
+                                        class: "btn btn-small",
+                                        style: "margin-left:6px",
+                                        onclick: move |_| {
                                             spawn(async move { azure_cli::launch_az_login(None, None); });
                                         },
                                         "🔐 az login"

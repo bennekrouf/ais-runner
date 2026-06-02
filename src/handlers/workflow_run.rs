@@ -2,6 +2,13 @@ use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 use dioxus::prelude::*;
 
+fn epoch_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 use crate::components::log_panel::{LogLevel, LogLine};
 use crate::services::{
     connection_diag, payload, sb_check,
@@ -74,6 +81,7 @@ pub fn handle_run(
     mut traced_wfs: Signal<HashSet<String>>,
     mut cleared_wfs: Signal<HashMap<String, String>>,
     mut run_dialog: Signal<Option<(String, String, String, String, Option<String>, Option<String>)>>,
+    mut last_ran: Signal<HashMap<String, u64>>,
 ) {
     run_dialog.set(None);
     active_tab.set("Run".into());
@@ -104,6 +112,7 @@ pub fn handle_run(
 
     push(format!("Triggering: {}", wf), LogLevel::Info);
     running_wfs.write().insert(wf.clone());
+    last_ran.write().insert(wf.clone(), epoch_now());
 
     spawn(async move {
         let not_found_hints = |push: &mut dyn FnMut(String, LogLevel), dir: &str, wf: &str, hints: Vec<String>| {
