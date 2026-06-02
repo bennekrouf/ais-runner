@@ -43,6 +43,10 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
     let mut copied         = use_signal(|| false);
     let suggested          = props.suggested_payload.clone();
 
+    // ── Source tab actions ─────────────────────────────────────────────────
+    let mut source_copied  = use_signal(|| false);
+    let mut opening        = use_signal(|| false);
+
     rsx! {
         div { id: "detail",
 
@@ -305,33 +309,53 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                         div { class: "empty-state", "Select a workflow to view its source." }
                     } else {
                         div { class: "source-wrap",
+                            // "Copied!" toast
+                            if *source_copied.read() {
+                                div {
+                                    style: "position:absolute; top:8px; left:50%; transform:translateX(-50%); \
+                                            background:#238636; color:#fff; padding:4px 14px; border-radius:6px; \
+                                            font-size:12px; font-weight:600; pointer-events:none; z-index:20; \
+                                            box-shadow:0 2px 8px rgba(0,0,0,0.3);",
+                                    "✅ Copied!"
+                                }
+                            }
                             button {
                                 class: "source-copy-btn",
                                 title: "Copy to clipboard",
+                                disabled: *source_copied.read(),
                                 onclick: {
                                     let text = props.source_text.clone();
                                     move |_| {
                                         let text = text.clone();
+                                        source_copied.set(true);
                                         spawn(async move {
                                             tokio::task::spawn_blocking(move || {
                                                 if let Ok(mut cb) = arboard::Clipboard::new() {
                                                     let _ = cb.set_text(text);
                                                 }
                                             }).await.ok();
+                                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                            source_copied.set(false);
                                         });
                                     }
                                 },
-                                "⎘"
+                                if *source_copied.read() { "✅" } else { "⎘" }
                             }
                             if let Some(path) = props.source_path.clone() {
                                 button {
                                     class: "source-copy-btn",
                                     title: "Open in editor",
+                                    disabled: *opening.read(),
                                     onclick: move |_| {
                                         let p = path.clone();
+                                        opening.set(true);
                                         std::thread::spawn(move || { open_in_editor(&p); });
+                                        spawn(async move {
+                                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                                            opening.set(false);
+                                        });
                                     },
-                                    "✎"
+                                    if *opening.read() { "⏳" } else { "✎" }
                                 }
                             }
                             pre { id: "source-pre", "{props.source_text}" }
