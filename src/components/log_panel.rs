@@ -251,7 +251,9 @@ fn az_split(line: &str) -> (&str, &str) {
 pub struct LogPanelProps {
     pub lines:        Signal<Vec<LogLine>>,
     pub sb_emu_lines: Signal<Vec<String>>,
-    pub on_clear:     EventHandler<()>,
+    pub java_lines:    Signal<Vec<String>>,
+    pub sql_dev_lines: Signal<Vec<String>>,
+    pub on_clear:      EventHandler<()>,
 }
 
 #[component]
@@ -259,16 +261,22 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     let mut active_tab = use_signal(|| "console");
     let mut az_lines: Signal<Vec<String>> = use_signal(Vec::new);
     let mut sb_emu_lines = props.sb_emu_lines;
+    let mut java_lines    = props.java_lines;
+    let mut sql_dev_lines = props.sql_dev_lines;
 
     // ── Pause snapshots — None = live, Some(snapshot) = paused ──────────────
     let mut console_snap: Signal<Option<Vec<LogLine>>>    = use_signal(|| None);
     let mut az_snap:      Signal<Option<Vec<String>>>     = use_signal(|| None);
     let mut sb_snap:      Signal<Option<(Vec<String>, Vec<LogLine>)>> = use_signal(|| None);
+    let mut java_snap:    Signal<Option<Vec<String>>>     = use_signal(|| None);
+    let mut sql_snap:     Signal<Option<Vec<String>>>     = use_signal(|| None);
 
     // ── Per-tab text filter ───────────────────────────────────────────────────
     let console_filter: Signal<String> = use_signal(String::new);
     let az_filter:      Signal<String> = use_signal(String::new);
     let sb_filter:      Signal<String> = use_signal(String::new);
+    let java_filter:    Signal<String> = use_signal(String::new);
+    let sql_filter:     Signal<String> = use_signal(String::new);
 
     // ── Auto-scroll: only when not paused ───────────────────────────────────
     use_effect(move || {
@@ -287,6 +295,18 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
         let _n = sb_emu_lines.read().len();
         if sb_snap.read().is_none() {
             document::eval("var e=document.getElementById('sb-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+        }
+    });
+    use_effect(move || {
+        let _n = java_lines.read().len();
+        if java_snap.read().is_none() {
+            document::eval("var e=document.getElementById('java-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+        }
+    });
+    use_effect(move || {
+        let _n = sql_dev_lines.read().len();
+        if sql_snap.read().is_none() {
+            document::eval("var e=document.getElementById('sql-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
         }
     });
 
@@ -360,11 +380,19 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     let sb_noise_count = props.lines.read().iter().filter(|l| is_sb_noise(&l.msg)).count();
     let sb_emu_count   = sb_emu_lines.read().len();
     let sb_count       = sb_noise_count + sb_emu_count;
+    let java_new = java_snap.read().as_ref().map(|snap| {
+        java_lines.read().len().saturating_sub(snap.len())
+    });
+    let java_count = java_lines.read().len();
+    let sql_new = sql_snap.read().as_ref().map(|snap| sql_dev_lines.read().len().saturating_sub(snap.len()));
+    let sql_count = sql_dev_lines.read().len();
 
     // ── Rendered lines (with filter applied) ─────────────────────────────────
     let cf = console_filter.read().to_lowercase();
     let af = az_filter.read().to_lowercase();
     let sf = sb_filter.read().to_lowercase();
+    let jf  = java_filter.read().to_lowercase();
+    let sqf = sql_filter.read().to_lowercase();
 
     let console_lines: Vec<LogLine> = {
         let base: Vec<LogLine> = match console_snap.read().clone() {
@@ -383,6 +411,21 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
         };
         if af.is_empty() { base }
         else { base.into_iter().filter(|l| l.to_lowercase().contains(&af)).collect() }
+    };
+    let sql_display: Vec<String> = {
+        let base = match sql_snap.read().clone() {
+            Some(snap) => snap,
+            None => sql_dev_lines.read().clone(),
+        };
+        if sqf.is_empty() { base } else { base.into_iter().filter(|l| l.to_lowercase().contains(&sqf)).collect() }
+    };
+    let java_display: Vec<String> = {
+        let base = match java_snap.read().clone() {
+            Some(snap) => snap,
+            None => java_lines.read().clone(),
+        };
+        if jf.is_empty() { base }
+        else { base.into_iter().filter(|l| l.to_lowercase().contains(&jf)).collect() }
     };
     let (sb_emu_display, sb_noise_display): (Vec<String>, Vec<LogLine>) = {
         let (base_emu, base_noise) = match sb_snap.read().clone() {
@@ -438,12 +481,33 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                                 document::eval("var e=document.getElementById('sb-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
                             }
                         },
-                        if tab != "servicebus" && sb_count > 0 {
-                            "Service Bus ({sb_count})"
-                        } else {
-                            "Service Bus"
-                        }
+                        if tab != "servicebus" && sb_count > 0 { "Service Bus ({sb_count})" }
+                        else { "Service Bus" }
                         if sb_snap.read().is_some() { span { class: "log-paused-badge", "⏸" } }
+                    }
+                    button {
+                        class: if tab == "java" { "log-tab active" } else { "log-tab" },
+                        onclick: move |_| {
+                            active_tab.set("java");
+                            if java_snap.read().is_none() {
+                                document::eval("var e=document.getElementById('java-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+                            }
+                        },
+                        if tab != "java" && java_count > 0 { "Java ({java_count})" }
+                        else { "Java" }
+                        if java_snap.read().is_some() { span { class: "log-paused-badge", "⏸" } }
+                    }
+                    button {
+                        class: if tab == "sqldev" { "log-tab active" } else { "log-tab" },
+                        onclick: move |_| {
+                            active_tab.set("sqldev");
+                            if sql_snap.read().is_none() {
+                                document::eval("var e=document.getElementById('sql-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+                            }
+                        },
+                        if tab != "sqldev" && sql_count > 0 { "SQL Dev ({sql_count})" }
+                        else { "SQL Dev" }
+                        if sql_snap.read().is_some() { span { class: "log-paused-badge", "⏸" } }
                     }
                 }
 
@@ -455,6 +519,8 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                         let (mut filter_sig, placeholder) = match tab {
                             "azurite"    => (az_filter,      "Filter Azurite…"),
                             "servicebus" => (sb_filter,      "Filter Service Bus…"),
+                            "java"       => (java_filter,    "Filter Java…"),
+                            "sqldev"     => (sql_filter,     "Filter SQL Dev…"),
                             _            => (console_filter, "Filter console…"),
                         };
                         let has_filter = !filter_sig.read().is_empty();
@@ -484,6 +550,8 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                         let (paused, new_count) = match tab {
                             "azurite"    => (az_snap.read().is_some(),      az_new),
                             "servicebus" => (sb_snap.read().is_some(),      sb_new),
+                            "java"       => (java_snap.read().is_some(),    java_new),
+                            "sqldev"     => (sql_snap.read().is_some(),     sql_new),
                             _            => (console_snap.read().is_some(), console_new),
                         };
                         rsx! {
@@ -508,6 +576,22 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                                                 let emu   = sb_emu_lines.read().clone();
                                                 let noise = props.lines.read().iter().filter(|l| is_sb_noise(&l.msg)).cloned().collect();
                                                 sb_snap.set(Some((emu, noise)));
+                                            }
+                                        }
+                                        "java" => {
+                                            if java_snap.read().is_some() {
+                                                java_snap.set(None);
+                                                document::eval("var e=document.getElementById('java-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+                                            } else {
+                                                java_snap.set(Some(java_lines.read().clone()));
+                                            }
+                                        }
+                                        "sqldev" => {
+                                            if sql_snap.read().is_some() {
+                                                sql_snap.set(None);
+                                                document::eval("var e=document.getElementById('sql-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+                                            } else {
+                                                sql_snap.set(Some(sql_dev_lines.read().clone()));
                                             }
                                         }
                                         _ => {
@@ -547,6 +631,14 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                                     sb_snap.set(None);
                                     sb_emu_lines.write().clear();
                                     props.on_clear.call(());
+                                }
+                                "java" => {
+                                    java_snap.set(None);
+                                    java_lines.write().clear();
+                                }
+                                "sqldev" => {
+                                    sql_snap.set(None);
+                                    sql_dev_lines.write().clear();
                                 }
                                 _ => {
                                     console_snap.set(None);
@@ -681,6 +773,69 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                         div { class: "log-line",
                             span { class: "log-time", "{line.time}" }
                             span { class: line.level.css_class(), "{line.msg}" }
+                        }
+                    }
+                }
+            }
+
+            // ── SQL Dev tab ───────────────────────────────────────────────
+            div {
+                id: "sql-log-scroll",
+                style: if tab == "sqldev" { "" } else { "display:none" },
+                if sql_display.is_empty() {
+                    div { class: "log-line",
+                        span { class: "log-msg info", style: "opacity:0.45;font-style:italic",
+                            "No SQL Dev activity yet — use SQL Dev Console in Connections."
+                        }
+                    }
+                } else {
+                    for line in sql_display.iter() {
+                        {
+                            let cls = if line.contains('✗') || line.contains("error") || line.contains("WARN") {
+                                "log-msg error"
+                            } else if line.contains('✓') {
+                                "log-msg ok"
+                            } else if line.contains('↷') {
+                                "log-msg warn"
+                            } else {
+                                "log-msg info"
+                            };
+                            let (time, msg) = az_split(line);
+                            rsx! {
+                                div { class: "log-line",
+                                    span { class: "log-time", "{time}" }
+                                    span { class: cls, style: "font-family:monospace; font-size:11px;", "{msg}" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Java Functions tab ────────────────────────────────────────
+            div {
+                id: "java-log-scroll",
+                style: if tab == "java" { "" } else { "display:none" },
+                if java_display.is_empty() {
+                    div { class: "log-line",
+                        span { class: "log-msg info", style: "opacity:0.45;font-style:italic",
+                            "Java Functions not running — start them from the toolbar."
+                        }
+                    }
+                } else {
+                    for line in java_display.iter() {
+                        {
+                            let cls = if line.contains("ERROR") || line.contains("SEVERE") { "log-msg error" }
+                                      else if line.contains("WARN")                         { "log-msg warn"  }
+                                      else if line.contains("✅") || line.contains("BUILD SUCCESS") { "log-msg ok" }
+                                      else { "log-msg info" };
+                            let (time, msg) = az_split(line);
+                            rsx! {
+                                div { class: "log-line",
+                                    span { class: "log-time", "{time}" }
+                                    span { class: cls, "{msg}" }
+                                }
+                            }
                         }
                     }
                 }

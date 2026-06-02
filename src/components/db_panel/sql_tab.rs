@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
 use crate::services::sql_check::{self, SqlAuthType, SqlConnection, TestResult};
+use crate::services::sql_runner;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SqlTabProps {
@@ -14,6 +15,53 @@ pub fn SqlTab(props: SqlTabProps) -> Element {
     let mut sql_test_results: Signal<HashMap<String, TestResult>> = use_signal(HashMap::new);
     let mut sql_testing:      Signal<HashSet<String>>             = use_signal(HashSet::new);
 
+    // ── SQL Dev Console state ──────────────────────────────────────────
+    let mut dev_db_name:   Signal<String>              = use_signal(String::new);
+    let mut dev_db_result: Signal<Option<Result<String, String>>> = use_signal(|| None);
+    let mut dev_db_busy:   Signal<bool>                = use_signal(|| false);
+
+    let mut dev_sql_db:     Signal<String>              = use_signal(String::new);
+    let mut dev_sql_input:  Signal<String>              = use_signal(String::new);
+    let mut dev_sql_result: Signal<Option<Result<String, String>>> = use_signal(|| None);
+    let mut dev_sql_busy:   Signal<bool>                = use_signal(|| false);
+
+    // ── Database tree ──────────────────────────────────────────────────
+    // Vec<(db_name, Vec<(schema, table, row_count)>)>
+    let mut db_tree: Signal<Vec<(String, Vec<(String, String, u64)>)>> = use_signal(Vec::new);
+    let mut tree_loading: Signal<bool>                                  = use_signal(|| false);
+    let mut expanded_dbs: Signal<std::collections::HashSet<String>>     = use_signal(std::collections::HashSet::new);
+    // key = "db::schema.table" — pending drop confirmation
+    let mut confirm_drop: Signal<Option<String>>                        = use_signal(|| None);
+
+    let mut refresh_tree = move || {
+        tree_loading.set(true);
+        spawn(async move {
+            match sql_runner::list_databases().await {
+                Ok(dbs) => {
+                    let mut tree = Vec::new();
+                    for db in dbs {
+                        let tables = sql_runner::list_tables(&db).await.unwrap_or_default();
+                        tree.push((db, tables));
+                    }
+                    db_tree.set(tree);
+                }
+                Err(_) => { db_tree.set(vec![]); }
+            }
+            tree_loading.set(false);
+        });
+    };
+
+    // Load tree on first mount
+    use_effect(move || { refresh_tree(); });
+
+    // Live refresh every 3 seconds
+    use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            refresh_tree();
+        }
+    });
+
     let mut edits  = props.edits;
     let _status    = props.status; // passed to parent; unused locally
 
@@ -22,6 +70,290 @@ pub fn SqlTab(props: SqlTabProps) -> Element {
 
         if props.connections.is_empty() {
             div { class: "empty-state", "No SQL connections found in connections.json" }
+        }
+
+        // ── SQL Dev Console (ais-sql-dev on localhost:1433) ───────────────
+        div { class: "db-section-title",
+            "🛠 SQL Dev Console"
+            button {
+                class: "btn btn-small",
+                style: "margin-left:8px; font-size:11px;",
+                disabled: *tree_loading.read(),
+                onclick: move |_| refresh_tree(),
+                if *tree_loading.read() { "↻ …" } else { "↻ Refresh" }
+            }
+        }
+
+        // ── Database / table tree ─────────────────────────────────────────
+        {
+            let tree = db_tree.read();
+            if tree.is_empty() {
+                rsx! {
+                    div { class: "db-card",
+                        span { style: "font-size:12px; opacity:0.6;",
+                            "No databases yet — create one below."
+                        }
+                    }
+                }
+            } else {
+                rsx! {
+                    div { class: "db-card", style: "padding:6px 8px;",
+                        for (db_name, tables) in tree.iter() {
+                            {
+                                let db = db_name.clone();
+                                let db_click = db_name.clone();
+                                let db_drop  = db_name.clone();
+                                let db_drop_key  = format!("db::{}", db_name);
+                                let db_drop_key2 = db_drop_key.clone();
+                                let is_expanded    = expanded_dbs.read().contains(db_name);
+                                let is_confirming_db = confirm_drop.read().as_deref() == Some(&db_drop_key);
+                                rsx! {
+                                    div {
+                                        // Database row
+                                        div {
+                                            style: "display:flex; align-items:center; gap:4px; cursor:pointer; padding:2px 0;",
+                                            onclick: {
+                                                let db = db.clone();
+                                                move |_| {
+                                                    let mut set = expanded_dbs.write();
+                                                    if set.contains(&db) { set.remove(&db); } else { set.insert(db.clone()); }
+                                                }
+                                            },
+                                            span { style: "font-size:11px;", if is_expanded { "▾" } else { "▸" } }
+                                            span { style: "font-size:12px; font-weight:600;", "🗄 {db_name}" }
+                                            // Use button
+                                            button {
+                                                class: "btn btn-small",
+                                                style: "margin-left:auto; font-size:10px; padding:1px 6px;",
+                                                title: "Use this database",
+                                                onclick: move |e| {
+                                                    e.stop_propagation();
+                                                    dev_sql_db.set(db_click.clone());
+                                                },
+                                                "Use"
+                                            }
+                                            // Drop database — two-click confirm
+                                            if is_confirming_db {
+                                                button {
+                                                    class: "btn btn-small",
+                                                    style: "font-size:10px; padding:0 5px; background:var(--red,#f85149); color:#fff;",
+                                                    title: "Click again to drop database",
+                                                    onclick: move |e| {
+                                                        e.stop_propagation();
+                                                        let db = db_drop.clone();
+                                                        confirm_drop.set(None);
+                                                        spawn(async move {
+                                                            let _ = sql_runner::drop_database(&db).await;
+                                                            refresh_tree();
+                                                        });
+                                                    },
+                                                    "⚠ Confirm"
+                                                }
+                                                button {
+                                                    class: "btn btn-small",
+                                                    style: "font-size:10px; padding:0 4px;",
+                                                    onclick: move |e| { e.stop_propagation(); confirm_drop.set(None); },
+                                                    "✕"
+                                                }
+                                            } else {
+                                                button {
+                                                    class: "btn btn-small",
+                                                    style: "font-size:10px; padding:0 5px; opacity:0.7;",
+                                                    title: "Drop database — requires confirmation",
+                                                    onclick: move |e| {
+                                                        e.stop_propagation();
+                                                        confirm_drop.set(Some(db_drop_key2.clone()));
+                                                    },
+                                                    "🗑"
+                                                }
+                                            }
+                                        }
+                                        // Tables (when expanded)
+                                        if is_expanded {
+                                            if tables.is_empty() {
+                                                div { style: "padding-left:20px; font-size:11px; opacity:0.55;", "(no tables)" }
+                                            }
+                                            for (schema, table, count) in tables.iter() {
+                                                {
+                                                    let db_f  = db_name.clone();
+                                                    let db_d  = db_name.clone();
+                                                    let sch_f = schema.clone();
+                                                    let sch_d = schema.clone();
+                                                    let tbl_f = table.clone();
+                                                    let tbl_d = table.clone();
+                                                    let drop_key = format!("{}::{}:{}", db_name, schema, table);
+                                                    let drop_key2 = drop_key.clone();
+                                                    let is_confirming = confirm_drop.read().as_deref() == Some(&drop_key);
+                                                    rsx! {
+                                                        div {
+                                                            style: "display:flex; align-items:center; padding:1px 0 1px 20px; gap:4px;",
+                                                            span {
+                                                                style: "font-size:11px; color:var(--fg-dim, #888); flex:1;",
+                                                                "📋 {schema}.{table}"
+                                                            }
+                                                            span {
+                                                                style: "font-size:10px; opacity:0.55; font-variant-numeric:tabular-nums;",
+                                                                "{count}"
+                                                            }
+                                                            // Flush button
+                                                            button {
+                                                                class: "btn btn-small",
+                                                                style: "font-size:10px; padding:0 5px; opacity:0.7;",
+                                                                title: "Truncate — delete all rows, keep table",
+                                                                onclick: move |_| {
+                                                                    let db = db_f.clone(); let s = sch_f.clone(); let t = tbl_f.clone();
+                                                                    spawn(async move {
+                                                                        let _ = sql_runner::truncate_table(&db, &s, &t).await;
+                                                                        refresh_tree();
+                                                                    });
+                                                                },
+                                                                "⌫ Flush"
+                                                            }
+                                                            // Drop button — two-click confirm
+                                                            if is_confirming {
+                                                                button {
+                                                                    class: "btn btn-small",
+                                                                    style: "font-size:10px; padding:0 5px; background:var(--red,#f85149); color:#fff;",
+                                                                    title: "Click again to confirm drop",
+                                                                    onclick: move |_| {
+                                                                        let db = db_d.clone(); let s = sch_d.clone(); let t = tbl_d.clone();
+                                                                        confirm_drop.set(None);
+                                                                        spawn(async move {
+                                                                            let _ = sql_runner::drop_table(&db, &s, &t).await;
+                                                                            refresh_tree();
+                                                                        });
+                                                                    },
+                                                                    "⚠ Confirm"
+                                                                }
+                                                                button {
+                                                                    class: "btn btn-small",
+                                                                    style: "font-size:10px; padding:0 4px;",
+                                                                    onclick: move |_| { confirm_drop.set(None); },
+                                                                    "✕"
+                                                                }
+                                                            } else {
+                                                                button {
+                                                                    class: "btn btn-small",
+                                                                    style: "font-size:10px; padding:0 5px; opacity:0.7;",
+                                                                    title: "Drop table — requires confirmation",
+                                                                    onclick: move |_| { confirm_drop.set(Some(drop_key2.clone())); },
+                                                                    "🗑 Drop"
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        div { class: "db-card",
+
+            // ── Create Database ──────────────────────────────────────────
+            div { class: "db-card-header",
+                span { class: "db-card-name", "Create Database" }
+                span { class: "db-auth-badge cs", "ais-sql-dev" }
+            }
+            div { class: "db-field-row",
+                label { class: "db-field-label", "Name" }
+                input {
+                    class: "db-field-input",
+                    placeholder: "e.g. mydb",
+                    value: "{dev_db_name.read()}",
+                    oninput: move |e| { dev_db_name.set(e.value()); dev_db_result.set(None); },
+                }
+                button {
+                    class: "btn btn-small btn-fetch",
+                    style: "margin-left:8px; white-space:nowrap;",
+                    disabled: *dev_db_busy.read() || dev_db_name.read().trim().is_empty(),
+                    onclick: move |_| {
+                        let name = dev_db_name.read().trim().to_string();
+                        if name.is_empty() { return; }
+                        dev_db_busy.set(true);
+                        dev_db_result.set(None);
+                        spawn(async move {
+                            let result = sql_runner::create_database(&name).await;
+                            dev_db_result.set(Some(result));
+                            dev_db_busy.set(false);
+                            refresh_tree();
+                        });
+                    },
+                    if *dev_db_busy.read() { "Creating…" } else { "Create" }
+                }
+            }
+            if let Some(ref r) = *dev_db_result.read() {
+                match r {
+                    Ok(msg)  => rsx! { div { class: "db-test-ok",  style: "padding:4px 8px; font-size:12px;", "{msg.trim()}" } },
+                    Err(msg) => rsx! { div { class: "db-test-error-detail", "{msg.trim()}" } },
+                }
+            }
+
+            // ── Run SQL ──────────────────────────────────────────────────
+            div { class: "db-card-header", style: "margin-top:12px;",
+                span { class: "db-card-name", "Run SQL" }
+            }
+            div { class: "db-field-row",
+                label { class: "db-field-label", "Database" }
+                input {
+                    class: "db-field-input",
+                    placeholder: "e.g. mydb",
+                    value: "{dev_sql_db.read()}",
+                    oninput: move |e| { dev_sql_db.set(e.value()); dev_sql_result.set(None); },
+                }
+            }
+            div { class: "db-field-row", style: "align-items:flex-start;",
+                label { class: "db-field-label", style: "padding-top:6px;", "SQL" }
+                textarea {
+                    class: "db-field-textarea",
+                    style: "font-family:monospace; font-size:12px; min-height:120px;",
+                    placeholder: "CREATE SCHEMA myschema;\nCREATE TABLE [myschema].[MyTable] (\n  Id INT IDENTITY(1,1) PRIMARY KEY,\n  Name NVARCHAR(100)\n);",
+                    value: "{dev_sql_input.read()}",
+                    oninput: move |e| { dev_sql_input.set(e.value()); dev_sql_result.set(None); },
+                }
+            }
+            div { style: "display:flex; justify-content:flex-end; margin-top:4px;",
+                button {
+                    class: "btn btn-small btn-fetch",
+                    disabled: *dev_sql_busy.read()
+                        || dev_sql_db.read().trim().is_empty()
+                        || dev_sql_input.read().trim().is_empty(),
+                    onclick: move |_| {
+                        let db  = dev_sql_db.read().trim().to_string();
+                        let sql = dev_sql_input.read().trim().to_string();
+                        if db.is_empty() || sql.is_empty() { return; }
+                        dev_sql_busy.set(true);
+                        dev_sql_result.set(None);
+                        spawn(async move {
+                            let result = sql_runner::run_sql(&db, &sql).await;
+                            dev_sql_result.set(Some(result));
+                            dev_sql_busy.set(false);
+                            refresh_tree();
+                        });
+                    },
+                    if *dev_sql_busy.read() { "Running…" } else { "▶ Run" }
+                }
+            }
+            {
+                let result_read = dev_sql_result.read();
+                match result_read.as_ref() {
+                    Some(Ok(m)) => {
+                        let msg = m.trim().to_string();
+                        rsx! { pre { class: "db-test-ok", style: "font-size:11px; white-space:pre-wrap; margin:4px 0 0;", "{msg}" } }
+                    }
+                    Some(Err(m)) => {
+                        let msg = m.trim().to_string();
+                        rsx! { pre { class: "db-test-error-detail", style: "font-size:11px; white-space:pre-wrap; margin:4px 0 0;", "{msg}" } }
+                    }
+                    None => rsx! {},
+                }
+            }
         }
 
         for conn in props.connections.clone() {

@@ -81,8 +81,15 @@ fn main() {
         }));
     }
 
+    // Suppress tiberius INFO chatter (TDS stream tokens, collation, packet size)
+    // from the terminal — only show WARN+ from tiberius, full level for ais-runner itself.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::builder()
+                .with_default_directive(tracing::Level::INFO.into())
+                .parse_lossy("tiberius=warn")
+        )
         .init();
 
     let webview_data_dir = log_dir.clone();

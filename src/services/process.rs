@@ -166,6 +166,33 @@ impl ManagedProcess {
         Ok((stdout, stderr))
     }
 
+    /// Like `start` but also injects extra environment variables.
+    pub fn start_with_env(&self, program: &str, args: &[&str], workdir: Option<&str>, extra_env: &[(String, String)])
+        -> Result<(ChildStdout, ChildStderr), String>
+    {
+        let mut guard = self.child.lock().map_err(|e| e.to_string())?;
+        if guard.is_some() { return Err("Process already started".into()); }
+        if let Some(dir) = workdir {
+            if !std::path::Path::new(dir).is_dir() {
+                return Err(format!("Working directory '{}' does not exist.", dir));
+            }
+        }
+        let resolved = resolve_bin(program);
+        let mut cmd = Command::new(&resolved);
+        cmd.args(args)
+           .stdout(Stdio::piped())
+           .stderr(Stdio::piped())
+           .env("PATH", rich_path());
+        for (k, v) in extra_env { cmd.env(k, v); }
+        if let Some(dir) = workdir { cmd.current_dir(dir); }
+        let mut child = cmd.spawn()
+            .map_err(|e| format!("Failed to spawn '{}': {}", resolved, e))?;
+        let stdout = child.stdout.take().expect("stdout piped");
+        let stderr = child.stderr.take().expect("stderr piped");
+        *guard = Some(child);
+        Ok((stdout, stderr))
+    }
+
     pub fn stop(&self) -> Result<(), String> {
         let mut guard = self.child.lock().map_err(|e| e.to_string())?;
         if let Some(mut child) = guard.take() {

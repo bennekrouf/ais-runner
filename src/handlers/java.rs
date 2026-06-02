@@ -9,6 +9,7 @@ pub fn handle_start(
     mut state: Signal<ServiceState>,
     proc: Signal<Arc<ManagedProcess>>,
     log_lines: Signal<Vec<LogLine>>,
+    mut java_lines: Signal<Vec<String>>,
     func_apps_dir: &str,
 ) {
     let mut push = make_push(log_lines);
@@ -26,6 +27,35 @@ pub fn handle_start(
 
     spawn(async move {
         let mut push = make_push(log_lines);
+
+        // ── Kill stale process on port 7072 if present ───────────────────
+        if tokio::net::TcpStream::connect("127.0.0.1:7072").await.is_ok() {
+            push("Port 7072 already in use — killing stale process…".into(), LogLevel::Warn);
+            tokio::task::spawn_blocking(|| {
+                // macOS / Linux: find and kill by port
+                if cfg!(target_os = "windows") {
+                    // netstat + taskkill
+                    if let Ok(out) = std::process::Command::new("cmd")
+                        .args(["/c", "for /f \"tokens=5\" %a in ('netstat -aon ^| findstr :7072') do taskkill /F /PID %a"])
+                        .output() { let _ = out; }
+                } else {
+                    if let Ok(out) = std::process::Command::new("lsof")
+                        .args(["-ti", ":7072"])
+                        .output()
+                    {
+                        let pids = String::from_utf8_lossy(&out.stdout);
+                        for pid in pids.split_whitespace() {
+                            let _ = std::process::Command::new("kill").args(["-9", pid]).status();
+                        }
+                    }
+                }
+            }).await.ok();
+            // Wait for the port to be released
+            for _ in 0..10 {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                if tokio::net::TcpStream::connect("127.0.0.1:7072").await.is_err() { break; }
+            }
+        }
 
         // ── Step 1: mvn package -DskipTests ──────────────────────────────
         push(format!("$ cd {} && mvn package -DskipTests", dir), LogLevel::Info);
@@ -85,21 +115,44 @@ pub fn handle_start(
             return;
         }
 
-        // ── Step 2: mvn azure-functions:run ──────────────────────────────
-        push(format!("$ cd {} && mvn azure-functions:run", dir), LogLevel::Info);
+        // ── Step 2: func host start --port 7072 ──────────────────────────
+        // Run func directly in the staging dir to avoid the Maven plugin's
+        // hardcoded port 7071 which conflicts with Logic Apps func start.
+        let staging  = format!("{}/target/azure-functions/ais-functions", dir);
+        let func     = crate::services::runtime_manager::resolve_tool("func");
+        let java_home = detect_java_home();
+        if let Some(ref jh) = java_home {
+            let msg = format!("JAVA_HOME={}", jh);
+            push(msg.clone(), LogLevel::Info);
+            java_lines.write().push(msg);
+        }
+        let cmd_msg = format!("$ cd {} && {} host start --port 7072", staging, func);
+        push(cmd_msg.clone(), LogLevel::Info);
+        java_lines.write().push(cmd_msg);
 
-        match proc.read().start("mvn", &["azure-functions:run"], Some(&dir)) {
+        let mut cmd_env: Vec<(String, String)> = vec![];
+        if let Some(jh) = java_home {
+            cmd_env.push(("JAVA_HOME".into(), jh));
+        }
+
+        match proc.read().start_with_env(&func, &["host", "start", "--port", "7072"], Some(&staging), &cmd_env) {
             Ok((stdout, stderr)) => {
                 state.set(ServiceState::Running);
-                push("Java Function App starting on port 7072…".into(), LogLevel::Ok);
+                let start_msg = "Java Function App starting on port 7072…".to_string();
+                push(start_msg.clone(), LogLevel::Ok);
+                java_lines.write().push(start_msg);
 
-                let mut push2 = make_push(log_lines);
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
                 crate::services::process::stream_output(stdout, stderr, tx, true);
 
                 spawn(async move {
-                    while let Some((line, is_err)) = rx.recv().await {
-                        push2(line, if is_err { LogLevel::Error } else { LogLevel::Info });
+                    while let Some((line, _is_err)) = rx.recv().await {
+                        if !crate::components::log_panel::is_mvn_noise(&line) {
+                            let mut w = java_lines.write();
+                            w.push(line);
+                            let len = w.len();
+                            if len > 2000 { let d = len - 2000; w.drain(..d); }
+                        }
                     }
                 });
             }
@@ -109,6 +162,49 @@ pub fn handle_start(
             }
         }
     });
+}
+
+/// Detect JAVA_HOME so `func host start` can launch the Java worker.
+/// GUI apps on macOS don't inherit the shell PATH, so we probe common locations.
+fn detect_java_home() -> Option<String> {
+    // 1. Already set in environment
+    if let Ok(jh) = std::env::var("JAVA_HOME") {
+        if !jh.is_empty() && std::path::Path::new(&jh).exists() {
+            return Some(jh);
+        }
+    }
+    // 2. Ask java_home utility (macOS)
+    if let Ok(out) = std::process::Command::new("/usr/libexec/java_home").output() {
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !path.is_empty() && std::path::Path::new(&path).exists() {
+            return Some(path);
+        }
+    }
+    // 3. Derive from `java` binary on PATH
+    let java = crate::services::runtime_manager::resolve_tool("java");
+    if let Ok(canonical) = std::fs::canonicalize(&java) {
+        // .../jdk/bin/java → parent of bin/ is JAVA_HOME
+        if let Some(bin) = canonical.parent() {
+            if let Some(home) = bin.parent() {
+                if home.join("lib").exists() || home.join("include").exists() {
+                    return Some(home.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    // 4. Common Homebrew / SDKMAN paths
+    let candidates = [
+        "/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home",
+        "/usr/local/opt/openjdk/libexec/openjdk.jdk/Contents/Home",
+        "/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home",
+        "/Library/Java/JavaVirtualMachines/openjdk-17.jdk/Contents/Home",
+    ];
+    for c in &candidates {
+        if std::path::Path::new(c).exists() {
+            return Some(c.to_string());
+        }
+    }
+    None
 }
 
 pub fn handle_stop(

@@ -37,7 +37,6 @@ pub struct EgTopic {
     pub resource_group: String,
     pub endpoint: String,
     pub location: String,
-    pub provisioning_state: String,
     pub input_schema: String,
 }
 
@@ -104,7 +103,6 @@ pub fn list_topics(sub: &str) -> Result<Vec<EgTopic>, AzError> {
             resource_group: rg,
             endpoint: v["endpoint"].as_str().unwrap_or("").into(),
             location: v["location"].as_str().unwrap_or("").into(),
-            provisioning_state: v["provisioningState"].as_str().unwrap_or("").into(),
             input_schema: v["inputSchema"].as_str().unwrap_or("EventGridSchema").into(),
         }
     }).collect())
@@ -155,6 +153,7 @@ pub fn list_topic_subscriptions(sub: &str, rg: &str, topic: &str) -> Result<Vec<
 }
 
 /// List resource-scoped event subscriptions (not under a system topic).
+#[allow(dead_code)]
 pub fn list_resource_subscriptions(sub: &str, rg: &str, provider: &str, resource_type: &str, resource_name: &str) -> Result<Vec<EgSubscription>, AzError> {
     let source = format!("/subscriptions/{sub}/resourceGroups/{rg}/providers/{provider}/{resource_type}/{resource_name}");
     let mut cmd = az_command(&[

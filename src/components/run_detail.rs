@@ -9,7 +9,7 @@ use crate::utils::open_in_editor;
 #[derive(Props, Clone, PartialEq)]
 pub struct RunDetailProps {
     pub workflow:           Option<String>,
-    pub source_text:        String,
+    pub source_text:        Signal<String>,
     pub runs:               Vec<RunItem>,
     pub actions:            Vec<ActionItem>,
     pub is_live:            bool,
@@ -46,6 +46,55 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
     // ── Source tab actions ─────────────────────────────────────────────────
     let mut source_copied  = use_signal(|| false);
     let mut opening        = use_signal(|| false);
+    let mut source_hl      = use_signal(String::new);
+    let source_text        = props.source_text;
+
+    // JSON syntax highlighting — re-runs whenever source_text changes
+    use_effect(move || {
+        let raw = source_text.read().clone();
+        if raw.is_empty() { source_hl.set(String::new()); return; }
+        let raw_json = serde_json::to_string(&raw).unwrap_or_default();
+        let script = format!(r#"
+(function() {{
+    var raw = {raw_json};
+    function doHighlight() {{
+        var tmp = document.createElement('code');
+        tmp.textContent = raw;
+        tmp.className = 'language-json';
+        hljs.highlightElement(tmp);
+        dioxus.send(tmp.innerHTML);
+    }}
+    var isDark = !document.body.classList.contains('light');
+    var theme  = isDark ? 'github-dark' : 'github';
+    var wantHref = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/' + theme + '.min.css';
+    var cssEl = document.getElementById('hljs-css');
+    if (!cssEl) {{
+        cssEl = document.createElement('link');
+        cssEl.id = 'hljs-css'; cssEl.rel = 'stylesheet';
+        document.head.appendChild(cssEl);
+    }}
+    if (cssEl.href !== wantHref) cssEl.href = wantHref;
+    if (typeof hljs !== 'undefined') {{
+        doHighlight();
+    }} else {{
+        var s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js';
+        s.onload = doHighlight;
+        document.head.appendChild(s);
+    }}
+}})();
+"#);
+        spawn(async move {
+            let mut eval = document::eval(&script);
+            if let Ok(val) = eval.recv().await {
+                let html = match &val {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                source_hl.set(html);
+            }
+        });
+    });
 
     rsx! {
         div { id: "detail",
@@ -324,7 +373,7 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                                 title: "Copy to clipboard",
                                 disabled: *source_copied.read(),
                                 onclick: {
-                                    let text = props.source_text.clone();
+                                    let text = source_text.read().clone();
                                     move |_| {
                                         let text = text.clone();
                                         source_copied.set(true);
@@ -358,7 +407,7 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                                     if *opening.read() { "⏳" } else { "✎" }
                                 }
                             }
-                            pre { id: "source-pre", "{props.source_text}" }
+                            pre { id: "source-pre", dangerous_inner_html: "{source_hl.read()}" }
                         }
                     }
                 }

@@ -52,6 +52,22 @@ pub fn resolve_tool(name: &str) -> String {
 }
 
 /// Returns the full path of `name` if it can be found, else None.
+/// Build a `Command` that runs `docker <args>`.
+/// On Windows, wraps through `cmd /c docker` so GUI-launched apps find docker.exe
+/// even when it isn't on the inherited system PATH.
+pub fn docker_cmd(args: &[&str]) -> std::process::Command {
+    let docker = resolve_tool("docker");
+    if cfg!(target_os = "windows") {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/c", &docker]).args(args);
+        cmd
+    } else {
+        let mut cmd = std::process::Command::new(&docker);
+        cmd.args(args);
+        cmd
+    }
+}
+
 /// GUI apps on macOS don't inherit the shell PATH, so `which` alone misses
 /// Homebrew (/opt/homebrew/bin) and npm-global (/usr/local/bin) installs.
 fn find_on_path(name: &str) -> Option<String> {

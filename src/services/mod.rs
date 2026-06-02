@@ -7,6 +7,7 @@ pub mod azurite_client;
 pub mod payload;
 pub mod system_check;
 pub mod sql_check;
+pub mod sql_runner;
 pub mod sb_check;
 pub mod sftp_check;
 pub mod connection_diag;

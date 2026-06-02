@@ -13,6 +13,7 @@ use crate::components::{
     db_panel::DbPanel,
     azure_panel::AzurePanel,
     devops_panel::DevOpsPanel,
+    func_panel::FuncPanel,
     graph_panel::GraphPanel,
 };
 use crate::services::{
@@ -24,7 +25,7 @@ use crate::services::{
     workflows::{self, WorkflowItem},
 };
 use crate::utils::make_push;
-use crate::handlers::{azurite, func_start, java, sb_emulator, setup, workflow_select, workflow_run};
+use crate::handlers::{azurite, cosmos_emulator, func_start, sb_emulator, sql_emulator, setup, workflow_select, workflow_run};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct MainScreenProps {
@@ -46,15 +47,21 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     let workspace_link = config::load().get_link(&dir).cloned();
 
     // ── Service states & processes ─────────────────────────────────────────
-    let azurite_state   = use_signal(|| ServiceState::Stopped);
-    let func_state      = use_signal(|| ServiceState::Stopped);
-    let java_func_state = use_signal(|| ServiceState::Stopped);
-    let sb_emu_state    = use_signal(|| ServiceState::Stopped);
-    let azurite_proc    = use_signal(|| Arc::new(ManagedProcess::new()));
-    let func_proc       = use_signal(|| Arc::new(ManagedProcess::new()));
-    let java_func_proc  = use_signal(|| Arc::new(ManagedProcess::new()));
-    let sb_emu_proc     = use_signal(|| Arc::new(ManagedProcess::new()));
-    let sb_emu_lines: Signal<Vec<String>> = use_signal(Vec::new);
+    let azurite_state    = use_signal(|| ServiceState::Stopped);
+    let func_state       = use_signal(|| ServiceState::Stopped);
+    let java_func_state  = use_signal(|| ServiceState::Stopped);
+    let sb_emu_state     = use_signal(|| ServiceState::Stopped);
+    let cosmos_emu_state = use_signal(|| ServiceState::Stopped);
+    let sql_dev_state    = use_signal(|| ServiceState::Stopped);
+    let azurite_proc     = use_signal(|| Arc::new(ManagedProcess::new()));
+    let func_proc        = use_signal(|| Arc::new(ManagedProcess::new()));
+    let java_func_proc   = use_signal(|| Arc::new(ManagedProcess::new()));
+    let sb_emu_proc      = use_signal(|| Arc::new(ManagedProcess::new()));
+    let cosmos_emu_proc  = use_signal(|| Arc::new(ManagedProcess::new()));
+    let sql_dev_proc     = use_signal(|| Arc::new(ManagedProcess::new()));
+    let sb_emu_lines:    Signal<Vec<String>> = use_signal(Vec::new);
+    let java_func_lines: Signal<Vec<String>> = use_signal(Vec::new);
+    let mut sql_dev_lines:   Signal<Vec<String>> = use_signal(Vec::new);
 
     // resolve_logic_apps_dir may descend into a logic_apps/ subfolder,
     // so derive func_apps_dir from the resolved path's parent (the platform
@@ -93,6 +100,23 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
 
     // ── Log ────────────────────────────────────────────────────────────────
     let mut log_lines = use_signal(|| Vec::<LogLine>::new());
+
+    // ── SQL Dev log channel ────────────────────────────────────────────────
+    use_hook(|| {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        crate::services::sql_runner::init_log_channel(tx);
+        // Drain the channel into the signal via a Dioxus coroutine (not tokio::spawn — signals aren't Send)
+        dioxus::prelude::spawn(async move {
+            while let Some(line) = rx.recv().await {
+                let ts = chrono::Local::now().format("%H:%M:%S").to_string();
+                let entry = format!("{} {}", ts, line);
+                let mut w = sql_dev_lines.write();
+                let len = w.len();
+                if len > 1000 { w.drain(..len - 1000); }
+                w.push(entry);
+            }
+        });
+    });
 
     // ── Auto blob-trigger watcher ──────────────────────────────────────────
     // All Azurite I/O runs on a dedicated OS thread (std::thread::spawn).
@@ -399,6 +423,24 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
         });
     });
 
+    // ── Auto-select first workflow when list is first populated ───────────
+    use_effect({
+        let dir = dir.clone();
+        move || {
+            let list = workflows.read();
+            if selected_wf.read().is_none() {
+                if let Some(first) = list.first() {
+                    let name = first.name.clone();
+                    drop(list);
+                    workflow_select::handle_select(
+                        name, selected_wf, runs, actions, source_text,
+                        traced_wfs, cleared_wfs, log_lines, &dir,
+                    );
+                }
+            }
+        }
+    });
+
     // ══ View ═══════════════════════════════════════════════════════════════
     let dir_label = dir.clone();
 
@@ -451,6 +493,29 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                     }
                 }
                 ServiceBlock {
+                    label: "SQL Dev".to_string(),
+                    cmd:   format!("docker run -d --name {} -p {}:{} -e ACCEPT_EULA=Y {}",
+                        sql_emulator::CONTAINER_NAME,
+                        sql_emulator::SQL_PORT, sql_emulator::SQL_PORT,
+                        sql_emulator::SQL_IMAGE,
+                    ),
+                    state: sql_dev_state.read().clone(),
+                    on_start: move |_| sql_emulator::handle_start(sql_dev_state, sql_dev_proc, log_lines),
+                    on_stop:  move |_| sql_emulator::handle_stop(sql_dev_state, sql_dev_proc, log_lines),
+                }
+                ServiceBlock {
+                    label: "Cosmos".to_string(),
+                    cmd:   format!("docker run -d --name {} -p {}:{} -p {}:{} {}",
+                        cosmos_emulator::CONTAINER_NAME,
+                        cosmos_emulator::COSMOS_API_PORT, cosmos_emulator::COSMOS_API_PORT,
+                        cosmos_emulator::COSMOS_UI_PORT,  cosmos_emulator::COSMOS_UI_PORT,
+                        cosmos_emulator::COSMOS_IMAGE,
+                    ),
+                    state: cosmos_emu_state.read().clone(),
+                    on_start: move |_| cosmos_emulator::handle_start(cosmos_emu_state, cosmos_emu_proc, log_lines),
+                    on_stop:  move |_| cosmos_emulator::handle_stop(cosmos_emu_state, cosmos_emu_proc, log_lines),
+                }
+                ServiceBlock {
                     label: "func start".to_string(),
                     cmd:   "func start".to_string(),
                     state: func_state.read().clone(),
@@ -483,17 +548,6 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                         }
                     }
                 }
-                ServiceBlock {
-                    label: "Java Functions".to_string(),
-                    cmd:   "mvn azure-functions:run".to_string(),
-                    state: java_func_state.read().clone(),
-                    on_start: {
-                        let d = func_apps_dir.clone();
-                        move |_| java::handle_start(java_func_state, java_func_proc, log_lines, &d)
-                    },
-                    on_stop: move |_| java::handle_stop(java_func_state, java_func_proc, log_lines),
-                }
-
                 {az_login_widget(az_status, active_tenant, workspace_link.as_ref().and_then(|l| l.tenant_id.clone()), &dir)}
                 {env_badge(setup_status, current_env)}
                 {
@@ -538,6 +592,12 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                         title: "Workflow chain graph — interactive D3.js visualization",
                         onclick: move |_| { visited_views.write().insert("Graph".into()); current_view.set("Graph".into()); },
                         "Graph"
+                    }
+                    button {
+                        class: if *current_view.read() == "Functions" { "view-btn active" } else { "view-btn" },
+                        title: "Browse and edit function app source files",
+                        onclick: move |_| { visited_views.write().insert("Functions".into()); current_view.set("Functions".into()); },
+                        "Functions"
                     }
                     button {
                         class: if *current_view.read() == "Settings" { "view-btn active" } else { "view-btn" },
@@ -632,6 +692,17 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                         GraphPanel { logic_apps_dir: dir.clone(), is_light: is_light }
                     }
                 }
+                if visited_views.read().contains("Functions") {
+                    div { style: if *current_view.read() == "Functions" { "display:contents" } else { "display:none" },
+                        FuncPanel {
+                            func_apps_dir: func_apps_dir.clone(),
+                            state:      java_func_state,
+                            proc:       java_func_proc,
+                            log_lines:  log_lines,
+                            java_lines: java_func_lines,
+                        }
+                    }
+                }
                 // Workflows — always mounted; hidden when another view is active
                 div { style: if *current_view.read() == "Workflows" { "display:contents" } else { "display:none" },
                     WorkflowList { // always-rendered content block
@@ -664,7 +735,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                     div { id: "wf-resize-handle" }
                     RunDetail {
                         workflow:       selected_wf.read().clone(),
-                        source_text:    source_text.read().clone(),
+                        source_text:    source_text,
                         analysis:       wf_analysis.read().clone(),
                         source_path:    selected_wf.read().as_ref().map(|name| {
                             workflows::resolve_logic_apps_dir(&dir)
@@ -829,9 +900,11 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
             div { id: "log-resize-handle" }
 
             LogPanel {
-                lines:        log_lines,
-                sb_emu_lines: sb_emu_lines,
-                on_clear:     move |_| { log_lines.write().clear(); },
+                lines:         log_lines,
+                sb_emu_lines:  sb_emu_lines,
+                java_lines:    java_func_lines,
+                sql_dev_lines: sql_dev_lines,
+                on_clear:      move |_| { log_lines.write().clear(); },
             }
 
             if let Some((wf_name, trigger_name, trigger_type, suggested, blob_container, queue_name)) = run_dialog.read().clone() {
