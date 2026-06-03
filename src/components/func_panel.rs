@@ -21,10 +21,6 @@ pub struct FuncPanelProps {
     pub java_lines:    Signal<Vec<String>>,
 }
 
-/// JSON files worth showing in the Functions panel.
-/// Everything else (extensions.json, settings.json, Maven artifacts…) is noise.
-const JSON_ALLOWLIST: &[&str] = &["function.json", "host.json", "local.settings.json"];
-
 fn scan_func_files(func_apps_dir: &str) -> Vec<FuncFile> {
     let extensions = ["java", "cs", "py", "js", "ts"];
     let mut files  = Vec::new();
@@ -44,9 +40,7 @@ fn scan_func_files(func_apps_dir: &str) -> Vec<FuncFile> {
             } else {
                 let fname = path.file_name().unwrap_or_default().to_string_lossy();
                 let ext   = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                let include = exts.contains(&ext)
-                    || (ext == "json" && JSON_ALLOWLIST.contains(&fname.as_ref()));
-                if include {
+                if exts.contains(&ext) {
                     out.push(FuncFile {
                         name: fname.to_string(),
                         path: path.to_string_lossy().to_string(),

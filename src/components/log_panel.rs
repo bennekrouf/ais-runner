@@ -42,7 +42,9 @@ pub fn is_azurite_poll_noise(line: &str) -> bool {
     // Must be a 2xx response
     let ok = line.ends_with(" 200 -") || line.ends_with(" 201 -") || line.ends_with(" 204 -");
     if !ok { return false; }
-    line.contains("jobdefinitions") || line.contains("histories")
+    // jobdefinitions / histories — job scheduler heartbeats
+    // flows — runtime polling "is workflow X still active?" (every 2 s per workflow)
+    line.contains("jobdefinitions") || line.contains("histories") || line.contains("flows(")
 }
 
 /// Percent-decodes a URL-encoded string (handles `%XX`).
