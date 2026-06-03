@@ -1442,7 +1442,7 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
 }
 .log-filter-clear:hover { color: var(--text1); }
 
-#log-scroll, #az-log-scroll, #sb-log-scroll, #java-log-scroll {
+.log-tab-scroll {
     flex: 1;
     overflow-y: auto;
     padding: 5px 11px;

@@ -656,6 +656,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
             // ── Console tab ───────────────────────────────────────────────
             div {
                 id: "log-scroll",
+                class: "log-tab-scroll",
                 style: if tab == "console" { "" } else { "display:none" },
                 for line in console_lines.iter() {
                     div { class: "log-line",
@@ -668,6 +669,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
             // ── Azurite tab ───────────────────────────────────────────────
             div {
                 id: "az-log-scroll",
+                class: "log-tab-scroll",
                 style: if tab == "azurite" { "" } else { "display:none" },
                 if az_display.is_empty() {
                     div { class: "log-line",
@@ -724,6 +726,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
             // ── Service Bus tab ───────────────────────────────────────────
             div {
                 id: "sb-log-scroll",
+                class: "log-tab-scroll",
                 style: if tab == "servicebus" { "" } else { "display:none" },
                 {
                     let signal_lines: Vec<&String> = sb_emu_display.iter()
@@ -783,6 +786,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
             // ── SQL Dev tab ───────────────────────────────────────────────
             div {
                 id: "sql-log-scroll",
+                class: "log-tab-scroll",
                 style: if tab == "sqldev" { "" } else { "display:none" },
                 if sql_display.is_empty() {
                     div { class: "log-line",
@@ -806,7 +810,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                             rsx! {
                                 div { class: "log-line",
                                     span { class: "log-time", "{time}" }
-                                    span { class: cls, style: "font-family:monospace; font-size:11px;", "{msg}" }
+                                    span { class: cls, "{msg}" }
                                 }
                             }
                         }
@@ -817,6 +821,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
             // ── Java Functions tab ────────────────────────────────────────
             div {
                 id: "java-log-scroll",
+                class: "log-tab-scroll",
                 style: if tab == "java" { "" } else { "display:none" },
                 if java_display.is_empty() {
                     div { class: "log-line",
