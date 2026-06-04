@@ -455,6 +455,10 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                 div { class: "back-wrap",
                     button { class: "btn-back", onclick: move |_| props.on_back.call(()), "‹ Back" }
                     span { id: "toolbar-dir", title: "{dir_label}", "{dir_label}" }
+                    span {
+                        style: "font-size:10px; opacity:0.4; white-space:nowrap;",
+                        { concat!("v", env!("CARGO_PKG_VERSION")) }
+                    }
                 }
 
                 ServiceBlock {
