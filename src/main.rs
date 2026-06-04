@@ -81,14 +81,14 @@ fn main() {
         }));
     }
 
-    // Suppress tiberius INFO chatter (TDS stream tokens, collation, packet size)
-    // from the terminal — only show WARN+ from tiberius, full level for ais-runner itself.
+    // Suppress tiberius noise — the TLS warning is expected (SQL Edge uses
+    // self-signed certs so we disable encryption intentionally).
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::builder()
                 .with_default_directive(tracing::Level::INFO.into())
-                .parse_lossy("tiberius=warn")
+                .parse_lossy("tiberius=error")
         )
         .init();
 
