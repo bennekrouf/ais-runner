@@ -321,7 +321,10 @@ pub fn create_release(
     def_id: u64, artifact_alias: &str, build_id: &str,
 ) -> Result<String, AzError> {
     let def_id_str = def_id.to_string();
-    let metadata   = format!("alias={},versionId={}", artifact_alias, build_id);
+    // Format: "<alias>=<versionId>" — the artifact alias is the KEY, build ID is the VALUE.
+    // Do NOT use "alias=<name>,versionId=<id>": that makes the CLI treat the literal
+    // word "alias" as the artifact name, producing VS403230.
+    let metadata   = format!("{}={}", artifact_alias, build_id);
     let out = run_cmd(&[
         "pipelines", "release", "create",
         "--org", org,

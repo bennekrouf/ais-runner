@@ -161,8 +161,6 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
                             title: "Re-scan workflows",
                             style: "padding:2px 7px; font-size:11px; border:1px solid {theme.border}; background:transparent; color:{theme.text_muted}; cursor:pointer; border-radius:10px; font-family:inherit; line-height:1.3; flex-shrink:0;",
                             onclick: move |_| {
-                                selected_chain.set("All".into());
-                                excluded_nodes.write().clear();
                                 refresh_tick.set(refresh_tick() + 1);
                             },
                             "⟳"
