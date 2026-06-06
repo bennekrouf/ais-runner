@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Minimal hardened-runtime entitlements for a Rust CLI binary.
+       ais-runner exec's the Azure CLI / func / azurite as subprocesses,
+       so it doesn't need network-client / library-validation overrides.
+       Leave empty — hardened runtime alone is sufficient. -->
+</dict>
+</plist>

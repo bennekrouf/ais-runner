@@ -80,6 +80,11 @@ jobs:
     needs: [prepare]
     if: always() && !failure() && !cancelled()
     runs-on: macos-latest  # arm64 (Apple Silicon)
+    env:
+      SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+      APPLE_ID:         ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+      APPLE_TEAM_ID:    ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+      APPLE_PASSWORD:   ${{ secrets.MACOS_NOTARY_PASSWORD }}
 
     steps:
       - uses: actions/checkout@v4
@@ -97,8 +102,85 @@ jobs:
             target
           key: release-macos-arm64-cargo-${{ hashFiles('Cargo.lock') }}
 
+      # ── Sanity-check required signing secrets up front ─────────────────────
+      - name: Verify macOS signing secrets are present
+        env:
+          MACOS_CERTIFICATE:     ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PASSWORD:     ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          missing=()
+          [ -z "${SIGNING_IDENTITY:-}"      ] && missing+=("MACOS_SIGNING_IDENTITY")
+          [ -z "${APPLE_ID:-}"              ] && missing+=("MACOS_NOTARY_APPLE_ID")
+          [ -z "${APPLE_TEAM_ID:-}"         ] && missing+=("MACOS_NOTARY_TEAM_ID")
+          [ -z "${APPLE_PASSWORD:-}"        ] && missing+=("MACOS_NOTARY_PASSWORD")
+          [ -z "${MACOS_CERTIFICATE:-}"     ] && missing+=("MACOS_CERTIFICATE")
+          [ -z "${MACOS_CERTIFICATE_PWD:-}" ] && missing+=("MACOS_CERTIFICATE_PWD")
+          [ -z "${KEYCHAIN_PASSWORD:-}"     ] && missing+=("KEYCHAIN_PASSWORD")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing GitHub Actions secrets: ${missing[*]}"
+            echo "Add them in: Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+          echo "All 7 macOS signing secrets present."
+
+      # ── Import Developer ID cert into a temporary keychain ─────────────────
+      - name: Set up signing keychain
+        env:
+          MACOS_CERTIFICATE:     ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PASSWORD:     ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+
+          security create-keychain  -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$MACOS_CERTIFICATE_PWD" \
+            -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          rm "$RUNNER_TEMP/cert.p12"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
       - name: Build
         run: cargo build --release --target aarch64-apple-darwin
+
+      # ── Sign the CLI binary with hardened runtime ──────────────────────────
+      - name: Codesign binary
+        run: |
+          set -euo pipefail
+          BIN=target/aarch64-apple-darwin/release/ais-runner
+          codesign --force --options runtime --timestamp \
+            --entitlements .github/macos-entitlements.plist \
+            --sign "$SIGNING_IDENTITY" \
+            "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+
+      # ── Notarize the signed binary ─────────────────────────────────────────
+      # Bare executables can't be stapled, so notarization just registers with
+      # Apple's CDN. Gatekeeper checks online on first launch — no quarantine
+      # popup for a notarized binary downloaded via tar.gz.
+      - name: Notarize binary
+        run: |
+          set -euo pipefail
+          BIN=target/aarch64-apple-darwin/release/ais-runner
+          ZIP="$RUNNER_TEMP/ais-runner.zip"
+          ditto -c -k --keepParent "$BIN" "$ZIP"
+          xcrun notarytool submit "$ZIP" \
+            --apple-id "$APPLE_ID" \
+            --team-id  "$APPLE_TEAM_ID" \
+            --password "$APPLE_PASSWORD" \
+            --wait
+          rm "$ZIP"
 
       - name: Package
         run: |
@@ -109,6 +191,11 @@ jobs:
           cp README.md "$DIST/"
           tar -czf ais-runner-macos-arm64.tar.gz -C dist ais-runner-macos-arm64
           shasum -a 256 ais-runner-macos-arm64.tar.gz > ais-runner-macos-arm64.tar.gz.sha256
+
+      - name: Clean up keychain
+        if: always()
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
