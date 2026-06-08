@@ -165,32 +165,61 @@ jobs:
             "$BIN"
           codesign --verify --strict --verbose=2 "$BIN"
 
-      # ── Notarize the signed binary ─────────────────────────────────────────
-      # Bare executables can't be stapled, so notarization just registers with
-      # Apple's CDN. Gatekeeper checks online on first launch — no quarantine
-      # popup for a notarized binary downloaded via tar.gz.
-      - name: Notarize binary
+      # ── Wrap binary in .app bundle, build signed + notarized + stapled DMG ─
+      - name: Build .app + .dmg
         run: |
           set -euo pipefail
           BIN=target/aarch64-apple-darwin/release/ais-runner
-          ZIP="$RUNNER_TEMP/ais-runner.zip"
-          ditto -c -k --keepParent "$BIN" "$ZIP"
-          xcrun notarytool submit "$ZIP" \
+          VER="${GITHUB_REF_NAME#v}"
+          APP="dist/AIS Runner.app"
+
+          # 1. Construct the .app bundle around the cargo-built binary.
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp "$BIN" "$APP/Contents/MacOS/ais-runner"
+          chmod +x "$APP/Contents/MacOS/ais-runner"
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>ais-runner</string>
+            <key>CFBundleIdentifier</key><string>com.ais-runner.app</string>
+            <key>CFBundleName</key><string>AIS Runner</string>
+            <key>CFBundleDisplayName</key><string>AIS Runner</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$VER</string>
+            <key>CFBundleVersion</key><string>$VER</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          EOF
+
+          # 2. Re-sign the .app (sign nested binary first via --deep).
+          codesign --force --options runtime --timestamp \
+            --entitlements .github/macos-entitlements.plist \
+            --sign "$SIGNING_IDENTITY" \
+            --deep "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+
+          # 3. Stage and create .dmg.
+          mkdir -p dmg-staging
+          cp -R "$APP" dmg-staging/
+          ln -s /Applications dmg-staging/Applications
+          hdiutil create -volname "AIS Runner" -srcfolder dmg-staging \
+            -ov -format UDZO dist/ais-runner-macos-arm64.dmg
+          codesign --force --timestamp --sign "$SIGNING_IDENTITY" \
+            dist/ais-runner-macos-arm64.dmg
+
+          # 4. Notarize the DMG (covers the binary inside via hash) and staple.
+          xcrun notarytool submit dist/ais-runner-macos-arm64.dmg \
             --apple-id "$APPLE_ID" \
             --team-id  "$APPLE_TEAM_ID" \
             --password "$APPLE_PASSWORD" \
             --wait
-          rm "$ZIP"
+          xcrun stapler staple dist/ais-runner-macos-arm64.dmg
+          xcrun stapler validate dist/ais-runner-macos-arm64.dmg
 
-      - name: Package
-        run: |
-          DIST=dist/ais-runner-macos-arm64
-          mkdir -p "$DIST"
-          cp target/aarch64-apple-darwin/release/ais-runner "$DIST/"
-          cp scripts/setup-mac.sh "$DIST/"
-          cp README.md "$DIST/"
-          tar -czf ais-runner-macos-arm64.tar.gz -C dist ais-runner-macos-arm64
-          shasum -a 256 ais-runner-macos-arm64.tar.gz > ais-runner-macos-arm64.tar.gz.sha256
+          shasum -a 256 dist/ais-runner-macos-arm64.dmg \
+            > dist/ais-runner-macos-arm64.dmg.sha256
 
       - name: Clean up keychain
         if: always()
@@ -202,8 +231,8 @@ jobs:
         with:
           name: ais-runner-macos-arm64
           path: |
-            ais-runner-macos-arm64.tar.gz
-            ais-runner-macos-arm64.tar.gz.sha256
+            dist/ais-runner-macos-arm64.dmg
+            dist/ais-runner-macos-arm64.dmg.sha256
 
   build-windows:
     needs: [prepare]
@@ -318,50 +347,6 @@ jobs:
             ais-runner-linux-x86_64.tar.gz
             ais-runner-linux-x86_64.tar.gz.sha256
 
-  update-tap:
-    needs: [build-mac, build-windows]
-    if: always() && !failure() && !cancelled()
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Download Mac artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Compute sha256
-        id: sha
-        run: |
-          ARM64=$(cat artifacts/ais-runner-macos-arm64/ais-runner-macos-arm64.tar.gz.sha256 | awk '{print $1}')
-          echo "arm64=$ARM64" >> "$GITHUB_OUTPUT"
-
-      - name: Check out homebrew tap
-        uses: actions/checkout@v4
-        with:
-          repository: Bennekrouf/homebrew-aisrunner
-          token: ${{ secrets.TAP_GITHUB_TOKEN }}
-          path: tap
-
-      - name: Update formula
-        env:
-          VERSION: ${{ github.ref_name }}
-          SHA_ARM64: ${{ steps.sha.outputs.arm64 }}
-        run: |
-          FORMULA=tap/Formula/aisrunner.rb
-          VER="${VERSION#v}"
-
-          sed -i "s|version \".*\"|version \"$VER\"|" "$FORMULA"
-          sed -i "s|sha256 \".*\"|sha256 \"$SHA_ARM64\"|" "$FORMULA"
-
-      - name: Commit and push
-        working-directory: tap
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/aisrunner.rb
-          git commit -m "aisrunner ${{ github.ref_name }}"
-          git push
-
   release:
     needs: [build-mac, build-windows, build-linux]
     if: always() && !failure() && !cancelled()
@@ -389,20 +374,11 @@ jobs:
           gh release create "$TAG" \
             --title "ais-runner $TAG" \
             --notes "$(cat <<'EOF'
-          ## Installation
+          ## Download
 
           ### macOS (Apple Silicon)
-          ```bash
-          brew tap Bennekrouf/aisrunner
-          brew install aisrunner
-          ```
-
-          Or manually:
-          ```bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ais-runner-macos-arm64.tar.gz | tar xz
-          cd ais-runner-macos-arm64
-          ./setup-mac.sh && ./ais-runner
-          ```
+          Download `ais-runner-macos-arm64.dmg`, open it, and drag AIS Runner to /Applications.
+          Signed with Apple Developer ID and notarized — opens with a normal double-click.
 
           ### Windows
           Download `ais-runner-setup.exe` and run it — the installer handles everything.
@@ -414,14 +390,7 @@ jobs:
           sudo ./setup-linux.sh && ./ais-runner
           ```
 
-          ### Linux (arm64)
-          ```bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ais-runner-linux-arm64.tar.gz | tar xz
-          cd ais-runner-linux-arm64
-          sudo ./setup-linux.sh && ./ais-runner
-          ```
-
-          > **Runtime requirement**: `libwebkit2gtk-4.1` (installed automatically by `setup-linux.sh`).
+          > **Linux runtime requirement**: `libwebkit2gtk-4.1` (installed automatically by `setup-linux.sh`).
           EOF
           )" \
             $FILES

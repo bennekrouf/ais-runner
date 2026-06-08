@@ -652,12 +652,19 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                 let missing: Vec<system_check::ToolStatus> = tool_statuses.read().iter()
                     .filter(|t| !t.available).cloned().collect();
                 if !missing.is_empty() && !*tools_dismissed.read() {
+                    let log_path = dirs::data_local_dir()
+                        .unwrap_or_else(std::env::temp_dir)
+                        .join("AIS Runner")
+                        .join("tool-check.log");
+                    let log_path_str = log_path.to_string_lossy().to_string();
+                    let copy_log_path = log_path_str.clone();
                     rsx! {
                         div { id: "tool-banner",
                             span { id: "tool-banner-icon", "⚠" }
                             div { id: "tool-banner-items",
                                 for t in missing {
                                     span { class: "tool-banner-item",
+                                        title: "{t.diagnostic}",
                                         strong { "{t.name}" }
                                         // version present = installed but not running (e.g. Docker daemon stopped)
                                         // version absent  = not installed at all
@@ -667,6 +674,26 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                                             " not found — "
                                         }
                                         code { "{t.install_hint}" }
+                                        " "
+                                        span { style: "opacity:.7;font-size:10px;cursor:help",
+                                            title: "{t.diagnostic}",
+                                            "🔍 hover for details"
+                                        }
+                                    }
+                                }
+                                span { class: "tool-banner-item", style: "opacity:.7;font-size:11px",
+                                    "Full log: "
+                                    code {
+                                        title: "Click to copy path",
+                                        onclick: move |_| {
+                                            let p = copy_log_path.clone();
+                                            std::thread::spawn(move || {
+                                                if let Ok(mut cb) = arboard::Clipboard::new() {
+                                                    let _ = cb.set_text(p);
+                                                }
+                                            });
+                                        },
+                                        "{log_path_str}"
                                     }
                                 }
                             }

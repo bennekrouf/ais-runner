@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(Start-Process \"C:\\\\Users\\\\benek\\\\code\\\\ais-runner\\\\installer\\\\dist\\\\ais-runner-setup.exe\")"
+      "PowerShell(Start-Process \"C:\\\\Users\\\\benek\\\\code\\\\ais-runner\\\\installer\\\\dist\\\\ais-runner-setup.exe\")",
+      "Bash(rtk ls *)",
+      "Bash(/usr/bin/find /Users/mb/code/ais-runner/src -name \"env_compare*\")",
+      "Bash(/usr/bin/find /Users/mb/code/ais-runner/src -name \"cosmos_check*\")",
+      "Bash(/usr/bin/find /Users/mb/code/ais-runner/src -name \"azure_cli*\")",
+      "Bash(rtk grep *)",
+      "Bash(rtk cargo *)"
     ]
   }
 }

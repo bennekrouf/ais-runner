@@ -18,6 +18,7 @@ pub mod env_mode;
 pub mod setup_manager;
 pub mod runtime_manager;
 pub mod env_compare;
+pub mod security_compare;
 pub mod sb_amqp;
 pub mod devops_cli;
 pub mod workflow_analysis;

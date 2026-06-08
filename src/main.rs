@@ -14,25 +14,54 @@ const MAIN_CSS: &str = include_str!("../assets/main.css");
 
 /// On Windows, MSI installers (Node.js, Azure CLI, func) update PATH in the
 /// registry but not in the current process. ais-runner is launched right after
-/// the installer, so it inherits a stale PATH. Read the real combined PATH from
-/// the registry via PowerShell and apply it before any tool checks.
+/// the installer, so it inherits a stale PATH. Additionally, even a fresh
+/// registry PATH often *omits* `%APPDATA%\npm` (where `func.cmd` / `azurite.cmd`
+/// land after `npm install -g`), Maven (manual extract — never registered),
+/// and Chocolatey/Scoop shim dirs. We do three things:
+///   1. Read the combined Machine+User PATH from the registry via PowerShell.
+///   2. Append known install dirs (npm-global, Azure CLI, Maven, Choco, Scoop).
+///   3. Apply the result so every child process we spawn inherits it.
 #[cfg(windows)]
 fn refresh_windows_path() {
-    let result = std::process::Command::new("powershell")
+    let mut path = std::env::var("PATH").unwrap_or_default();
+
+    // 1. Pull combined registry PATH (Machine ∪ User) — this catches everything
+    //    MSI installers registered after our process started.
+    if let Ok(out) = std::process::Command::new("powershell")
         .args([
             "-NoProfile", "-NonInteractive", "-Command",
             "[Environment]::GetEnvironmentVariable('PATH','Machine') + ';' + \
              [Environment]::GetEnvironmentVariable('PATH','User')",
         ])
-        .output();
-    if let Ok(out) = result {
+        .output()
+    {
         if out.status.success() {
-            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !path.is_empty() {
-                std::env::set_var("PATH", path);
+            let registry_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !registry_path.is_empty() {
+                path = registry_path;
             }
         }
     }
+
+    // 2. Append well-known dirs that aren't always registered in PATH —
+    //    most notably %APPDATA%\npm for npm-global wrappers.
+    let extras = services::runtime_manager::windows_extra_dirs();
+    if !extras.is_empty() {
+        let existing_lower: std::collections::HashSet<String> = path
+            .split(';')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        for dir in extras {
+            let s = dir.to_string_lossy().to_string();
+            if !existing_lower.contains(&s.to_lowercase()) {
+                path.push(';');
+                path.push_str(&s);
+            }
+        }
+    }
+
+    std::env::set_var("PATH", path);
 }
 
 fn main() {

@@ -12,18 +12,8 @@ Built with [Dioxus](https://dioxuslabs.com/) (Rust) · macOS · Windows · Linux
 
 ### macOS (Apple Silicon)
 
-```bash
-brew tap Bennekrouf/aisrunner
-brew install aisrunner
-```
-
-Or manually:
-
-```bash
-curl -L https://github.com/Bennekrouf/ais-runner/releases/latest/download/ais-runner-macos-arm64.tar.gz | tar xz
-cd ais-runner-macos-arm64
-./setup-mac.sh && ./ais-runner
-```
+Download [`ais-runner-macos-arm64.dmg`](https://github.com/Bennekrouf/ais-runner/releases/latest/download/ais-runner-macos-arm64.dmg), open it, and drag **AIS Runner** to Applications.
+Signed with Apple Developer ID and notarized — opens with a normal double-click.
 
 ### Windows
 
@@ -174,13 +164,12 @@ crates/
   ais-chain/    Workflow dependency graph (inlined local crate)
 scripts/
   release.sh          Cut a release (bump version, tag, push → triggers CI)
-  setup-mac.sh        macOS runtime dependency installer
   setup-linux.sh      Linux runtime dependency installer (Debian/Fedora/Arch)
   setup-windows.ps1   Windows runtime dependency installer
 installer/
   installer.iss       Inno Setup script → ais-runner-setup.exe
 .github/workflows/
-  release.yml         Build all platforms, publish release, update Homebrew tap
+  release.yml         Build, sign, notarize, and publish all-platform release
   build-mac.yml       CI on push to main
   build-windows.yml
 ```
@@ -194,7 +183,7 @@ installer/
 ./scripts/release.sh --dry-run  # preview only
 ```
 
-Pushing a `v*` tag triggers CI which builds all platforms, creates the GitHub Release, and auto-updates the [Homebrew tap](https://github.com/Bennekrouf/homebrew-aisrunner).
+Pushing a `v*` tag triggers CI which builds all platforms (macOS signed + notarized DMG, Windows installer, Linux tarball), then creates the GitHub Release.
 
 ---
 

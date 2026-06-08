@@ -2,6 +2,7 @@ use dioxus::prelude::*;
 use indexmap::IndexMap;
 use std::collections::HashSet;
 use crate::services::{env_compare::{self, EnvValues, VarGroup}, config, azure_cli};
+use crate::components::security_compare_panel::SecurityComparePanel;
 
 // ── Fetch state ───────────────────────────────────────────────────────────────
 
@@ -63,6 +64,9 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
     let mut copied_cell: Signal<Option<String>>                = use_signal(|| None);
     // Cell detail popup: (key, column_label, full_value)
     let mut detail_cell: Signal<Option<(String, String, String)>> = use_signal(|| None);
+
+    // Sub-view: "settings" (default) shows the key/value compare; "security" shows RBAC + network.
+    let mut view_mode: Signal<&'static str> = use_signal(|| "settings");
 
     // Auto-detect DevOps URL from git remote on mount
     use_effect({
@@ -195,10 +199,12 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
 
     let has_any = az_vals.is_some() || !col_maps.iter().all(|(_, v)| v.is_none());
 
+    let mode = *view_mode.read();
+
     rsx! {
         div { class: "env-compare-panel",
 
-            // ── Top bar ───────────────────────────────────────────────
+            // ── Shared env-selection header (above tabs) ──────────────
             div { class: "env-compare-topbar",
 
                 // DevOps URL input + Browse button
@@ -258,7 +264,61 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                     }
                 }
 
-                // Active column chips
+                // Selected env chips (shared between Settings & Security)
+                div { class: "env-col-chips",
+                    if col_order.read().is_empty() {
+                        span { style: "color:#9ca3af;font-size:12px;font-style:italic",
+                            "No environment selected — click ⊕ Browse Groups to add one."
+                        }
+                    }
+                    for col_name in col_order.read().iter() {
+                        {
+                            let name = col_name.clone();
+                            let rm   = name.clone();
+                            let count = all_groups.iter()
+                                .find(|g| g.name == name)
+                                .map(|g| g.variables.len());
+                            rsx! {
+                                div { class: "env-chip",
+                                    if let Some(n) = count { span { "{n} keys" } }
+                                    span { class: "env-chip-label", "{name}" }
+                                    button {
+                                        class: "btn-icon",
+                                        style: "font-size:9px;opacity:.7",
+                                        title: "Remove column",
+                                        onclick: move |_| remove_column(rm.clone()),
+                                        "×"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Sub-view tabs (below env selection) ───────────────────
+            div { class: "settings-tabs", style: "border-bottom:1px solid #2a2f3a;margin-bottom:6px",
+                button {
+                    class: if mode == "settings" { "settings-tab active" } else { "settings-tab" },
+                    onclick: move |_| view_mode.set("settings"),
+                    "⚙ Settings"
+                }
+                button {
+                    class: if mode == "security" { "settings-tab active" } else { "settings-tab" },
+                    onclick: move |_| view_mode.set("security"),
+                    "🔐 Security"
+                }
+            }
+
+            if mode == "security" {
+                SecurityComparePanel {
+                    groups:    vg_all,
+                    col_order: col_order,
+                }
+            } else {
+
+            // ── Settings-only sub-toolbar: Local + Azure + filter + diff ──
+            div { class: "env-compare-topbar",
                 div { class: "env-col-chips",
                     // Fixed: Local
                     div { class: "env-chip env-chip-fixed",
@@ -286,30 +346,6 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                                         span { class: "env-source-err", title: "{e}", "⚠" }
                                     }
                                     span { class: "env-chip-label", "☁ {site_def}" }
-                                }
-                            }
-                        }
-                    }
-
-                    // Dynamic group columns
-                    for col_name in col_order.read().iter() {
-                        {
-                            let name = col_name.clone();
-                            let rm   = name.clone();
-                            let count = all_groups.iter()
-                                .find(|g| g.name == name)
-                                .map(|g| g.variables.len());
-                            rsx! {
-                                div { class: "env-chip",
-                                    if let Some(n) = count { span { "{n} keys" } }
-                                    span { class: "env-chip-label", "{name}" }
-                                    button {
-                                        class: "btn-icon",
-                                        style: "font-size:9px;opacity:.7",
-                                        title: "Remove column",
-                                        onclick: move |_| remove_column(rm.clone()),
-                                        "×"
-                                    }
                                 }
                             }
                         }
@@ -558,6 +594,7 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                     }
                 }
             }
+            } // end of mode == "settings" branch
         }
     }
 }
