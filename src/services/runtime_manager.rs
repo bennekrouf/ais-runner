@@ -216,30 +216,32 @@ pub fn find_on_path(name: &str) -> Option<String> {
 /// in main.rs can prepend the same set, ensuring child processes inherit them.
 #[cfg(target_os = "windows")]
 pub fn windows_extra_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-
-    let mut env_join = |env_var: &str, sub: &str| {
+    // Helper that takes `&mut Vec<PathBuf>` explicitly — avoids the closure
+    // capturing `dirs` mutably and blocking later direct mutations.
+    fn env_join(dirs: &mut Vec<PathBuf>, env_var: &str, sub: &str) {
         if let Ok(base) = std::env::var(env_var) {
             let p = std::path::Path::new(&base).join(sub);
             if p.is_dir() { dirs.push(p); }
         }
-    };
+    }
+
+    let mut dirs: Vec<PathBuf> = Vec::new();
 
     // npm-global — where `func.cmd` and `azurite.cmd` live after `npm install -g`
-    env_join("APPDATA", "npm");
+    env_join(&mut dirs, "APPDATA", "npm");
     // Node itself
-    env_join("ProgramFiles",      "nodejs");
-    env_join("ProgramFiles(x86)", "nodejs");
+    env_join(&mut dirs, "ProgramFiles",      "nodejs");
+    env_join(&mut dirs, "ProgramFiles(x86)", "nodejs");
     // Azure CLI — three known installer layouts
-    env_join("ProgramFiles(x86)", r"Microsoft SDKs\Azure\CLI2\wbin");
-    env_join("ProgramFiles",      r"Microsoft SDKs\Azure\CLI2\wbin");
-    env_join("LOCALAPPDATA",      r"Programs\Azure CLI\wbin");
+    env_join(&mut dirs, "ProgramFiles(x86)", r"Microsoft SDKs\Azure\CLI2\wbin");
+    env_join(&mut dirs, "ProgramFiles",      r"Microsoft SDKs\Azure\CLI2\wbin");
+    env_join(&mut dirs, "LOCALAPPDATA",      r"Programs\Azure CLI\wbin");
     // Chocolatey shims
-    env_join("ChocolateyInstall", "bin");
+    env_join(&mut dirs, "ChocolateyInstall", "bin");
     // Scoop shims (user-level)
-    env_join("USERPROFILE", r"scoop\shims");
+    env_join(&mut dirs, "USERPROFILE", r"scoop\shims");
     // Docker Desktop CLI
-    env_join("ProgramFiles", r"Docker\Docker\resources\bin");
+    env_join(&mut dirs, "ProgramFiles", r"Docker\Docker\resources\bin");
 
     // Maven has no fixed install location — scan Program Files for
     // apache-maven-* or Maven directories and add their bin/.
@@ -258,7 +260,7 @@ pub fn windows_extra_dirs() -> Vec<PathBuf> {
         }
     }
     // Some setups drop Maven under the user profile
-    env_join("USERPROFILE", r".maven\bin");
+    env_join(&mut dirs, "USERPROFILE", r".maven\bin");
 
     dirs
 }

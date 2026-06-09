@@ -82,9 +82,9 @@ jobs:
     runs-on: macos-latest  # arm64 (Apple Silicon)
     env:
       SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
-      APPLE_ID:         ${{ secrets.MACOS_NOTARY_APPLE_ID }}
-      APPLE_TEAM_ID:    ${{ secrets.MACOS_NOTARY_TEAM_ID }}
-      APPLE_PASSWORD:   ${{ secrets.MACOS_NOTARY_PASSWORD }}
+      APP_STORE_KEY:        ${{ secrets.APP_STORE_CONNECT_KEY }}
+      APP_STORE_KEY_ID:     ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      APP_STORE_ISSUER_ID:  ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
 
     steps:
       - uses: actions/checkout@v4
@@ -111,9 +111,9 @@ jobs:
         run: |
           missing=()
           [ -z "${SIGNING_IDENTITY:-}"      ] && missing+=("MACOS_SIGNING_IDENTITY")
-          [ -z "${APPLE_ID:-}"              ] && missing+=("MACOS_NOTARY_APPLE_ID")
-          [ -z "${APPLE_TEAM_ID:-}"         ] && missing+=("MACOS_NOTARY_TEAM_ID")
-          [ -z "${APPLE_PASSWORD:-}"        ] && missing+=("MACOS_NOTARY_PASSWORD")
+          [ -z "${APP_STORE_KEY:-}"        ] && missing+=("APP_STORE_CONNECT_KEY")
+          [ -z "${APP_STORE_KEY_ID:-}"     ] && missing+=("APP_STORE_CONNECT_KEY_ID")
+          [ -z "${APP_STORE_ISSUER_ID:-}"  ] && missing+=("APP_STORE_CONNECT_ISSUER_ID")
           [ -z "${MACOS_CERTIFICATE:-}"     ] && missing+=("MACOS_CERTIFICATE")
           [ -z "${MACOS_CERTIFICATE_PWD:-}" ] && missing+=("MACOS_CERTIFICATE_PWD")
           [ -z "${KEYCHAIN_PASSWORD:-}"     ] && missing+=("KEYCHAIN_PASSWORD")
@@ -210,10 +210,13 @@ jobs:
             dist/ais-runner-macos-arm64.dmg
 
           # 4. Notarize the DMG (covers the binary inside via hash) and staple.
+          P8="$RUNNER_TEMP/AuthKey_${APP_STORE_KEY_ID}.p8"
+          echo "$APP_STORE_KEY" | base64 --decode > "$P8"
+
           xcrun notarytool submit dist/ais-runner-macos-arm64.dmg \
-            --apple-id "$APPLE_ID" \
-            --team-id  "$APPLE_TEAM_ID" \
-            --password "$APPLE_PASSWORD" \
+            --key "$P8" \
+            --key-id "$APP_STORE_KEY_ID" \
+            --issuer "$APP_STORE_ISSUER_ID" \
             --wait
           xcrun stapler staple dist/ais-runner-macos-arm64.dmg
           xcrun stapler validate dist/ais-runner-macos-arm64.dmg
