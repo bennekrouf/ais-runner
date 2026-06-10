@@ -336,6 +336,7 @@ pub fn fetch_security_snapshot(env_name: &str, env: &EnvTarget) -> SecuritySnaps
 /// Resolve a principal GUID to a display name by trying sp / user / group in turn.
 /// Returns `Some(name)` on first hit. Quiet failure (returns None) is expected
 /// when the caller lacks Directory.Read on the token.
+#[allow(dead_code)] // kept for a future "resolve principal name" affordance
 pub fn resolve_principal(principal_id: &str) -> Option<String> {
     let attempts: &[&[&str]] = &[
         &["ad", "sp",    "show", "--id",    principal_id, "--query", "displayName", "-o", "tsv"],

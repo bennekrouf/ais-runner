@@ -1,16 +1,16 @@
 use dioxus::prelude::*;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use crate::services::env_compare::VarGroup;
 use crate::services::security_compare::{
-    self, AccessPolicy, CosmosSecurity, EnvTarget, KeyVaultSecurity, SecuritySnapshot,
+    self, AccessPolicy, CosmosSecurity, EnvTarget, KeyVaultSecurity, RoleAssignment,
+    SecuritySnapshot,
 };
 
 // ── Fetch state ───────────────────────────────────────────────────────────────
 
 #[derive(Clone, PartialEq, Debug)]
 enum FetchState {
-    Idle,
     Loading,
     Done(SecuritySnapshot),
     Err(String),
@@ -34,13 +34,13 @@ pub struct SecurityComparePanelProps {
 
 #[component]
 pub fn SecurityComparePanel(props: SecurityComparePanelProps) -> Element {
-    let mut states:     Signal<HashMap<String, FetchState>> = use_signal(HashMap::new);
-    let mut principals: Signal<HashMap<String, String>>     = use_signal(HashMap::new);
-    let mut resolving:  Signal<HashMap<String, ()>>         = use_signal(HashMap::new);
-    let mut only_diff:  Signal<bool>                        = use_signal(|| false);
-    let mut overrides:  Signal<HashMap<String, EnvTarget>>  = use_signal(HashMap::new);
-    let mut editing:    Signal<Option<String>>              = use_signal(|| None);
-    let mut edit_buf:   Signal<EnvTarget>                   = use_signal(EnvTarget::default);
+    let mut states:    Signal<HashMap<String, FetchState>>   = use_signal(HashMap::new);
+    let mut only_diff: Signal<bool>                          = use_signal(|| false);
+    let mut overrides: Signal<HashMap<String, EnvTarget>>    = use_signal(HashMap::new);
+    let mut editing:   Signal<Option<String>>                = use_signal(|| None);
+    let mut edit_buf:  Signal<EnvTarget>                     = use_signal(EnvTarget::default);
+    // Cell detail popup: (key, env_name, full_value)
+    let mut detail:    Signal<Option<(String, String, String)>> = use_signal(|| None);
 
     let groups = props.groups.read().clone();
     let order  = props.col_order.read().clone();
@@ -82,108 +82,63 @@ pub fn SecurityComparePanel(props: SecurityComparePanelProps) -> Element {
         });
     };
 
-    // Auto-fetch any newly-selected env that has an actionable target and
-    // hasn't been fetched yet. Re-runs whenever the column list or overrides
-    // change. Manual ⟳ on a chip still works for refreshes.
+    // Auto-fetch any env with an actionable target that hasn't been fetched yet.
     {
         let pending: Vec<(String, EnvTarget)> = targets.iter()
-            .filter(|(name, target)| {
-                target.is_actionable() && !states.read().contains_key(name)
-            })
+            .filter(|(name, target)| target.is_actionable() && !states.read().contains_key(name))
             .cloned()
             .collect();
-        for (name, target) in pending {
-            fetch_one(name, target);
-        }
+        for (name, target) in pending { fetch_one(name, target); }
     }
 
-    let resolve_principal = move |pid: String| {
-        if pid.is_empty() { return; }
-        if principals.read().contains_key(&pid) { return; }
-        if resolving.read().contains_key(&pid)  { return; }
-        resolving.write().insert(pid.clone(), ());
-        spawn(async move {
-            let p = pid.clone();
-            let name = tokio::task::spawn_blocking(move || {
-                security_compare::resolve_principal(&p)
-            }).await.ok().flatten().unwrap_or_default();
-            principals.write().insert(pid.clone(), name);
-            resolving.write().remove(&pid);
-        });
-    };
-
-    let states_read     = states.read().clone();
-    let principals_read = principals.read().clone();
-    let diff_on         = *only_diff.read();
+    let states_read = states.read().clone();
+    let diff_on     = *only_diff.read();
 
     let snapshots: Vec<Option<&SecuritySnapshot>> = targets.iter()
         .map(|(name, _)| states_read.get(name).and_then(FetchState::snap))
         .collect();
 
     let rows = build_rows(&snapshots);
-    let visible_rows: Vec<&SecRow> = rows.iter()
+    let visible_rows: Vec<&Row> = rows.iter()
         .filter(|r| !diff_on || r.has_diff())
         .collect();
 
-    let render_principal = |pid: &str| -> String {
-        if pid.is_empty() { return String::new(); }
-        match principals_read.get(pid) {
-            Some(name) if !name.is_empty() => name.clone(),
-            _ => short_guid(pid),
+    // Accurate empty-state messaging — distinguishes "loading", "nothing to do",
+    // "fetch finished but empty", and "fetch failed".
+    let any_loading      = targets.iter().any(|(n, _)| matches!(states_read.get(n), Some(FetchState::Loading)));
+    let any_actionable   = targets.iter().any(|(_, t)| t.is_actionable());
+    let any_done         = targets.iter().any(|(n, _)| matches!(states_read.get(n), Some(FetchState::Done(_))));
+    let any_err: Vec<(String, String)> = targets.iter().filter_map(|(n, _)| {
+        match states_read.get(n) {
+            Some(FetchState::Err(e)) => Some((n.clone(), e.clone())),
+            Some(FetchState::Done(s)) => {
+                let mut parts = Vec::new();
+                if let Some(e) = &s.cosmos_err    { parts.push(format!("cosmos: {}", e)); }
+                if let Some(e) = &s.key_vault_err { parts.push(format!("kv: {}", e)); }
+                if parts.is_empty() { None } else { Some((n.clone(), parts.join("; "))) }
+            }
+            _ => None,
         }
+    }).collect();
+
+    let empty_msg: String = if !any_actionable {
+        "No environment has a complete Azure target. Click ⚙ Configure in a column header to set subscription / resource group / Cosmos / Key Vault for that env.".into()
+    } else if any_loading {
+        "Fetching security posture…".into()
+    } else if !any_done {
+        "Auto-fetch didn't start (all envs unactionable). Configure a target above.".into()
+    } else if diff_on {
+        "No differences found across environments.".into()
+    } else if rows.is_empty() {
+        "Fetch returned no Cosmos or Key Vault data. See errors above the table if any.".into()
+    } else {
+        "No data.".into()
     };
 
     rsx! {
-        // ── Per-env action chips (matches Settings chip styling) ─────────
+        // ── Top bar: just the differences toggle (env chips are above tabs) ──
         div { class: "env-compare-topbar",
             div { class: "env-col-chips",
-                for (name, target) in targets.iter() {
-                    {
-                        let st_name = name.clone();
-                        let st = states_read.get(&st_name).cloned().unwrap_or(FetchState::Idle);
-                        let actionable = target.is_actionable();
-                        let title = if actionable { String::new() } else {
-                            "Couldn't infer Azure target from this group's variables. Click ✎ to set it manually.".into()
-                        };
-                        let n_fetch = name.clone();
-                        let t_fetch = target.clone();
-                        let fetch_btn = move |_| fetch_one(n_fetch.clone(), t_fetch.clone());
-                        let n_edit = name.clone();
-                        let t_edit = target.clone();
-                        let edit_btn = move |_| {
-                            edit_buf.set(t_edit.clone());
-                            editing.set(Some(n_edit.clone()));
-                        };
-                        let detail = describe_target(target);
-                        rsx! {
-                            div { class: "env-chip",
-                                button {
-                                    class: "btn btn-small btn-fetch",
-                                    disabled: !actionable || matches!(st, FetchState::Loading),
-                                    title: "{title}",
-                                    onclick: fetch_btn,
-                                    match &st {
-                                        FetchState::Loading => "…",
-                                        FetchState::Done(_) => "⟳",
-                                        _                   => "↓",
-                                    }
-                                }
-                                match &st {
-                                    FetchState::Err(e) => rsx! { span { class: "env-source-err", title: "{e}", "⚠" } },
-                                    _ => rsx! {},
-                                }
-                                span { class: "env-chip-label", "{name}" }
-                                span { class: "env-chip-sub", title: "{detail}", "{detail}" }
-                                button {
-                                    class: "btn-icon",
-                                    title: "Configure Azure target (subscription / RG / cosmos / key-vault)",
-                                    onclick: edit_btn,
-                                    "✎"
-                                }
-                            }
-                        }
-                    }
-                }
                 div { style: "flex:1" }
                 label { class: "env-diff-toggle",
                     input {
@@ -196,46 +151,144 @@ pub fn SecurityComparePanel(props: SecurityComparePanelProps) -> Element {
             }
         }
 
-        // ── Comparison table (same structure as Settings) ────────────────
+        // ── Per-env fetch errors (surfaced so the user isn't stuck on "…") ──
+        if !any_err.is_empty() {
+            div { style: "padding:8px 14px;background:color-mix(in srgb, var(--red) 12%, transparent);border-bottom:1px solid var(--border);font-size:11px;color:var(--text2)",
+                strong { style: "color:var(--red)", "⚠ Fetch errors " }
+                for (env_name, err) in any_err.iter() {
+                    div { style: "margin-top:3px;font-family:var(--font-mono);font-size:11px",
+                        strong { "{env_name}: " }
+                        "{err}"
+                    }
+                }
+            }
+        }
+
+        // ── Comparison table (mirrors Settings layout exactly) ───────────
         div { class: "env-compare-scroll",
-            if snapshots.iter().all(|s| s.is_none()) {
-                div { class: "env-compare-empty",
-                    "Click ↓ on each environment chip to fetch its security posture."
-                }
-            } else if visible_rows.is_empty() {
-                div { class: "env-compare-empty",
-                    "No differences found across fetched environments."
-                }
-            } else {
-                table { class: "env-compare-table",
-                    thead {
-                        tr {
-                            th { class: "env-th-key", "Security parameter" }
-                            for (name, _) in targets.iter() {
-                                th { class: "env-th-val", "{name}" }
+            table { class: "env-compare-table",
+                thead {
+                    tr {
+                        th { class: "env-th-key", "Security parameter" }
+                        for (name, target) in targets.iter() {
+                            {
+                                let n_for_edit = name.clone();
+                                let t_for_edit = target.clone();
+                                let configurable = !target.is_actionable();
+                                let subtitle = if configurable {
+                                    "couldn't infer target".to_string()
+                                } else {
+                                    describe_target(target)
+                                };
+                                let edit_btn = move |_| {
+                                    edit_buf.set(t_for_edit.clone());
+                                    editing.set(Some(n_for_edit.clone()));
+                                };
+                                let state_marker = match states_read.get(name) {
+                                    Some(FetchState::Loading) => " · loading…",
+                                    Some(FetchState::Err(_))  => " · fetch failed",
+                                    _ => "",
+                                };
+                                rsx! {
+                                    th { class: "env-th-val",
+                                        "{name}"
+                                        br {}
+                                        if configurable {
+                                            span { style: "font-weight:normal;font-size:10px;text-transform:none;color:var(--miss-val)",
+                                                "⚠ {subtitle} "
+                                                button {
+                                                    class: "btn-icon",
+                                                    style: "font-size:11px",
+                                                    title: "Set subscription / resource group / cosmos / key-vault manually",
+                                                    onclick: edit_btn,
+                                                    "⚙ Configure"
+                                                }
+                                            }
+                                        } else {
+                                            span { style: "font-weight:normal;font-size:10px;text-transform:none;color:var(--text3)",
+                                                title: "{subtitle}",
+                                                "{subtitle}{state_marker} "
+                                                button {
+                                                    class: "btn-icon",
+                                                    style: "font-size:10px;opacity:.7",
+                                                    title: "Edit Azure target for this env",
+                                                    onclick: edit_btn,
+                                                    "✎"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
-                    tbody {
-                        {
-                            let mut last_section: Option<&str> = None;
-                            let col_count = targets.len() + 1;
-                            rsx! {
-                                for row in visible_rows.iter() {
-                                    {
-                                        let show_header = last_section != Some(row.section);
-                                        last_section = Some(row.section);
-                                        let row_class = if row.has_diff() { "env-compare-row has-diff" } else { "env-compare-row" };
-                                        rsx! {
-                                            if show_header {
-                                                tr { class: "env-section-row",
-                                                    td { colspan: "{col_count}", "{row.section}" }
+                }
+                tbody {
+                    if visible_rows.is_empty() {
+                        tr {
+                            td { colspan: "{targets.len() + 1}",
+                                style: "padding:24px;text-align:center;color:var(--text3);line-height:1.7",
+                                div { "{empty_msg}" }
+                                // Prominent Configure buttons whenever any env is unactionable
+                                if !any_actionable {
+                                    div { style: "margin-top:14px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap",
+                                        for (name, target) in targets.iter() {
+                                            {
+                                                let n  = name.clone();
+                                                let t  = target.clone();
+                                                let unconfigured = !t.is_actionable();
+                                                rsx! {
+                                                    button {
+                                                        class: "btn btn-small btn-fetch",
+                                                        disabled: !unconfigured,
+                                                        onclick: move |_| {
+                                                            edit_buf.set(t.clone());
+                                                            editing.set(Some(n.clone()));
+                                                        },
+                                                        if unconfigured { "⚙ Configure {name}" } else { "✓ {name} configured" }
+                                                    }
                                                 }
                                             }
-                                            tr { class: "{row_class}",
-                                                td { class: "env-col-key", title: "{row.tooltip}", "{row.label}" }
-                                                for cell in row.cells.iter() {
-                                                    { render_cell(cell, &render_principal, resolve_principal) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        for row in visible_rows.iter() {
+                            {
+                                let row_class = if row.has_diff() { "env-compare-row has-diff" } else { "env-compare-row" };
+                                rsx! {
+                                    tr { class: "{row_class}",
+                                        td { class: "env-col-key", title: "{row.label}", "{row.label}" }
+                                        for (i, val) in row.values.iter().enumerate() {
+                                            {
+                                                let key  = row.label.clone();
+                                                let env  = targets[i].0.clone();
+                                                let raw  = val.clone();
+                                                let copyable = !raw.is_empty() && raw != "—" && raw != "…";
+                                                let td_class = if copyable { "env-col-val env-cell-copyable" } else { "env-col-val" };
+                                                let display = trunc(&raw, 60);
+                                                let cell_class = pick_class(&raw);
+                                                rsx! {
+                                                    td {
+                                                        class: "{td_class}",
+                                                        title: "{raw}",
+                                                        onclick: move |_| {
+                                                            if copyable {
+                                                                let r = raw.clone();
+                                                                let k = key.clone();
+                                                                let e = env.clone();
+                                                                std::thread::spawn(move || {
+                                                                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                                                                        let _ = cb.set_text(r);
+                                                                    }
+                                                                });
+                                                                detail.set(Some((k, e, raw.clone())));
+                                                            }
+                                                        },
+                                                        span { class: "{cell_class}", "{display}" }
+                                                    }
                                                 }
                                             }
                                         }
@@ -248,7 +301,25 @@ pub fn SecurityComparePanel(props: SecurityComparePanelProps) -> Element {
             }
         }
 
-        // ── Override-target modal (uses .env-detail-overlay shell) ───────
+        // ── Cell detail popup (mirrors Settings popup exactly) ───────────
+        if let Some((ref dk, ref de, ref dv)) = *detail.read() {
+            div { class: "env-detail-overlay",
+                onclick: move |_| detail.set(None),
+                onkeydown: move |e: KeyboardEvent| { if e.key() == Key::Escape { detail.set(None); } },
+                div { class: "env-detail-box",
+                    onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                    div { class: "env-detail-header",
+                        span { class: "env-detail-key", "{dk}" }
+                        span { class: "env-detail-col", "{de}" }
+                        button { class: "btn-icon", onclick: move |_| detail.set(None), "×" }
+                    }
+                    pre { class: "env-detail-value", "{dv}" }
+                    div { class: "env-detail-hint", "📋 Copied to clipboard" }
+                }
+            }
+        }
+
+        // ── Override-target modal ────────────────────────────────────────
         if let Some(edit_name) = editing.read().clone() {
             {
                 let group = envs.iter().find(|g| g.name == edit_name).cloned();
@@ -266,11 +337,7 @@ pub fn SecurityComparePanel(props: SecurityComparePanelProps) -> Element {
                             div { class: "env-detail-header",
                                 span { class: "env-detail-key", "Configure Azure target" }
                                 span { class: "env-detail-col", "{edit_name}" }
-                                button {
-                                    class: "btn-icon",
-                                    onclick: move |_| editing.set(None),
-                                    "×"
-                                }
+                                button { class: "btn-icon", onclick: move |_| editing.set(None), "×" }
                             }
                             div { class: "env-detail-form",
                                 label { "Subscription ID" }
@@ -337,8 +404,7 @@ pub fn SecurityComparePanel(props: SecurityComparePanelProps) -> Element {
                             if !keys.is_empty() {
                                 div { class: "env-detail-keys",
                                     div { class: "env-detail-keys-title",
-                                        "Variable keys available in this DevOps group "
-                                        "(click ✎ on the chip uses these for auto-inference):"
+                                        "Variable keys present in this DevOps group (used for auto-inference):"
                                     }
                                     div { class: "env-detail-keys-list",
                                         for k in keys.iter() { span { "{k}" } }
@@ -353,332 +419,133 @@ pub fn SecurityComparePanel(props: SecurityComparePanelProps) -> Element {
     }
 }
 
-// ── Row model ─────────────────────────────────────────────────────────────────
+// ── Row model (just strings) ──────────────────────────────────────────────────
 
-#[derive(Clone, Debug, PartialEq)]
-enum Cell {
-    Pending,
-    NotConfigured,
-    Value(String),
-    Bool(Option<bool>),
-    List(Vec<String>),
-    Role(Option<String>, String),
+struct Row {
+    label:  String,
+    values: Vec<String>,
 }
 
-struct SecRow {
-    section: &'static str,
-    label:   String,
-    tooltip: String,
-    cells:   Vec<Cell>,
-}
-
-impl SecRow {
+impl Row {
     fn has_diff(&self) -> bool {
-        let mut seen: Option<&Cell> = None;
-        for c in &self.cells {
-            if matches!(c, Cell::Pending) { continue; }
-            match seen {
-                None => seen = Some(c),
-                Some(prev) if cells_equal(prev, c) => {}
-                _ => return true,
-            }
-        }
-        false
-    }
-}
-
-fn cells_equal(a: &Cell, b: &Cell) -> bool {
-    match (a, b) {
-        (Cell::List(x), Cell::List(y)) => {
-            let xs: BTreeSet<&String> = x.iter().collect();
-            let ys: BTreeSet<&String> = y.iter().collect();
-            xs == ys
-        }
-        _ => a == b,
+        let known: Vec<&String> = self.values.iter()
+            .filter(|v| !v.is_empty() && v.as_str() != "…")
+            .collect();
+        known.windows(2).any(|w| w[0] != w[1])
     }
 }
 
 // ── Row construction ──────────────────────────────────────────────────────────
 
-fn build_rows(snaps: &[Option<&SecuritySnapshot>]) -> Vec<SecRow> {
-    let mut rows = Vec::new();
+fn build_rows(snaps: &[Option<&SecuritySnapshot>]) -> Vec<Row> {
     let n = snaps.len();
+    let mut rows: Vec<Row> = Vec::new();
 
-    let mut row = |section: &'static str, label: String, tooltip: String, cells: Vec<Cell>| {
-        rows.push(SecRow { section, label, tooltip, cells });
+    let cosmos = |i: usize| -> Option<&CosmosSecurity> {
+        snaps[i].and_then(|s| s.cosmos.as_ref())
+    };
+    let vault = |i: usize| -> Option<&KeyVaultSecurity> {
+        snaps[i].and_then(|s| s.key_vault.as_ref())
+    };
+    let pending = |i: usize| -> bool { snaps[i].is_none() };
+
+    let any_cosmos = (0..n).any(|i| cosmos(i).is_some() || snaps[i].map(|s| s.target.cosmos_account.is_some()).unwrap_or(false));
+    let any_vault  = (0..n).any(|i| vault(i).is_some()  || snaps[i].map(|s| s.target.key_vault.is_some()).unwrap_or(false));
+
+    let bool_str = |b: Option<bool>| -> String {
+        match b { Some(true) => "true".into(), Some(false) => "false".into(), None => "—".into() }
+    };
+    let str_or_dash = |s: &Option<String>| -> String {
+        s.clone().unwrap_or_else(|| "—".into())
+    };
+    let list_str = |items: &[String]| -> String {
+        if items.is_empty() { "(none)".into() } else { items.join(", ") }
     };
 
-    // ── Cosmos DB ────────────────────────────────────────────────────────────
-    if snaps.iter().any(|s| s.map(|s| s.cosmos.is_some() || s.target.cosmos_account.is_some()).unwrap_or(false)) {
-        let cosmos_or_pending = |idx: usize| -> Option<Option<&CosmosSecurity>> {
-            match snaps[idx] { None => None, Some(s) => Some(s.cosmos.as_ref()) }
-        };
-        let cells_from = |f: &dyn Fn(&CosmosSecurity) -> Cell| -> Vec<Cell> {
-            (0..n).map(|i| match cosmos_or_pending(i) {
-                None => Cell::Pending,
-                Some(None) => Cell::NotConfigured,
-                Some(Some(c)) => f(c),
-            }).collect()
-        };
-
-        row("Cosmos DB",
-            "Account name".into(), "az cosmosdb show → name".into(),
-            cells_from(&|c| Cell::Value(c.account_name.clone())));
-        row("Cosmos DB",
-            "disableLocalAuth".into(),
-            "If true, key-based auth is disabled — only AAD/RBAC allowed.".into(),
-            cells_from(&|c| Cell::Bool(c.disable_local_auth)));
-        row("Cosmos DB",
-            "publicNetworkAccess".into(), "Enabled / Disabled".into(),
-            cells_from(&|c| match c.public_network_access.as_deref() {
-                Some(v) => Cell::Value(v.into()),
-                None    => Cell::Value("—".into()),
-            }));
-        row("Cosmos DB",
-            "networkAclBypass".into(),
-            "Which services can bypass the firewall (None / AzureServices).".into(),
-            cells_from(&|c| match c.network_acl_bypass.as_deref() {
-                Some(v) => Cell::Value(v.into()),
-                None    => Cell::Value("—".into()),
-            }));
-        row("Cosmos DB",
-            "Key-based metadata write".into(),
-            "If true, keys can mutate metadata (DBs/containers). Best practice: disabled.".into(),
-            cells_from(&|c| Cell::Bool(c.key_metadata_write_enabled)));
-        row("Cosmos DB",
-            "Firewall IP rules".into(), "ipRules[].ipAddressOrRange".into(),
-            cells_from(&|c| Cell::List(c.ip_rules.clone())));
-        row("Cosmos DB",
-            "VNet rules".into(), "virtualNetworkRules[].id".into(),
-            cells_from(&|c| Cell::List(c.vnet_rules.clone())));
-
-        // SQL RBAC pivot
-        let mut keys: BTreeSet<(String, String, Option<String>)> = BTreeSet::new();
-        for s in snaps.iter().flatten() {
-            if let Some(c) = &s.cosmos {
-                for ra in &c.sql_role_assignments {
-                    keys.insert((ra.principal_id.clone(), ra.role_definition_id.clone(), ra.role_name.clone()));
-                }
+    // ── Cosmos DB ────────────────────────────────────────────────────────
+    if any_cosmos {
+        let cosmos_row = |label: &str, f: &dyn Fn(&CosmosSecurity) -> String| -> Row {
+            Row {
+                label: label.to_string(),
+                values: (0..n).map(|i| {
+                    if pending(i) { "…".into() }
+                    else { cosmos(i).map(f).unwrap_or_else(|| "—".into()) }
+                }).collect(),
             }
-        }
-        for (pid, role_id, role_name) in keys {
-            let label = format!("SQL RBAC · {} → {}",
-                short_guid(&pid),
-                role_name.clone().unwrap_or_else(|| short_guid(&role_id)));
-            let tooltip = format!("principalId={}\nroleDefinitionId={}", pid, role_id);
-            let cells: Vec<Cell> = (0..n).map(|i| match cosmos_or_pending(i) {
-                None => Cell::Pending,
-                Some(None) => Cell::NotConfigured,
-                Some(Some(c)) => {
-                    let present = c.sql_role_assignments.iter()
-                        .any(|ra| ra.principal_id == pid && ra.role_definition_id == role_id);
-                    if present {
-                        Cell::Role(role_name.clone().or_else(|| Some(short_guid(&role_id))), pid.clone())
-                    } else {
-                        Cell::Role(None, pid.clone())
-                    }
-                }
-            }).collect();
-            row("Cosmos DB · SQL RBAC", label, tooltip, cells);
-        }
+        };
 
-        // ARM RBAC pivot
-        let mut keys: BTreeSet<(String, String, Option<String>)> = BTreeSet::new();
-        for s in snaps.iter().flatten() {
-            if let Some(c) = &s.cosmos {
-                for ra in &c.arm_role_assignments {
-                    keys.insert((ra.principal_id.clone(), ra.role_definition_id.clone(), ra.role_name.clone()));
-                }
-            }
-        }
-        for (pid, role_id, role_name) in keys {
-            let label = format!("ARM RBAC · {} → {}",
-                short_guid(&pid),
-                role_name.clone().unwrap_or_else(|| short_guid(&role_id)));
-            let tooltip = format!("principalId={}\nroleDefinitionId={}", pid, role_id);
-            let cells: Vec<Cell> = (0..n).map(|i| match cosmos_or_pending(i) {
-                None => Cell::Pending,
-                Some(None) => Cell::NotConfigured,
-                Some(Some(c)) => {
-                    let present = c.arm_role_assignments.iter()
-                        .any(|ra| ra.principal_id == pid && ra.role_definition_id == role_id);
-                    if present {
-                        Cell::Role(role_name.clone(), pid.clone())
-                    } else {
-                        Cell::Role(None, pid.clone())
-                    }
-                }
-            }).collect();
-            row("Cosmos DB · ARM RBAC", label, tooltip, cells);
-        }
+        rows.push(cosmos_row("Cosmos / account name",          &|c| c.account_name.clone()));
+        rows.push(cosmos_row("Cosmos / disableLocalAuth",      &|c| bool_str(c.disable_local_auth)));
+        rows.push(cosmos_row("Cosmos / publicNetworkAccess",   &|c| str_or_dash(&c.public_network_access)));
+        rows.push(cosmos_row("Cosmos / networkAclBypass",      &|c| str_or_dash(&c.network_acl_bypass)));
+        rows.push(cosmos_row("Cosmos / key metadata write",    &|c| bool_str(c.key_metadata_write_enabled)));
+        rows.push(cosmos_row("Cosmos / firewall IP rules",     &|c| list_str(&c.ip_rules)));
+        rows.push(cosmos_row("Cosmos / VNet rules",            &|c| list_str(&c.vnet_rules)));
+        rows.push(cosmos_row("Cosmos / SQL role assignments",  &|c| roles_str(&c.sql_role_assignments)));
+        rows.push(cosmos_row("Cosmos / ARM role assignments",  &|c| roles_str(&c.arm_role_assignments)));
     }
 
-    // ── Key Vault ────────────────────────────────────────────────────────────
-    if snaps.iter().any(|s| s.map(|s| s.key_vault.is_some() || s.target.key_vault.is_some()).unwrap_or(false)) {
-        let kv_or_pending = |idx: usize| -> Option<Option<&KeyVaultSecurity>> {
-            match snaps[idx] { None => None, Some(s) => Some(s.key_vault.as_ref()) }
-        };
-        let cells_from = |f: &dyn Fn(&KeyVaultSecurity) -> Cell| -> Vec<Cell> {
-            (0..n).map(|i| match kv_or_pending(i) {
-                None => Cell::Pending,
-                Some(None) => Cell::NotConfigured,
-                Some(Some(c)) => f(c),
-            }).collect()
-        };
-
-        row("Key Vault",
-            "Vault name".into(), "az keyvault show → name".into(),
-            cells_from(&|c| Cell::Value(c.vault_name.clone())));
-        row("Key Vault",
-            "enableRbacAuthorization".into(),
-            "If true, access is governed by RBAC (not the legacy access-policy model).".into(),
-            cells_from(&|c| Cell::Bool(c.enable_rbac_authorization)));
-        row("Key Vault",
-            "publicNetworkAccess".into(), "Enabled / Disabled".into(),
-            cells_from(&|c| match c.public_network_access.as_deref() {
-                Some(v) => Cell::Value(v.into()),
-                None    => Cell::Value("—".into()),
-            }));
-        row("Key Vault",
-            "Purge protection".into(),
-            "If true, deleted vaults/secrets cannot be force-purged.".into(),
-            cells_from(&|c| Cell::Bool(c.purge_protection)));
-        row("Key Vault",
-            "Soft-delete retention (days)".into(), "softDeleteRetentionInDays".into(),
-            cells_from(&|c| Cell::Value(c.soft_delete_retention_days.map(|d| d.to_string()).unwrap_or_else(|| "—".into()))));
-        row("Key Vault",
-            "Firewall IP rules".into(), "networkAcls.ipRules[].value".into(),
-            cells_from(&|c| Cell::List(c.ip_rules.clone())));
-        row("Key Vault",
-            "VNet rules".into(), "networkAcls.virtualNetworkRules[].id".into(),
-            cells_from(&|c| Cell::List(c.vnet_rules.clone())));
-
-        // RBAC pivot
-        let mut keys: BTreeSet<(String, String, Option<String>)> = BTreeSet::new();
-        for s in snaps.iter().flatten() {
-            if let Some(c) = &s.key_vault {
-                for ra in &c.role_assignments {
-                    keys.insert((ra.principal_id.clone(), ra.role_definition_id.clone(), ra.role_name.clone()));
-                }
+    // ── Key Vault ────────────────────────────────────────────────────────
+    if any_vault {
+        let kv_row = |label: &str, f: &dyn Fn(&KeyVaultSecurity) -> String| -> Row {
+            Row {
+                label: label.to_string(),
+                values: (0..n).map(|i| {
+                    if pending(i) { "…".into() }
+                    else { vault(i).map(f).unwrap_or_else(|| "—".into()) }
+                }).collect(),
             }
-        }
-        for (pid, role_id, role_name) in keys {
-            let label = format!("RBAC · {} → {}",
-                short_guid(&pid),
-                role_name.clone().unwrap_or_else(|| short_guid(&role_id)));
-            let tooltip = format!("principalId={}\nroleDefinitionId={}", pid, role_id);
-            let cells: Vec<Cell> = (0..n).map(|i| match kv_or_pending(i) {
-                None => Cell::Pending,
-                Some(None) => Cell::NotConfigured,
-                Some(Some(c)) => {
-                    let present = c.role_assignments.iter()
-                        .any(|ra| ra.principal_id == pid && ra.role_definition_id == role_id);
-                    if present {
-                        Cell::Role(role_name.clone(), pid.clone())
-                    } else {
-                        Cell::Role(None, pid.clone())
-                    }
-                }
-            }).collect();
-            row("Key Vault · RBAC", label, tooltip, cells);
-        }
+        };
 
-        // Access-policy pivot
-        let mut object_ids: BTreeSet<String> = BTreeSet::new();
-        for s in snaps.iter().flatten() {
-            if let Some(c) = &s.key_vault {
-                for ap in &c.access_policies { object_ids.insert(ap.object_id.clone()); }
-            }
-        }
-        for oid in object_ids {
-            let label = format!("Access policy · {}", short_guid(&oid));
-            let tooltip = format!("objectId={}", oid);
-            let cells: Vec<Cell> = (0..n).map(|i| match kv_or_pending(i) {
-                None => Cell::Pending,
-                Some(None) => Cell::NotConfigured,
-                Some(Some(c)) => {
-                    match c.access_policies.iter().find(|ap| ap.object_id == oid) {
-                        Some(ap) => Cell::Value(format_policy(ap)),
-                        None     => Cell::Value("—".into()),
-                    }
-                }
-            }).collect();
-            row("Key Vault · Access policies", label, tooltip, cells);
-        }
+        rows.push(kv_row("KeyVault / vault name",                 &|v| v.vault_name.clone()));
+        rows.push(kv_row("KeyVault / enableRbacAuthorization",    &|v| bool_str(v.enable_rbac_authorization)));
+        rows.push(kv_row("KeyVault / publicNetworkAccess",        &|v| str_or_dash(&v.public_network_access)));
+        rows.push(kv_row("KeyVault / purge protection",           &|v| bool_str(v.purge_protection)));
+        rows.push(kv_row("KeyVault / soft-delete retention days", &|v| v.soft_delete_retention_days.map(|d| d.to_string()).unwrap_or_else(|| "—".into())));
+        rows.push(kv_row("KeyVault / firewall IP rules",          &|v| list_str(&v.ip_rules)));
+        rows.push(kv_row("KeyVault / VNet rules",                 &|v| list_str(&v.vnet_rules)));
+        rows.push(kv_row("KeyVault / role assignments",           &|v| roles_str(&v.role_assignments)));
+        rows.push(kv_row("KeyVault / access policies",            &|v| policies_str(&v.access_policies)));
     }
 
     rows
 }
 
-fn format_policy(ap: &AccessPolicy) -> String {
-    let mut parts = Vec::new();
-    if !ap.permissions_keys.is_empty()    { parts.push(format!("keys: {}",    ap.permissions_keys.join(","))); }
-    if !ap.permissions_secrets.is_empty() { parts.push(format!("secrets: {}", ap.permissions_secrets.join(","))); }
-    if !ap.permissions_certs.is_empty()   { parts.push(format!("certs: {}",   ap.permissions_certs.join(","))); }
-    if parts.is_empty() { "(no permissions)".into() } else { parts.join(" · ") }
+fn roles_str(roles: &[RoleAssignment]) -> String {
+    if roles.is_empty() { return "(none)".into(); }
+    let mut out: Vec<String> = roles.iter().map(|ra| {
+        let role = ra.role_name.clone().unwrap_or_else(|| short_guid(&ra.role_definition_id));
+        format!("{} → {}", role, short_guid(&ra.principal_id))
+    }).collect();
+    out.sort();
+    out.join(" · ")
 }
 
-// ── Cell rendering ────────────────────────────────────────────────────────────
+fn policies_str(policies: &[AccessPolicy]) -> String {
+    if policies.is_empty() { return "(none)".into(); }
+    let mut out: Vec<String> = policies.iter().map(|ap| {
+        let mut parts = Vec::new();
+        if !ap.permissions_keys.is_empty()    { parts.push(format!("keys:{}",    ap.permissions_keys.join(","))); }
+        if !ap.permissions_secrets.is_empty() { parts.push(format!("secrets:{}", ap.permissions_secrets.join(","))); }
+        if !ap.permissions_certs.is_empty()   { parts.push(format!("certs:{}",   ap.permissions_certs.join(","))); }
+        format!("{} [{}]", short_guid(&ap.object_id), parts.join(" "))
+    }).collect();
+    out.sort();
+    out.join(" · ")
+}
 
-fn render_cell(
-    cell: &Cell,
-    render_principal: &dyn Fn(&str) -> String,
-    resolve_principal: impl FnMut(String) + Copy + 'static,
-) -> Element {
-    match cell {
-        Cell::Pending => rsx! {
-            td { class: "env-col-val", span { class: "env-val-empty", "…" } }
-        },
-        Cell::NotConfigured => rsx! {
-            td { class: "env-col-val", span { class: "env-val-missing", title: "Not configured for this env", "—" } }
-        },
-        Cell::Value(v) => {
-            let display = if v.is_empty() { "—".to_string() } else { trunc(v, 60) };
-            let full = v.clone();
-            rsx! { td { class: "env-col-val", title: "{full}", span { class: "env-val-local", "{display}" } } }
-        }
-        Cell::Bool(b) => match b {
-            Some(true)  => rsx! { td { class: "env-col-val", span { class: "env-val-local",   "✓ true"  } } },
-            Some(false) => rsx! { td { class: "env-col-val", span { class: "env-val-differs", "✗ false" } } },
-            None        => rsx! { td { class: "env-col-val", span { class: "env-val-empty",   "—"       } } },
-        },
-        Cell::List(items) => {
-            if items.is_empty() {
-                rsx! { td { class: "env-col-val", span { class: "env-val-empty", "(none)" } } }
-            } else {
-                let joined = items.join(", ");
-                let display = trunc(&joined, 60);
-                let count = items.len();
-                rsx! {
-                    td { class: "env-col-val", title: "{joined}",
-                        span { class: "env-val-local", "{count} · {display}" }
-                    }
-                }
-            }
-        }
-        Cell::Role(role, pid) => match role {
-            None => rsx! { td { class: "env-col-val", span { class: "env-val-missing", "—" } } },
-            Some(rn) => {
-                let principal_display = render_principal(pid);
-                let pid_owned  = pid.clone();
-                let role_owned = rn.clone();
-                let tooltip = format!("principalId={}\nClick to resolve display name", pid);
-                let mut resolve = resolve_principal;
-                rsx! {
-                    td { class: "env-col-val env-cell-copyable",
-                        title: "{tooltip}",
-                        onclick: move |_| resolve(pid_owned.clone()),
-                        span { class: "env-val-local", "✓ {role_owned}" }
-                        br {}
-                        span { class: "env-val-empty", "{principal_display}" }
-                    }
-                }
-            }
-        },
+// ── Cell helpers ──────────────────────────────────────────────────────────────
+
+fn pick_class(value: &str) -> &'static str {
+    match value {
+        "" | "—"            => "env-val-missing",
+        "…"                 => "env-val-empty",
+        "(none)"            => "env-val-empty",
+        "true"  | "Enabled" => "env-val-local",
+        "false" | "Disabled" => "env-val-differs",
+        _                   => "env-val-local",
     }
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn short_guid(s: &str) -> String {
     let tail = s.rsplit('/').next().unwrap_or(s);
@@ -692,7 +559,7 @@ fn trunc(s: &str, max: usize) -> String {
 
 fn describe_target(t: &EnvTarget) -> String {
     let mut bits = Vec::new();
-    if let Some(c) = &t.cosmos_account { bits.push(format!("cosmos:{}", c)); }
-    if let Some(v) = &t.key_vault      { bits.push(format!("kv:{}", v)); }
+    if let Some(c) = &t.cosmos_account { bits.push(format!("cosmos: {}", c)); }
+    if let Some(v) = &t.key_vault      { bits.push(format!("kv: {}", v)); }
     if bits.is_empty() { "—".into() } else { bits.join(" · ") }
 }
