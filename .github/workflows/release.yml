@@ -284,6 +284,38 @@ jobs:
           "$hash  ais-runner-setup.exe" | Out-File "dist\ais-runner-setup.exe.sha256" -Encoding ASCII
           Write-Host "Installer: dist\ais-runner-setup.exe ($([math]::Round((Get-Item dist\ais-runner-setup.exe).Length/1MB,1)) MB)"
 
+      
+      # ── SignPath Foundation: code-sign the .exe for free (OSS only) ────────
+      # Uncomment this block after SignPath Foundation has approved the project.
+      # Until then the .exe ships unsigned (SmartScreen will warn on download).
+      #
+      # Setup (one-time, after SignPath approval):
+      #   1. Add repo secret `SIGNPATH_API_TOKEN` (from SignPath dashboard).
+      #   2. Fill the three placeholders below with values from your
+      #      SignPath project page (organization-id, project-slug, policy-slug).
+      #
+      # - name: Upload unsigned artifact to GitHub
+      #   id: upload-unsigned
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: ais-runner-windows-unsigned
+      #     path: dist/ais-runner-setup.exe
+      #
+      # - name: Submit signing request to SignPath
+      #   uses: signpath/github-action-submit-signing-request@v1
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: 'REPLACE-WITH-SIGNPATH-ORG-UUID'
+      #     project-slug:    'REPLACE-WITH-SIGNPATH-PROJECT-SLUG'
+      #     signing-policy-slug: 'REPLACE-WITH-SIGNPATH-POLICY-SLUG'
+      #     github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: dist-signed
+      #
+      # - name: Replace .exe with the signed version
+      #   shell: pwsh
+      #   run: |
+      #     Move-Item -Force dist-signed\ais-runner-setup.exe dist\ais-runner-setup.exe
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -365,6 +397,38 @@ jobs:
         with:
           path: artifacts
 
+      - name: Flatten artifacts + generate latest.json
+        env:
+          REPO: ${{ github.repository }}
+          TAG:  ${{ github.ref_name }}
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -lh release/
+
+          VER="${TAG#v}"
+          BASE="https://github.com/$REPO/releases/download/$TAG"
+          MAC_DMG="ais-runner-macos-arm64.dmg"
+          WIN_MSI="ais-runner-setup.exe"
+          LINUX_TGZ="ais-runner-linux-x86_64.tar.gz"
+
+          sha() { [ -n "$1" ] && [ -f "release/$1" ] && sha256sum "release/$1" | awk '{print $1}' || echo ""; }
+
+          cat > release/latest.json <<EOF
+          {
+            "name": "ais-runner",
+            "version": "$VER",
+            "tag": "$TAG",
+            "released_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "macos":   { "dmg":    { "url": "$BASE/$MAC_DMG",   "sha256": "$(sha "$MAC_DMG")"   } },
+              "windows": { "exe_or_msi": { "url": "$BASE/$WIN_MSI", "sha256": "$(sha "$WIN_MSI")" } },
+              "linux":   { "tarball": { "url": "$BASE/$LINUX_TGZ", "sha256": "$(sha "$LINUX_TGZ")" } }
+            }
+          }
+          EOF
+          cp release/latest.json artifacts/  # so gh release attaches it
+          cat release/latest.json
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -2,6 +2,7 @@ mod components;
 mod handlers;
 mod screens;
 mod services;
+mod update_check;
 mod utils;
 
 use dioxus::prelude::*;
@@ -290,8 +291,41 @@ fn App() -> Element {
         move |_| screen.set(Screen::Welcome)
     };
 
+    // ── Auto-update check ──────────────────────────────────────────────────
+    let mut update_info      = use_signal(|| Option::<update_check::UpdateInfo>::None);
+    let mut update_dismissed = use_signal(|| false);
+    use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        if let Some(info) = update_check::check().await {
+            update_info.set(Some(info));
+        }
+    });
+
     rsx! {
         document::Style { "{MAIN_CSS}" }
+
+        // Update banner — fixed top, dismissable per session.
+        if let (Some(info), false) = (update_info.read().clone(), *update_dismissed.read()) {
+            div { class: "update-banner",
+                span { class: "update-banner-text",
+                    "ais-runner "
+                    strong { "{info.latest_version}" }
+                    " is available (you have {env!(\"CARGO_PKG_VERSION\")})."
+                }
+                a {
+                    class: "update-banner-link",
+                    href: "{info.release_url}",
+                    target: "_blank",
+                    "Download"
+                }
+                button {
+                    class: "update-banner-dismiss",
+                    onclick: move |_| update_dismissed.set(true),
+                    "×"
+                }
+            }
+        }
+
         match screen.read().clone() {
             Screen::Welcome => rsx! {
                 WelcomeScreen { app_cfg, on_open }
