@@ -448,7 +448,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
         div { id: "app",
 
             // ── Setup banner ──────────────────────────────────────────────
-            {setup_banner(setup_status, &workspace_link, active_tab, &dir, log_lines)}
+            {setup_banner(setup_status, &workspace_link, current_view, visited_views, &dir, log_lines)}
 
             // ── Toolbar ───────────────────────────────────────────────────
             div { id: "toolbar",
@@ -974,7 +974,8 @@ fn epoch_now() -> u64 {
 fn setup_banner(
     setup_status: Signal<setup_manager::SetupStatus>,
     workspace_link: &Option<config::WorkspaceLink>,
-    mut active_tab: Signal<String>,
+    mut current_view: Signal<String>,
+    mut visited_views: Signal<HashSet<String>>,
     dir: &str,
     log_lines: Signal<Vec<LogLine>>,
 ) -> Element {
@@ -1047,7 +1048,10 @@ fn setup_banner(
                 }
                 button {
                     class: "setup-banner-btn",
-                    onclick: move |_| active_tab.set("Settings".into()),
+                    onclick: move |_| {
+                        visited_views.write().insert("Settings".into());
+                        current_view.set("Settings".into());
+                    },
                     "Configure Manually"
                 }
             }
@@ -1069,7 +1073,10 @@ fn setup_banner(
                 }
                 button {
                     class: "setup-banner-btn",
-                    onclick: move |_| active_tab.set("Settings".into()),
+                    onclick: move |_| {
+                        visited_views.write().insert("Settings".into());
+                        current_view.set("Settings".into());
+                    },
                     "Edit Manually"
                 }
             }
@@ -1168,8 +1175,17 @@ fn az_login_widget(
                         button {
                             class: "az-login-btn", title: "Sign in with az login",
                             onclick: move |_| {
-                                azure_cli::open_login(configured_tenant.as_deref());
-                                az_status.set(None);
+                                match azure_cli::open_login(configured_tenant.as_deref()) {
+                                    Ok(()) => {
+                                        az_status.set(None);
+                                    }
+                                    Err(msg) => {
+                                        // Surface the spawn failure so the user isn't left
+                                        // wondering why nothing happened.
+                                        az_status.set(Some(Err(azure_cli::AzError::Other(msg))));
+                                        return;
+                                    }
+                                }
                                 let login_dir = dir.clone();
                                 spawn(async move {
                                     for _ in 0..24 {

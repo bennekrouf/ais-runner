@@ -7,7 +7,9 @@
       "Bash(/usr/bin/find /Users/mb/code/ais-runner/src -name \"cosmos_check*\")",
       "Bash(/usr/bin/find /Users/mb/code/ais-runner/src -name \"azure_cli*\")",
       "Bash(rtk grep *)",
-      "Bash(rtk cargo *)"
+      "Bash(rtk cargo *)",
+      "Bash(rtk read *)",
+      "Bash(rtk find *)"
     ]
   }
 }

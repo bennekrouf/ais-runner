@@ -134,7 +134,7 @@ fn main() {
         .with_data_directory(webview_data_dir)
         .with_window(
             dioxus::desktop::WindowBuilder::new()
-                .with_title("AIS Local Runner")
+                .with_title(concat!("AIS Local Runner ", env!("CARGO_PKG_VERSION")))
                 .with_inner_size(LogicalSize::new(1280.0, 820.0))
                 .with_maximized(true)
                 .with_always_on_top(false)

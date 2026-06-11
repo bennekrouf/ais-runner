@@ -19,6 +19,11 @@
 //! URLs) will plug onto the same contract + event-bus interfaces — no API
 //! changes expected.
 
+// Mock subsystem is implemented but not yet wired into the UI/CLI. Silence
+// dead-code / unused-import warnings at the module root so the build is
+// clean — remove these attributes when the subsystem is hooked up.
+#![allow(dead_code, unused_imports)]
+
 pub mod contract;
 pub mod events;
 pub mod resolver;

@@ -175,10 +175,17 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                             class: "btn btn-warn btn-small",
                             onclick: move |_| {
                                 let t = tenant_id.read().clone();
-                                azure_cli::open_login(if t.is_empty() { None } else { Some(t.as_str()) });
-                                az_expired.set(false);
-                                status.set("az login opened — re-run fetch after signing in.".to_string());
-                                is_err.set(false);
+                                match azure_cli::open_login(if t.is_empty() { None } else { Some(t.as_str()) }) {
+                                    Ok(()) => {
+                                        az_expired.set(false);
+                                        status.set("az login opened — complete the browser flow then click 🔄 Fetch.".to_string());
+                                        is_err.set(false);
+                                    }
+                                    Err(msg) => {
+                                        status.set(msg);
+                                        is_err.set(true);
+                                    }
+                                }
                             },
                             "⚠ az login"
                         }

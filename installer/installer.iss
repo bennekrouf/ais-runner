@@ -37,6 +37,12 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
 CloseApplications=yes
+; Branding — uses assets\icon.ico if present. Comment these out if the file
+; doesn't exist yet (Inno will fail with a clear error otherwise).
+#if FileExists(AddBackslash(SourcePath) + "..\assets\icon.ico")
+SetupIconFile=..\assets\icon.ico
+UninstallDisplayIcon={app}\icon.ico
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -50,11 +56,23 @@ Name: "desktopicon"; \
 Source: "..\target\release\ais-runner.exe";     DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\WebView2Loader.dll";  DestDir: "{app}"; Flags: ignoreversion
 Source: "..\scripts\setup-windows.ps1";          DestDir: "{app}"; Flags: ignoreversion
+; Ship the .ico alongside the .exe so shortcuts can point at it explicitly —
+; otherwise some Windows builds fail to extract the embedded icon for shortcut
+; display, leaving a generic icon on the Start menu / desktop.
+#if FileExists(AddBackslash(SourcePath) + "..\assets\icon.ico")
+Source: "..\assets\icon.ico";                    DestDir: "{app}"; Flags: ignoreversion
+#endif
 
 [Icons]
+#if FileExists(AddBackslash(SourcePath) + "..\assets\icon.ico")
+Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"
+Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
+Name: "{commondesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
+#else
 Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{commondesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+#endif
 
 [Run]
 ; Installer already runs elevated — the script runs as admin directly,

@@ -121,18 +121,61 @@ pub fn launch_az_login(subscription_id: Option<String>, tenant_id: Option<String
         .spawn();
 }
 
-/// Spawns `az login` which opens a browser tab for OAuth — no terminal needed.
-/// Pass `tenant: Some("…")` to target a specific Azure AD tenant;
-/// `None` lets `az` use the user's default tenant.
-pub fn open_login(tenant: Option<&str>) {
-    let mut args = vec!["login"];
-    let tenant_str;
+/// Spawns `az login` which opens a browser tab for OAuth.
+///
+/// On Windows we open a *visible* new console window so the user sees az's
+/// output (device-code prompt, success/failure message) — a GUI-launched
+/// child cmd is normally invisible, which silently swallows errors when az
+/// fails to launch the browser.
+///
+/// Returns `Ok(())` if the child process was spawned successfully, or a
+/// human-readable error message that should be surfaced in the UI — silent
+/// spawn failures are the #1 reason "click did nothing" is reported.
+pub fn open_login(tenant: Option<&str>) -> Result<(), String> {
+    let mut args: Vec<String> = vec!["login".into()];
     if let Some(t) = tenant.filter(|t| !t.is_empty()) {
-        tenant_str = t.to_string();
-        args.extend_from_slice(&["--tenant", &tenant_str]);
+        args.push("--tenant".into());
+        args.push(t.to_string());
     }
-    args.extend_from_slice(&["--scope", "https://management.core.windows.net//.default"]);
-    let _ = az_command(&args).spawn();
+    args.push("--scope".into());
+    args.push("https://management.core.windows.net//.default".into());
+
+    #[cfg(target_os = "windows")]
+    {
+        // Use `cmd /c start "title" cmd /k "<az> login ..."` so the user sees
+        // a console window and can complete the device-code flow if needed.
+        // `/k` keeps it open after az exits so the user sees errors/success.
+        let az_path = resolve_az_windows();
+        let mut cmdline = format!("\"{}\"", az_path);
+        for a in &args {
+            cmdline.push(' ');
+            cmdline.push_str(a);
+        }
+        let result = Command::new("cmd")
+            .args(["/c", "start", "Azure CLI Login", "cmd", "/k", &cmdline])
+            .spawn();
+        return match result {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound =>
+                Err("Azure CLI not found. Install it from https://aka.ms/installazurecliwindows then restart the app.".into()),
+            Err(e) => Err(format!("Failed to start 'az login': {}", e)),
+        };
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        az_command(&args_ref)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    "Azure CLI not found. Install it from https://aka.ms/installazurecli then restart the app.".to_string()
+                } else {
+                    format!("Failed to start 'az login': {}", e)
+                }
+            })
+    }
 }
 
 /// Signs out of the current az session.
