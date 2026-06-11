@@ -28,6 +28,8 @@ liquid-core = "0.26"
 tiberius    = { version = "0.12", default-features = false, features = ["rustls", "sql-browser-tokio"] }
 tokio-util  = { version = "0.7", features = ["compat"] }
 ais-chain   = { git = "https://github.com/Bennekrouf/ais-chain" }
+axum        = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
+tower       = "0.5"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }

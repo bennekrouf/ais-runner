@@ -936,6 +936,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                 java_lines:    java_func_lines,
                 sql_dev_lines: sql_dev_lines,
                 on_clear:      move |_| { log_lines.write().clear(); },
+                workspace_dir: dir.clone(),
             }
 
             if let Some((wf_name, trigger_name, trigger_type, suggested, blob_container, queue_name)) = run_dialog.read().clone() {

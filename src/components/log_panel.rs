@@ -256,6 +256,9 @@ pub struct LogPanelProps {
     pub java_lines:    Signal<Vec<String>>,
     pub sql_dev_lines: Signal<Vec<String>>,
     pub on_clear:      EventHandler<()>,
+    /// Logic Apps workspace path — used by the Mock tab to scan and run the
+    /// embedded HTTP mock server.
+    pub workspace_dir: String,
 }
 
 #[component]
@@ -279,6 +282,16 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     let sb_filter:      Signal<String> = use_signal(String::new);
     let java_filter:    Signal<String> = use_signal(String::new);
     let sql_filter:     Signal<String> = use_signal(String::new);
+    let mock_filter:    Signal<String> = use_signal(String::new);
+
+    // ── Mock tab state ──────────────────────────────────────────────────────
+    // Lines of formatted human-readable log output from MockEvents.
+    let mut mock_lines:   Signal<Vec<String>>     = use_signal(Vec::new);
+    let mut mock_snap:    Signal<Option<Vec<String>>> = use_signal(|| None);
+    // Status line shown above the log: scan summary, server URL, etc.
+    let mut mock_status:  Signal<String>          = use_signal(String::new);
+    let mut mock_busy:    Signal<bool>            = use_signal(|| false);
+    let workspace_dir = props.workspace_dir.clone();
 
     // ── Auto-scroll: only when not paused ───────────────────────────────────
     use_effect(move || {
@@ -309,6 +322,12 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
         let _n = sql_dev_lines.read().len();
         if sql_snap.read().is_none() {
             document::eval("var e=document.getElementById('sql-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+        }
+    });
+    use_effect(move || {
+        let _n = mock_lines.read().len();
+        if mock_snap.read().is_none() {
+            document::eval("var e=document.getElementById('mock-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
         }
     });
 
@@ -395,6 +414,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     let sf = sb_filter.read().to_lowercase();
     let jf  = java_filter.read().to_lowercase();
     let sqf = sql_filter.read().to_lowercase();
+    let mf  = mock_filter.read().to_lowercase();
 
     let console_lines: Vec<LogLine> = {
         let base: Vec<LogLine> = match console_snap.read().clone() {
@@ -428,6 +448,14 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
         };
         if jf.is_empty() { base }
         else { base.into_iter().filter(|l| l.to_lowercase().contains(&jf)).collect() }
+    };
+    let mock_display: Vec<String> = {
+        let base = match mock_snap.read().clone() {
+            Some(snap) => snap,
+            None       => mock_lines.read().clone(),
+        };
+        if mf.is_empty() { base }
+        else { base.into_iter().filter(|l| l.to_lowercase().contains(&mf)).collect() }
     };
     let (sb_emu_display, sb_noise_display): (Vec<String>, Vec<LogLine>) = {
         let (base_emu, base_noise) = match sb_snap.read().clone() {
@@ -511,6 +539,21 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                         else { "SQL Dev" }
                         if sql_snap.read().is_some() { span { class: "log-paused-badge", "⏸" } }
                     }
+                    button {
+                        class: if tab == "mock" { "log-tab active" } else { "log-tab" },
+                        onclick: move |_| {
+                            active_tab.set("mock");
+                            if mock_snap.read().is_none() {
+                                document::eval("var e=document.getElementById('mock-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+                            }
+                        },
+                        {
+                            let n = mock_lines.read().len();
+                            if tab != "mock" && n > 0 { rsx! { "Mock ({n})" } }
+                            else                       { rsx! { "Mock" } }
+                        }
+                        if mock_snap.read().is_some() { span { class: "log-paused-badge", "⏸" } }
+                    }
                 }
 
                 // ── Right: filter + pause + clear ─────────────────────────
@@ -523,6 +566,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                             "servicebus" => (sb_filter,      "Filter Service Bus…"),
                             "java"       => (java_filter,    "Filter Java…"),
                             "sqldev"     => (sql_filter,     "Filter SQL Dev…"),
+                            "mock"       => (mock_filter,    "Filter Mock…"),
                             _            => (console_filter, "Filter console…"),
                         };
                         let has_filter = !filter_sig.read().is_empty();
@@ -549,11 +593,13 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
 
                     // Pause / resume button
                     {
+                        let mock_new = mock_snap.read().as_ref().map(|snap| mock_lines.read().len().saturating_sub(snap.len()));
                         let (paused, new_count) = match tab {
                             "azurite"    => (az_snap.read().is_some(),      az_new),
                             "servicebus" => (sb_snap.read().is_some(),      sb_new),
                             "java"       => (java_snap.read().is_some(),    java_new),
                             "sqldev"     => (sql_snap.read().is_some(),     sql_new),
+                            "mock"       => (mock_snap.read().is_some(),    mock_new),
                             _            => (console_snap.read().is_some(), console_new),
                         };
                         rsx! {
@@ -594,6 +640,14 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                                                 document::eval("var e=document.getElementById('sql-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
                                             } else {
                                                 sql_snap.set(Some(sql_dev_lines.read().clone()));
+                                            }
+                                        }
+                                        "mock" => {
+                                            if mock_snap.read().is_some() {
+                                                mock_snap.set(None);
+                                                document::eval("var e=document.getElementById('mock-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+                                            } else {
+                                                mock_snap.set(Some(mock_lines.read().clone()));
                                             }
                                         }
                                         _ => {
@@ -641,6 +695,10 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                                 "sqldev" => {
                                     sql_snap.set(None);
                                     sql_dev_lines.write().clear();
+                                }
+                                "mock" => {
+                                    mock_snap.set(None);
+                                    mock_lines.write().clear();
                                 }
                                 _ => {
                                     console_snap.set(None);
@@ -847,6 +905,103 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                     }
                 }
             }
+
+            // ── Mock tab ─────────────────────────────────────────────────
+            // Phase 1 (scan) + Phase 2 (server lifecycle + live events).
+            div {
+                id: "mock-log-scroll",
+                class: "log-tab-scroll",
+                style: if tab == "mock" { "" } else { "display:none" },
+
+                // Action bar
+                div { class: "log-line", style: "padding-bottom:6px;border-bottom:1px solid #21262d;margin-bottom:6px",
+                    button {
+                        class: "btn btn-small",
+                        style: "margin-right:6px",
+                        disabled: mock_busy(),
+                        onclick: {
+                            let ws = workspace_dir.clone();
+                            move |_| {
+                                let ws = ws.clone();
+                                if ws.trim().is_empty() {
+                                    mock_lines.write().push(format!("{}  ⚠ No workspace selected — pick one in the Workspaces tab first.", now_hms()));
+                                    return;
+                                }
+                                mock_busy.set(true);
+                                // Match the rest of ais-runner: descend into a `logic_apps/`
+                                // subfolder automatically when the user picked a platform root.
+                                let resolved = crate::services::workflows::resolve_logic_apps_dir(&ws);
+                                mock_lines.write().push(format!("{}  ▶ Scanning {}…", now_hms(), resolved.display()));
+                                spawn(async move {
+                                    let path = resolved;
+                                    let result = tokio::task::spawn_blocking(move || {
+                                        crate::services::mock::scan_workspace(&path)
+                                    }).await;
+                                    match result {
+                                        Ok(Ok((contract, cache_path))) => {
+                                            mock_status.set(format!(
+                                                "Scan: {} endpoints, {} settings, {} warnings → {}",
+                                                contract.endpoints.len(), contract.app_settings.len(),
+                                                contract.warnings.len(), cache_path.display()
+                                            ));
+                                            mock_lines.write().push(format!(
+                                                "{}  ✓ {} endpoints, {} settings, {} warnings",
+                                                now_hms(), contract.endpoints.len(),
+                                                contract.app_settings.len(), contract.warnings.len()
+                                            ));
+                                            for w in contract.warnings.iter().take(50) {
+                                                mock_lines.write().push(format!(
+                                                    "{}  [{:?}] {}{}{}: {}",
+                                                    now_hms(), w.level,
+                                                    w.workflow.as_deref().unwrap_or(""),
+                                                    if w.action.is_some() { "/" } else { "" },
+                                                    w.action.as_deref().unwrap_or(""),
+                                                    w.message,
+                                                ));
+                                            }
+                                        }
+                                        Ok(Err(e)) => { mock_lines.write().push(format!("{}  ✗ Scan failed: {}", now_hms(), e)); }
+                                        Err(e)     => { mock_lines.write().push(format!("{}  ✗ Scan task error: {}", now_hms(), e)); }
+                                    }
+                                    mock_busy.set(false);
+                                });
+                            }
+                        },
+                        "▶ Scan workspace"
+                    }
+                    span { style: "margin-left:8px;opacity:0.7;font-size:0.85em", "{mock_status}" }
+                }
+
+                if mock_display.is_empty() {
+                    div { class: "log-line",
+                        span { class: "log-msg info", style: "opacity:0.45;font-style:italic",
+                            "Click \"▶ Scan workspace\" to discover external HTTP dependencies. Results cached under .ais-cache/."
+                        }
+                    }
+                } else {
+                    for line in mock_display.iter() {
+                        {
+                            let cls = if line.contains("✗") || line.contains("Error") || line.contains("[Error]") { "log-msg error" }
+                                      else if line.contains("⚠") || line.contains("[Warn]")                       { "log-msg warn"  }
+                                      else if line.contains("✓")                                                  { "log-msg ok"    }
+                                      else                                                                         { "log-msg info"  };
+                            let (time, msg) = az_split(line);
+                            rsx! {
+                                div { class: "log-line",
+                                    span { class: "log-time", "{time}" }
+                                    span { class: cls, "{msg}" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
+}
+
+/// Current local time as `HH:MM:SS` — small helper used by the Mock tab to
+/// stamp UI-originated log entries consistently with the rest of the panel.
+fn now_hms() -> String {
+    chrono::Local::now().format("%H:%M:%S").to_string()
 }
