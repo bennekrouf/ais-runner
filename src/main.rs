@@ -65,11 +65,55 @@ fn refresh_windows_path() {
     std::env::set_var("PATH", path);
 }
 
+/// macOS/Linux GUI apps launched from Finder/Dock/`open` inherit a stripped
+/// PATH (e.g. `/usr/bin:/bin:/usr/sbin:/sbin`) instead of the user's full
+/// shell PATH. That breaks two things:
+///   1. Shebang scripts like azurite (`#!/usr/bin/env node`) — `env` can't
+///      find `node` and the spawn fails with exit 127.
+///   2. Tools that live outside the standard probe list (Docker Desktop CLI,
+///      nvm/volta/asdf-managed Node tools).
+/// Prepend the known install dirs to PATH at startup so every child process
+/// we spawn — including those run by shebang interpreters — sees them.
+#[cfg(not(windows))]
+fn refresh_unix_path() {
+    let current = std::env::var("PATH").unwrap_or_default();
+    let existing: std::collections::HashSet<String> = current
+        .split(':')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let mut prepend: Vec<String> = Vec::new();
+    for dir in services::runtime_manager::unix_extra_dirs() {
+        let s = dir.to_string_lossy().to_string();
+        if !existing.contains(&s) {
+            prepend.push(s);
+        }
+    }
+
+    if prepend.is_empty() {
+        return;
+    }
+
+    let new_path = if current.is_empty() {
+        prepend.join(":")
+    } else {
+        format!("{}:{}", prepend.join(":"), current)
+    };
+    std::env::set_var("PATH", new_path);
+}
+
 fn main() {
     // Refresh PATH from the Windows registry so tools installed by the setup
     // script (Node, Azure CLI, func, azurite) are visible when we probe them.
     #[cfg(windows)]
     refresh_windows_path();
+
+    // Same idea on macOS/Linux: prepend Homebrew, nvm, volta, asdf, Docker
+    // Desktop, etc. so shebang scripts (`env node`) and child processes find
+    // their tools when launched from Finder/Dock.
+    #[cfg(not(windows))]
+    refresh_unix_path();
 
     // ── Crash log — written before anything else so startup panics are visible ──
     // On Windows GUI apps there is no console; this file lets us diagnose crashes.

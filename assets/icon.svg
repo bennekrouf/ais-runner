@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ais-runner app icon.
+  Sibling of ais-monitor: same Azure-blue squircle palette, but the
+  central mark is a "play / run" triangle to signal a local execution
+  engine rather than a monitor. Designed at 1024 to read at 16x16.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Background: deep navy → Azure cyan, diagonal. Identical to ais-monitor
+         so the two apps clearly belong to the same family in the Dock. -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#0078D4"/>
+      <stop offset="55%" stop-color="#0062AD"/>
+      <stop offset="100%" stop-color="#003B73"/>
+    </linearGradient>
+    <!-- Play mark: white with a hint of cyan at the trailing edge -->
+    <linearGradient id="mark" x1="0" y1="0.5" x2="1" y2="0.5">
+      <stop offset="0%"  stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#D6F0FF"/>
+    </linearGradient>
+    <!-- Soft glow on the mark -->
+    <filter id="glow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Squircle background (macOS-style continuous corner) -->
+  <rect x="64" y="64" width="896" height="896" rx="224" ry="224" fill="url(#bg)"/>
+
+  <!-- Play triangle, slightly nudged right so the visual center matches
+       the geometric center of the canvas. Rounded corners for a friendly
+       feel that still reads as a "run" affordance. -->
+  <g filter="url(#glow)">
+    <path d="
+        M 366 264
+        Q 332 244 332 284
+        L 332 740
+        Q 332 780 366 760
+        L 776 532
+        Q 810 512 776 492
+        Z"
+      fill="url(#mark)"/>
+  </g>
+
+  <!-- Two small "speed" ticks behind the triangle, hinting at motion.
+       Faint enough that the play silhouette stays the dominant read. -->
+  <g stroke="#7FD7FF" stroke-width="22" stroke-linecap="round" fill="none" opacity="0.55">
+    <line x1="180" y1="420" x2="280" y2="420"/>
+    <line x1="180" y1="604" x2="280" y2="604"/>
+  </g>
+</svg>

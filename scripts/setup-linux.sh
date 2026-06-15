@@ -147,6 +147,20 @@ fi
 # ── Desktop shortcut (optional) ───────────────────────────────────────────────
 BINARY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DESKTOP_FILE="/usr/share/applications/ais-runner.desktop"
+
+# Register the bundled icon with the hicolor theme so launchers pick it up.
+# Falls back to the generic terminal glyph if the PNG isn't shipped.
+ICON_NAME="utilities-terminal"
+if [[ -f "$BINARY_DIR/icon.png" ]]; then
+  ICON_DIR="/usr/share/icons/hicolor/256x256/apps"
+  install -Dm644 "$BINARY_DIR/icon.png" "$ICON_DIR/ais-runner.png"
+  if command -v gtk-update-icon-cache &>/dev/null; then
+    gtk-update-icon-cache -q -t /usr/share/icons/hicolor || true
+  fi
+  ICON_NAME="ais-runner"
+  ok "Icon installed to $ICON_DIR/ais-runner.png"
+fi
+
 if [[ -f "$BINARY_DIR/ais-runner" && ! -f "$DESKTOP_FILE" ]]; then
   info "Creating .desktop launcher..."
   cat > "$DESKTOP_FILE" <<EOF
@@ -154,11 +168,15 @@ if [[ -f "$BINARY_DIR/ais-runner" && ! -f "$DESKTOP_FILE" ]]; then
 Name=AIS Runner
 Comment=Azure Integration Services local development runner
 Exec=$BINARY_DIR/ais-runner
-Icon=utilities-terminal
+Icon=$ICON_NAME
 Terminal=false
 Type=Application
 Categories=Development;
+StartupWMClass=ais-runner
 EOF
+  if command -v update-desktop-database &>/dev/null; then
+    update-desktop-database -q /usr/share/applications || true
+  fi
   ok "Desktop shortcut created"
 fi
 

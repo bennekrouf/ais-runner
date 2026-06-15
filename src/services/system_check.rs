@@ -72,8 +72,19 @@ fn write_diagnostic_log(results: &[ToolStatus]) {
 fn probe_docker() -> ToolStatus {
     let mut trace = String::new();
 
+    // Resolve through the platform-aware probe so GUI launches that don't
+    // inherit the user's shell PATH still find Docker Desktop's CLI (lives
+    // under `/usr/local/bin`, `~/.docker/bin`, or
+    // `/Applications/Docker.app/Contents/Resources/bin` depending on the
+    // install vintage).
+    let (resolved, resolve_trace) = runtime_manager::resolve_tool_traced("docker");
+    for line in resolve_trace {
+        trace.push_str(&line);
+        trace.push('\n');
+    }
+
     // Step 1 — is the docker CLI present?
-    let cli = Command::new("docker").args(["--version"]).output();
+    let cli = Command::new(&resolved).args(["--version"]).output();
     let version = match &cli {
         Ok(out) if out.status.success() => {
             let raw = String::from_utf8_lossy(&out.stdout).to_string();
@@ -105,7 +116,7 @@ fn probe_docker() -> ToolStatus {
     }
 
     // Step 2 — is the daemon running?
-    match Command::new("docker").args(["info"]).output() {
+    match Command::new(&resolved).args(["info"]).output() {
         Ok(out) if out.status.success() => {
             trace.push_str("   docker info: ok (daemon running)\n");
             ToolStatus {

@@ -113,10 +113,8 @@ pub fn resolve_tool_traced(name: &str) -> (String, Vec<String>) {
     } else {
         vec![name.to_string()]
     };
-    let extra_dirs: Vec<PathBuf> = if cfg!(target_os = "macos") {
-        vec!["/opt/homebrew/bin".into(), "/usr/local/bin".into(), "/opt/local/bin".into()]
-    } else if cfg!(target_os = "linux") {
-        vec!["/usr/local/bin".into(), "/usr/bin".into()]
+    let extra_dirs: Vec<PathBuf> = if cfg!(target_os = "macos") || cfg!(target_os = "linux") {
+        unix_extra_dirs()
     } else if cfg!(target_os = "windows") {
         windows_extra_dirs()
     } else {
@@ -179,14 +177,8 @@ pub fn find_on_path(name: &str) -> Option<String> {
     };
 
     // Per-platform well-known install dirs (in priority order).
-    let extra_dirs: Vec<PathBuf> = if cfg!(target_os = "macos") {
-        vec![
-            "/opt/homebrew/bin".into(),  // Apple Silicon Homebrew
-            "/usr/local/bin".into(),     // Intel Homebrew / npm-global
-            "/opt/local/bin".into(),     // MacPorts
-        ]
-    } else if cfg!(target_os = "linux") {
-        vec!["/usr/local/bin".into(), "/usr/bin".into()]
+    let extra_dirs: Vec<PathBuf> = if cfg!(target_os = "macos") || cfg!(target_os = "linux") {
+        unix_extra_dirs()
     } else if cfg!(target_os = "windows") {
         windows_extra_dirs()
     } else {
@@ -210,6 +202,65 @@ pub fn find_on_path(name: &str) -> Option<String> {
     let raw = String::from_utf8_lossy(&out.stdout);
     let first = raw.lines().map(str::trim).find(|l| !l.is_empty())?;
     Some(first.to_string())
+}
+
+/// Well-known macOS/Linux bin directories that GUI-launched apps usually miss.
+/// Public so the startup PATH-enrichment in main.rs can prepend the same set,
+/// ensuring shebang scripts (azurite → env node) and child processes (docker)
+/// inherit a working PATH instead of the stripped GUI default.
+///
+/// Covers: Homebrew, MacPorts, distro defaults, user-local (`~/.local/bin`),
+/// the major Node version managers (nvm with the latest installed version,
+/// fnm, volta, asdf), Docker Desktop, and the new Docker Desktop's user-local
+/// `~/.docker/bin` shim dir.
+#[cfg(not(target_os = "windows"))]
+pub fn unix_extra_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut push = |p: PathBuf| {
+        if p.is_dir() && !dirs.contains(&p) {
+            dirs.push(p);
+        }
+    };
+
+    // System / package-manager dirs (priority order)
+    push("/opt/homebrew/bin".into());   // Apple Silicon Homebrew
+    push("/opt/homebrew/sbin".into());
+    push("/usr/local/bin".into());      // Intel Homebrew + manual installs + npm-global
+    push("/usr/local/sbin".into());
+    push("/opt/local/bin".into());      // MacPorts
+    push("/usr/bin".into());
+    push("/usr/sbin".into());
+    // Docker Desktop on macOS — newer versions ship the CLI here
+    push("/Applications/Docker.app/Contents/Resources/bin".into());
+
+    if let Ok(home) = env::var("HOME") {
+        let home = PathBuf::from(home);
+        push(home.join(".local/bin"));          // pipx, pip --user
+        push(home.join(".cargo/bin"));          // cargo install
+        push(home.join(".docker/bin"));         // recent Docker Desktop layout
+        push(home.join(".volta/bin"));          // Volta-managed Node tools
+        push(home.join(".asdf/shims"));         // asdf shims
+        push(home.join(".fnm/aliases/default/bin")); // fnm default
+
+        // nvm: enumerate all installed Node versions and add their bin dirs.
+        // Latest first (lexicographic sort is fine for vX.Y.Z), so newer
+        // azurite/func wins. nvm doesn't pin a binary in $PATH for GUI apps.
+        let nvm_root = home.join(".nvm/versions/node");
+        if let Ok(rd) = std::fs::read_dir(&nvm_root) {
+            let mut versions: Vec<PathBuf> = rd
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect();
+            versions.sort();
+            versions.reverse();
+            for v in versions {
+                push(v.join("bin"));
+            }
+        }
+    }
+
+    dirs
 }
 
 /// Well-known Windows bin directories. Public so the startup PATH-enrichment

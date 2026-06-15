@@ -165,6 +165,30 @@ jobs:
             "$BIN"
           codesign --verify --strict --verbose=2 "$BIN"
 
+      # ── Generate icon.icns from assets/icon.png (1024x1024 source) ─────────
+      # No-op if the PNG is absent; bundle just ships icon-less in that case.
+      - name: Generate macOS .icns
+        run: |
+          set -euo pipefail
+          if [ ! -f assets/icon.png ]; then
+            echo "::warning::assets/icon.png not found — .app will ship without an icon."
+            exit 0
+          fi
+          ICONSET="$RUNNER_TEMP/icon.iconset"
+          mkdir -p "$ICONSET"
+          for size in 16 32 64 128 256 512 1024; do
+            sips -z $size $size assets/icon.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+          done
+          # Retina (@2x) variants — Apple expects these for crisp scaling.
+          cp "$ICONSET/icon_32x32.png"     "$ICONSET/icon_16x16@2x.png"
+          cp "$ICONSET/icon_64x64.png"     "$ICONSET/icon_32x32@2x.png"
+          cp "$ICONSET/icon_256x256.png"   "$ICONSET/icon_128x128@2x.png"
+          cp "$ICONSET/icon_512x512.png"   "$ICONSET/icon_256x256@2x.png"
+          cp "$ICONSET/icon_1024x1024.png" "$ICONSET/icon_512x512@2x.png"
+          rm "$ICONSET/icon_64x64.png" "$ICONSET/icon_1024x1024.png"
+          mkdir -p dist
+          iconutil -c icns "$ICONSET" -o dist/icon.icns
+
       # ── Wrap binary in .app bundle, build signed + notarized + stapled DMG ─
       - name: Build .app + .dmg
         run: |
@@ -177,6 +201,13 @@ jobs:
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp "$BIN" "$APP/Contents/MacOS/ais-runner"
           chmod +x "$APP/Contents/MacOS/ais-runner"
+
+          ICON_KEY=""
+          if [ -f dist/icon.icns ]; then
+            cp dist/icon.icns "$APP/Contents/Resources/icon.icns"
+            ICON_KEY="<key>CFBundleIconFile</key><string>icon</string>"
+          fi
+
           cat > "$APP/Contents/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -190,6 +221,7 @@ jobs:
             <key>CFBundleVersion</key><string>$VER</string>
             <key>LSMinimumSystemVersion</key><string>11.0</string>
             <key>NSHighResolutionCapable</key><true/>
+            $ICON_KEY
           </dict></plist>
           EOF
 
@@ -255,6 +287,18 @@ jobs:
             ~/.cargo/git
             target
           key: release-windows-cargo-${{ hashFiles('Cargo.lock') }}
+
+      # ── Generate assets/icon.ico from assets/icon.png (ImageMagick is
+      # preinstalled on windows-latest as `magick`). No-op if PNG missing;
+      # build.rs already handles that case with a cargo:warning.
+      - name: Generate Windows .ico
+        shell: pwsh
+        run: |
+          if (Test-Path assets/icon.png) {
+            magick assets/icon.png -define icon:auto-resize=16,24,32,48,64,128,256 assets/icon.ico
+          } else {
+            Write-Host "::warning::assets/icon.png not found — .exe will ship without an embedded icon."
+          }
 
       - name: Build
         run: cargo build --release
@@ -370,6 +414,14 @@ jobs:
           cp scripts/setup-linux.sh "$DIST/"
           cp README.md "$DIST/"
           chmod +x "$DIST/setup-linux.sh"
+          # Bundle the icon so setup-linux.sh can register it with the
+          # hicolor theme and the .desktop entry shows branding instead
+          # of the generic terminal glyph. No-op if PNG is missing.
+          if [ -f assets/icon.png ]; then
+            cp assets/icon.png "$DIST/icon.png"
+          else
+            echo "::warning::assets/icon.png not found — Linux tarball will ship without an icon."
+          fi
           tar -czf "$NAME.tar.gz" -C dist "$NAME"
           sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
           echo "Package: $NAME.tar.gz ($(du -sh "$NAME.tar.gz" | cut -f1))"
