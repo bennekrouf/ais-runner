@@ -213,6 +213,13 @@ pub fn find_on_path(name: &str) -> Option<String> {
 /// the major Node version managers (nvm with the latest installed version,
 /// fnm, volta, asdf), Docker Desktop, and the new Docker Desktop's user-local
 /// `~/.docker/bin` shim dir.
+/// Windows stub — never called at runtime (the call site is guarded by
+/// `cfg!(target_os = "macos") || cfg!(target_os = "linux")`) but must be
+/// nameable for the AST to resolve at compile time, because `cfg!()` is a
+/// runtime macro, not a `#[cfg]` attribute.
+#[cfg(target_os = "windows")]
+pub fn unix_extra_dirs() -> Vec<PathBuf> { Vec::new() }
+
 #[cfg(not(target_os = "windows"))]
 pub fn unix_extra_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
