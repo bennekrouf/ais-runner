@@ -30,6 +30,22 @@ pub fn work_dir() -> PathBuf {
     }
 }
 
+/// Validate a Service Bus queue/topic name against the same rules the SB emulator
+/// enforces internally: `^[A-Za-z0-9]$|^[A-Za-z0-9][\w-\.\/]*[A-Za-z0-9]$`.
+/// Must start and end with an alphanumeric; interior chars may be letters, digits,
+/// underscores, hyphens, periods, or slashes.
+fn is_valid_sb_queue_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() { return false; }
+    let is_alnum = |b: u8| b.is_ascii_alphanumeric();
+    let is_interior = |b: u8| {
+        b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'/')
+    };
+    if !is_alnum(bytes[0]) { return false; }
+    if !is_alnum(bytes[bytes.len() - 1]) { return false; }
+    bytes[1..bytes.len().saturating_sub(1)].iter().all(|&b| is_interior(b))
+}
+
 /// Docker Compose expects forward-slash paths even on Windows.
 fn to_docker_path(p: &PathBuf) -> String {
     p.to_string_lossy().replace('\\', "/")
@@ -124,7 +140,14 @@ networks:
                 // Stale Config.json deleted — will be regenerated correctly below.
             } else if let Some(arr) = v["UserConfig"]["Namespaces"][0]["Queues"].as_array() {
                 for q in arr {
-                    if let Some(name) = q["Name"].as_str() {
+                    if let Some(raw) = q["Name"].as_str() {
+                        // Trim and validate — silently skip names that would
+                        // crash the emulator (the surfaced error from there is
+                        // a regex assertion deep in FluentAssertions).
+                        let name = raw.trim();
+                        if name.is_empty() || !is_valid_sb_queue_name(name) {
+                            continue;
+                        }
                         if !effective_queues.iter().any(|(n, _)| n == name) {
                             // Preserve existing session setting from config.json
                             let session = q["Properties"]["RequiresSession"].as_bool().unwrap_or(false);
@@ -206,6 +229,14 @@ fn docker_compose_cmd(args: &[&str]) -> std::process::Command {
 /// Returns Ok(true) if the queue was added, Ok(false) if it already existed.
 /// The caller is responsible for restarting the emulator to pick up the change.
 pub fn add_queue_to_emulator_config(queue_name: &str) -> Result<bool, String> {
+    let queue_name = queue_name.trim();
+    if !is_valid_sb_queue_name(queue_name) {
+        return Err(format!(
+            "Invalid queue name '{}': must start and end with a letter or digit, \
+             interior chars may be letters, digits, '_', '-', '.', or '/'.",
+            queue_name
+        ));
+    }
     let path = work_dir().join("Config.json");
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("Could not read config.json: {}", e))?;
@@ -300,11 +331,33 @@ pub fn handle_start(
     // Detect queues from the project so config.json pre-creates them.
     // Filter out Logic Apps expression placeholders like @triggerBody()?['queueName']
     // — only keep plain queue names (no @ $ ? expressions).
+    //
+    // Names are trimmed and validated against the same regex the SB emulator
+    // enforces (`^[A-Za-z0-9]$|^[A-Za-z0-9][\w-\.\/]*[A-Za-z0-9]$`). An invalid
+    // name (e.g. leading whitespace from an @appsetting value) would otherwise
+    // crash the emulator host on startup with a FluentAssertions panic.
     let (_, queue_infos) = crate::services::sb_check::detect_sb_queues(&logic_apps_dir);
-    let queues: Vec<(String, bool)> = queue_infos.into_iter()
-        .filter(|q| !q.queue.contains('@') && !q.queue.contains('?') && !q.queue.contains('[') && !q.queue.is_empty())
-        .map(|q| (q.queue, q.requires_session))
-        .collect();
+    let mut queues: Vec<(String, bool)> = Vec::new();
+    for q in queue_infos {
+        let name = q.queue.trim().to_string();
+        if name.is_empty()
+            || name.contains('@')
+            || name.contains('?')
+            || name.contains('[')
+        {
+            continue;
+        }
+        if !is_valid_sb_queue_name(&name) {
+            push(
+                format!("⚠ Skipping invalid queue name '{}' (does not match SB naming rules)", name),
+                LogLevel::Warn,
+            );
+            continue;
+        }
+        if !queues.iter().any(|(n, _)| n == &name) {
+            queues.push((name, q.requires_session));
+        }
+    }
 
     let dir = match write_compose_files(&queues) {
         Ok(d)  => d,

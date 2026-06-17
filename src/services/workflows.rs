@@ -531,12 +531,44 @@ pub struct ActionError {
     pub message: Option<String>,
 }
 
-/// Fetch the raw detail JSON for a single action (includes inputsLink / outputsLink body).
+/// Fetch the raw detail JSON for a single action, and inline the inputs/outputs
+/// blobs referenced by `inputsLink.uri` / `outputsLink.uri`. The actual error
+/// message for a failed connector call (e.g. SQL exception text) lives in the
+/// outputs blob, not in the action record itself.
 pub async fn get_action_detail(workflow: &str, run_id: &str, action: &str) -> Result<serde_json::Value, String> {
     let url = format!("{}/workflows/{}/runs/{}/actions/{}", BASE, workflow, run_id, action);
-    reqwest::get(&url)
+    let mut detail: serde_json::Value = reqwest::get(&url)
         .await.map_err(|e| e.to_string())?
-        .json::<serde_json::Value>().await.map_err(|e| e.to_string())
+        .json().await.map_err(|e| e.to_string())?;
+
+    async fn fetch_blob(uri: &str) -> serde_json::Value {
+        match reqwest::get(uri).await {
+            Ok(resp) => match resp.text().await {
+                Ok(text) => serde_json::from_str(&text)
+                    .unwrap_or_else(|_| serde_json::Value::String(text)),
+                Err(e) => serde_json::Value::String(format!("<fetch error: {}>", e)),
+            },
+            Err(e) => serde_json::Value::String(format!("<fetch error: {}>", e)),
+        }
+    }
+
+    let inputs_uri  = detail.pointer("/properties/inputsLink/uri").and_then(|v| v.as_str()).map(str::to_string);
+    let outputs_uri = detail.pointer("/properties/outputsLink/uri").and_then(|v| v.as_str()).map(str::to_string);
+
+    if let Some(uri) = inputs_uri {
+        let body = fetch_blob(&uri).await;
+        if let Some(props) = detail.get_mut("properties").and_then(|p| p.as_object_mut()) {
+            props.insert("inputs".to_string(), body);
+        }
+    }
+    if let Some(uri) = outputs_uri {
+        let body = fetch_blob(&uri).await;
+        if let Some(props) = detail.get_mut("properties").and_then(|p| p.as_object_mut()) {
+            props.insert("outputs".to_string(), body);
+        }
+    }
+
+    Ok(detail)
 }
 
 pub async fn list_actions(workflow: &str, run_id: &str) -> Result<Vec<ActionItem>, String> {

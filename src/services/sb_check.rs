@@ -288,7 +288,9 @@ fn resolve_queue_name(node: &serde_json::Value, settings: &HashMap<String, Strin
     let raw = params["queueName"].as_str()
         .or_else(|| params["entityName"].as_str())
         .or_else(|| params["queueOrTopicName"].as_str())?;
-    let resolved = resolve_appsetting(raw, settings);
+    // Trim — queue names from @appsetting values or hand-edited JSON sometimes
+    // carry stray whitespace which the SB emulator rejects with a regex assertion.
+    let resolved = resolve_appsetting(raw, settings).trim().to_string();
     if resolved.is_empty() { None } else { Some(resolved) }
 }
 

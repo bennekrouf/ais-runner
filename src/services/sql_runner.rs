@@ -199,6 +199,35 @@ fn make_idempotent(batch: &str) -> String {
     batch.to_string()
 }
 
+/// Check whether a stored procedure exists in `database`.
+/// `sproc` may be unqualified (`"Foo"`) or qualified (`"dbo.Foo"`).
+pub async fn sproc_exists(database: &str, sproc: &str) -> Result<bool, String> {
+    let cleaned = sproc.replace(['[', ']'], "");
+    let qualified = if cleaned.contains('.') {
+        cleaned
+    } else {
+        format!("dbo.{cleaned}")
+    };
+    let escaped = qualified.replace('\'', "''");
+    let sql = format!("SELECT CAST(CASE WHEN OBJECT_ID(N'{escaped}', N'P') IS NULL THEN 0 ELSE 1 END AS INT)");
+
+    let config = base_config(database);
+    let tcp = TcpStream::connect(config.get_addr()).await
+        .map_err(|e| format!("Cannot connect: {e}"))?;
+    tcp.set_nodelay(true).ok();
+    let mut client = Client::connect(config, tcp.compat_write()).await
+        .map_err(|e| format!("Login failed: {e}"))?;
+    let rows = Query::new(sql).query(&mut client).await
+        .map_err(|e| e.to_string())?
+        .into_results().await
+        .map_err(|e| e.to_string())?;
+    let exists = rows.into_iter().flatten().next()
+        .and_then(|r| r.get::<i32, _>(0))
+        .map(|n| n != 0)
+        .unwrap_or(false);
+    Ok(exists)
+}
+
 /// List all user databases (excludes system databases).
 pub async fn list_databases() -> Result<Vec<String>, String> {
     let sql = "SELECT name FROM sys.databases \

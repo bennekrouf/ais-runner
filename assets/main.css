@@ -393,6 +393,30 @@ body.light .tool-banner-item code { background: #f0f3f6; color: #9a6700; }
     flex-shrink: 0;
     align-self: center;
 }
+/* Destructive but recoverable actions (Reset Azurite, Reset SB Emulator).
+   Amber accent so they read as a real, distinct affordance — not a disabled
+   or pre-pressed neutral button. Background stays light until hover so the
+   button never reads as "already on". */
+.btn-warn {
+    color: var(--orange);
+    border-color: var(--orange);
+    background: transparent;
+    font-weight: 600;
+}
+.btn-warn:hover {
+    background: var(--orange);
+    color: #fff;
+    border-color: var(--orange);
+}
+.btn-warn:active {
+    background: #c46428;
+    border-color: #c46428;
+    color: #fff;
+}
+.btn-warn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
 .auto-watch-btn {
     font-size: 11px;
     padding: 0 9px;
@@ -1169,11 +1193,20 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
 .source-wrap {
     position: relative;
 }
+/* Floating toolbar overlaying the source pane (Copy + Open in editor).
+   Absolutely positioned so the buttons stay compact and don't take a row
+   of layout inside the column-flex .source-wrap. */
+.source-toolbar {
+    position: absolute;
+    top: 6px;
+    right: 10px;
+    display: flex;
+    gap: 4px;
+    z-index: 5;
+}
 .source-copy-btn {
-    position: sticky;
-    top: 0;
-    float: right;
-    margin-top: 2px;
+    width: auto;
+    flex: 0 0 auto;
     padding: 2px 7px;
     font-size: 13px;
     line-height: 1.4;
@@ -1184,7 +1217,6 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
     cursor: pointer;
     opacity: 0.5;
     transition: opacity 0.15s;
-    z-index: 1;
 }
 .source-copy-btn:hover {
     opacity: 1;
@@ -1197,6 +1229,200 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
     white-space: pre;
     line-height: 1.55;
     tab-size: 2;
+}
+
+/* ── Outline rail ──────────────────────────────────────────────
+   Layout: the source tab becomes [ rail | pre ] side-by-side; each
+   panel scrolls independently so the rail stays visible while the
+   source scrolls underneath. */
+#source-view {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;        /* children own their own scroll */
+}
+.source-wrap {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+.source-body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    gap: 12px;
+    margin-top: 4px;
+}
+#source-pre {
+    flex: 1;
+    min-width: 0;
+    overflow: auto;
+    margin: 0;
+    padding: 6px 10px;
+    background: var(--bg1);
+    border-radius: 6px;
+    border: 1px solid var(--border);
+}
+.outline-rail {
+    width: 240px;
+    flex-shrink: 0;
+    overflow-y: auto;
+    padding-right: 6px;
+    font-size: 12px;
+}
+.outline-rail-header {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text3);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+    padding: 2px 6px;
+}
+/* One row = [chevron | item-button]. The padding-left on .outline-row is set
+   inline based on the section depth, so the indent reflects nesting. */
+.outline-row {
+    display: flex;
+    align-items: stretch;
+    width: 100%;
+    box-sizing: border-box;
+}
+.outline-chevron {
+    flex-shrink: 0;
+    width: 16px;
+    background: transparent;
+    border: none;
+    color: var(--text3);
+    cursor: pointer;
+    font-size: 10px;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.12s;
+}
+.outline-chevron:hover { color: var(--text1); }
+.outline-chevron-placeholder { cursor: default; }
+.outline-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-left: 2px solid transparent;
+    color: var(--text2);
+    padding: 5px 6px;
+    margin: 0;
+    cursor: pointer;
+    font: inherit;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.outline-item:hover {
+    background: var(--bg2);
+    color: var(--text1);
+}
+.outline-item.active {
+    background: var(--bg2);
+    color: var(--text1);
+    border-left-color: var(--blue);
+}
+.outline-icon {
+    flex-shrink: 0;
+    width: 14px;
+    text-align: center;
+    color: var(--text3);
+    font-size: 11px;
+    line-height: 1.4;
+}
+.outline-item.active .outline-icon {
+    color: var(--blue);
+}
+.outline-text {
+    min-width: 0;
+    flex: 1;
+}
+.outline-label-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+.outline-label {
+    font-weight: 600;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+    min-width: 0;
+}
+.outline-tags {
+    display: flex;
+    gap: 3px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+.outline-hint {
+    font-size: 10px;
+    color: var(--text3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 1px;
+}
+
+/* ── Service chips ──
+   Small pill labels that flag which Azure / 365 services a section touches.
+   Colours are kept muted so the rail stays readable; each service has a
+   distinct hue derived from the existing palette. */
+.chip {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 1px 5px;
+    border-radius: 8px;
+    line-height: 1.4;
+    border: 1px solid transparent;
+    text-transform: uppercase;
+    color: var(--text1);
+    background: var(--bg3);
+}
+.chip-sql      { color: #6cc24a;   background: rgba(108,194,74,0.14);  border-color: rgba(108,194,74,0.4); }
+.chip-sb       { color: #58a6ff;   background: rgba(88,166,255,0.14);  border-color: rgba(88,166,255,0.4); }
+.chip-teams    { color: #a78bfa;   background: rgba(167,139,250,0.16); border-color: rgba(167,139,250,0.4); }
+.chip-mail     { color: #e07b39;   background: rgba(224,123,57,0.14);  border-color: rgba(224,123,57,0.4); }
+.chip-blob     { color: #d29922;   background: rgba(210,153,34,0.14);  border-color: rgba(210,153,34,0.4); }
+.chip-cosmos   { color: #5cdaff;   background: rgba(92,218,255,0.14);  border-color: rgba(92,218,255,0.4); }
+.chip-http     { color: #c9d1d9;   background: rgba(110,118,129,0.18); border-color: rgba(110,118,129,0.5); }
+.chip-fn       { color: #ff9ec0;   background: rgba(255,158,192,0.14); border-color: rgba(255,158,192,0.4); }
+.chip-kv       { color: #ffd166;   background: rgba(255,209,102,0.12); border-color: rgba(255,209,102,0.4); }
+.chip-eg       { color: #79f2c1;   background: rgba(121,242,193,0.12); border-color: rgba(121,242,193,0.4); }
+.chip-sftp     { color: #9c8eff;   background: rgba(156,142,255,0.14); border-color: rgba(156,142,255,0.4); }
+.chip-maps     { color: #3fb950;   background: rgba(63,185,80,0.12);   border-color: rgba(63,185,80,0.4); }
+.chip-file     { color: #f0883e;   background: rgba(240,136,62,0.14);  border-color: rgba(240,136,62,0.4); }
+.chip-code     { color: #ffb86c;   background: rgba(255,184,108,0.14); border-color: rgba(255,184,108,0.4); }
+
+/* ── Outline rail resize handle ──
+   A 6-px grab strip between the rail and the source pane. The actual width
+   of the rail is driven by inline `style.width` set by the resize JS, with
+   a persisted value in localStorage. */
+#outline-resize {
+    flex-shrink: 0;
+    width: 6px;
+    margin: 0 -3px;
+    cursor: col-resize;
+    background: transparent;
+    border-left: 1px solid var(--border);
+    transition: background 0.12s, border-color 0.12s;
+}
+#outline-resize:hover {
+    background: rgba(88,166,255,0.18);
+    border-left-color: var(--blue);
 }
 
 .run-block {
@@ -1491,6 +1717,58 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
 .empty-state { color: var(--text2); font-size: 13px; text-align: center; padding: 22px; }
+
+/* ── Inline service buttons inside the empty-state hint ──
+   Render small "▶ Azurite" / "▶ Functions" pills where the words used to
+   sit, so the user can launch a service in one click without scrolling to
+   the toolbar. Three visual variants based on live state: stopped
+   (clickable, blue accent), starting (spinner), running (✓, muted). */
+.service-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+.inline-svc {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    margin: 0 2px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
+    border: 1px solid transparent;
+    background: transparent;
+    color: inherit;
+    cursor: default;
+    font-family: inherit;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.inline-svc-icon { font-size: 11px; line-height: 1; }
+.inline-svc-stopped {
+    color: var(--blue);
+    border-color: rgba(88,166,255,0.5);
+    background: rgba(88,166,255,0.10);
+    cursor: pointer;
+}
+.inline-svc-stopped:hover {
+    background: var(--blue);
+    color: #fff;
+    border-color: var(--blue);
+}
+.inline-svc-starting {
+    color: var(--yellow);
+    border-color: rgba(210,153,34,0.5);
+    background: rgba(210,153,34,0.10);
+}
+.inline-svc-running {
+    color: var(--green);
+    border-color: rgba(63,185,80,0.5);
+    background: rgba(63,185,80,0.10);
+}
 
 /* ══════════════════════════════════════════════
    SETTINGS PANEL

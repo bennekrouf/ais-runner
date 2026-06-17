@@ -38,6 +38,21 @@ pub struct MainScreenProps {
 #[component]
 pub fn MainScreen(mut props: MainScreenProps) -> Element {
     let dir            = props.logic_apps_dir.clone();
+
+    // Update the window title to include the project basename so users running
+    // multiple instances (one per customer) can tell them apart at a glance.
+    {
+        let basename = std::path::Path::new(&dir)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| dir.clone());
+        dioxus::desktop::window().set_title(&format!(
+            "AIS Local Runner {} — {}",
+            env!("CARGO_PKG_VERSION"),
+            basename,
+        ));
+    }
+
     let cfg            = use_signal(config::load);
     // Derive workspace_link directly rather than via cfg.read() — in Dioxus 0.6
     // the signal holds an internal write lock during hook initialisation, so
@@ -297,6 +312,8 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     let mut msi_wfs          = use_signal(|| HashSet::<String>::new());
     let mut wf_connectors    = use_signal(|| std::collections::HashMap::<String, Vec<workflows::ConnectorKind>>::new());
     let mut sql_conns        = use_signal(|| Vec::<sql_check::SqlConnection>::new());
+    // sproc qualified name → Some(exists) once checked, None while loading.
+    let mut sproc_status     = use_signal(|| std::collections::HashMap::<String, Option<bool>>::new());
     let mut db_panel_open    = use_signal(|| false);
     let mut azure_panel_open = use_signal(|| false);
     let az_diff_cache = use_signal(|| std::collections::HashMap::<String, crate::components::azure_panel::DiffStatus>::new());
@@ -322,6 +339,30 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     use_effect(move || {
         spawn(async move {
             tool_statuses.set(tokio::task::spawn_blocking(system_check::check_tools).await.unwrap_or_default());
+        });
+    });
+
+    // Probe sproc existence in the local SQL emulator whenever the selected
+    // workflow's analysis changes. Uses the first configured SQL connection's
+    // resolved database name. Silent on failure (e.g. SQL emulator down).
+    use_effect(move || {
+        let names: Vec<String> = wf_analysis.read().sql_sprocs.iter().map(|sp| sp.name.clone()).collect();
+        if names.is_empty() { return; }
+        let db = sql_conns.read().first().map(|c| c.resolved_db.clone()).unwrap_or_default();
+        if db.is_empty() { return; }
+        {
+            let mut st = sproc_status.write();
+            for n in &names {
+                st.entry(n.clone()).or_insert(None);
+            }
+        }
+        spawn(async move {
+            for n in names {
+                let exists = crate::services::sql_runner::sproc_exists(&db, &n).await.ok();
+                if let Some(e) = exists {
+                    sproc_status.write().insert(n, Some(e));
+                }
+            }
         });
     });
 
@@ -768,6 +809,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                         workflow:       selected_wf.read().clone(),
                         source_text:    source_text,
                         analysis:       wf_analysis.read().clone(),
+                        sproc_status:   sproc_status,
                         source_path:    selected_wf.read().as_ref().map(|name| {
                             workflows::resolve_logic_apps_dir(&dir)
                                 .join(name).join("workflow.json")
@@ -810,6 +852,21 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                         suggested_payload: selected_wf.read().as_ref()
                             .map(|name| crate::services::payload::suggest_payload(&dir, name))
                             .unwrap_or_default(),
+                        services_ready: matches!(*azurite_state.read(), ServiceState::Running)
+                            && matches!(*func_state.read(), ServiceState::Running),
+                        services_starting: matches!(*azurite_state.read(), ServiceState::Starting)
+                            || matches!(*func_state.read(), ServiceState::Starting),
+                        workflow_count: workflows.read().len(),
+                        azurite_state: azurite_state.read().clone(),
+                        func_state:    func_state.read().clone(),
+                        on_start_azurite: move |_| azurite::handle_start(azurite_state, azurite_proc, log_lines),
+                        on_start_func: {
+                            let dir = dir.clone();
+                            move |_| func_start::handle_start(
+                                azurite_state, func_state, func_proc, workflows,
+                                traced_wfs, cleared_wfs, log_lines, dir.clone(),
+                            )
+                        },
                     }
                 }
 

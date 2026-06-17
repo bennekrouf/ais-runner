@@ -332,7 +332,13 @@ fn App() -> Element {
 
     let on_back = {
         let mut screen = screen;
-        move |_| screen.set(Screen::Welcome)
+        move |_| {
+            // Reset window title to the neutral form when returning to the picker.
+            dioxus::desktop::window().set_title(
+                concat!("AIS Local Runner ", env!("CARGO_PKG_VERSION"))
+            );
+            screen.set(Screen::Welcome);
+        }
     };
 
     // ── Auto-update check ──────────────────────────────────────────────────

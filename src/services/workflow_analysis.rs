@@ -9,6 +9,13 @@ pub struct WorkflowAnalysis {
     pub output_blobs:  Vec<String>,   // blob containers written
     pub http_calls:    Vec<String>,   // outbound HTTP hosts (deduplicated)
     pub liquid_maps:   Vec<String>,   // Liquid transform map names used
+    pub sql_sprocs:    Vec<SqlSproc>, // stored procedures invoked
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SqlSproc {
+    pub name:   String,        // qualified, e.g. "dbo.MySp"
+    pub params: Vec<String>,   // parameter names (without leading @), in declaration order
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -30,6 +37,7 @@ impl WorkflowAnalysis {
             && self.output_blobs.is_empty()
             && self.http_calls.is_empty()
             && self.liquid_maps.is_empty()
+            && self.sql_sprocs.is_empty()
     }
 
     /// All SB queues referenced (input + output, deduplicated).
@@ -187,6 +195,30 @@ fn process_action(action: &Value, out: &mut WorkflowAnalysis) {
         return;
     }
 
+    // ── SQL stored procedure ──────────────────────────────────────────────
+    if provider.contains("/serviceproviders/sql") || provider == "sql" {
+        if op.contains("storedprocedure") || op.contains("executequery") {
+            let name = literal_str(&action["inputs"]["parameters"]["storedProcedureName"])
+                .or_else(|| literal_str(&action["inputs"]["parameters"]["storedProcedureFullName"]))
+                .or_else(|| literal_str(&action["inputs"]["parameters"]["procedure"]))
+                .map(|s| normalize_sproc_name(&s));
+            if let Some(n) = name {
+                if !n.is_empty() {
+                    let params: Vec<String> = action["inputs"]["parameters"]["storedProcedureParameters"]
+                        .as_object()
+                        .map(|m| m.keys()
+                            .map(|k| k.trim_start_matches('@').to_string())
+                            .collect())
+                        .unwrap_or_default();
+                    if !out.sql_sprocs.iter().any(|sp| sp.name == n) {
+                        out.sql_sprocs.push(SqlSproc { name: n, params });
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     // ── Liquid transform ──────────────────────────────────────────────────
     if kind == "liquid" {
         // map name lives at inputs.map.name (newer) or inputs.integrationAccount.map.name (older)
@@ -232,6 +264,12 @@ fn extract_sb_queue_from_path(path: &str) -> Option<String> {
     };
 
     if name.is_empty() { None } else { Some(name) }
+}
+
+/// Normalize a stored-procedure name by stripping brackets:
+/// "[dbo].[WfFanInOut_Begin_sp]" → "dbo.WfFanInOut_Begin_sp"
+fn normalize_sproc_name(raw: &str) -> String {
+    raw.replace(['[', ']'], "").trim().to_string()
 }
 
 /// Extract a literal (non-expression) string from a JSON value.

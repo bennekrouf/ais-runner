@@ -1,6 +1,9 @@
 use dioxus::prelude::*;
+use std::collections::{HashMap, HashSet};
 use crate::services::workflows::{self, ActionItem, RunItem, duration_ms};
 use crate::services::workflow_analysis::{WorkflowAnalysis, TriggerKind};
+use crate::services::workflow_outline::{self, SectionKind};
+use crate::services::process::ServiceState;
 use crate::components::log_panel::LogLine;
 use crate::components::tooltip::Tooltip;
 
@@ -17,12 +20,28 @@ pub struct RunDetailProps {
     pub health_error:       Option<String>,
     pub logs:               Vec<LogLine>,
     pub analysis:           WorkflowAnalysis,
+    /// sproc qualified name → Some(true|false) once probed, None while loading.
+    pub sproc_status:       Signal<HashMap<String, Option<bool>>>,
     pub source_path:        Option<String>,
     pub suggested_payload:  String,
     pub on_run:             EventHandler<()>,
     pub on_refresh:         EventHandler<()>,
     pub on_clear_runs:      EventHandler<()>,
     pub on_select_run:      EventHandler<String>,
+    /// True when Azurite + Functions host are both running, so workflows can be listed.
+    pub services_ready:     bool,
+    /// True while either Azurite or the Functions host is in the process of starting.
+    pub services_starting:  bool,
+    /// Number of workflows currently in the discovered list. When services
+    /// are running but this is zero, the list is still being scanned —
+    /// surface a spinner instead of the "Select a workflow…" prompt.
+    pub workflow_count:     usize,
+    /// Per-service state, so the empty-state hint can embed inline action
+    /// buttons that start each service directly from the message.
+    pub azurite_state:      ServiceState,
+    pub func_state:         ServiceState,
+    pub on_start_azurite:   EventHandler<()>,
+    pub on_start_func:      EventHandler<()>,
 }
 
 #[component]
@@ -38,6 +57,9 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
 
     let workflow_name = props.workflow.clone().unwrap_or_default();
 
+    // Tracks which run blocks are currently collapsed (by run id).
+    let mut collapsed_runs = use_signal(HashSet::<String>::new);
+
     // ── Payload popover ────────────────────────────────────────────────────
     let mut payload_open   = use_signal(|| false);
     let mut copied         = use_signal(|| false);
@@ -49,9 +71,201 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
     let mut source_hl      = use_signal(String::new);
     let source_text        = props.source_text;
 
-    // JSON syntax highlighting — re-runs whenever source_text changes
-    use_effect(move || {
+    // Pre-derive per-service state booleans so the inline service buttons in
+    // the empty-state hint can show the right icon (▶ idle / ⟳ starting /
+    // ✓ running) without repeating the match in both call sites.
+    let az_state   = props.azurite_state.clone();
+    let func_state = props.func_state.clone();
+    let on_start_az   = props.on_start_azurite;
+    let on_start_func = props.on_start_func;
+
+    // Normalise the source to a stable pretty-printed form before doing
+    // anything else with it. Workflows on disk arrive in whatever formatting
+    // the author / IDE used (tabs, 4-space, minified, single line) — and
+    // the outline's line-range pass relies on every key sitting at the start
+    // of its own line in a 2-space-indented document. We feed the same
+    // pretty text to both the highlighter and the outline builder, so the
+    // scroll-sync line numbers always match what the user sees in the pane.
+    let pretty_source = use_memo(move || {
         let raw = source_text.read().clone();
+        match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(v)  => serde_json::to_string_pretty(&v).unwrap_or(raw),
+            Err(_) => raw, // not JSON (e.g. read error fallback) — leave as-is
+        }
+    });
+
+    // ── Workflow outline (generic, schema-driven section summary) ──────────
+    // Re-derived whenever the source changes; cheap (single regex-free pass).
+    let outline = use_memo(move || workflow_outline::build_outline(&pretty_source.read()));
+    // Which outline section is currently in view (driven by scroll position).
+    let mut active_section = use_signal(|| 0usize);
+    // Section indexes the user has collapsed in the rail. Persists for the
+    // life of the component — re-expanding a parent is one click away and
+    // the tree is small, so we don't need to persist across workflow loads.
+    let mut collapsed = use_signal(std::collections::HashSet::<usize>::new);
+
+    // Inject the IntersectionObserver once the source HTML is in place, so the
+    // active section follows the user's scroll. Re-runs when the outline or the
+    // highlighted HTML changes (length-of-outline is enough to invalidate).
+    use_effect(move || {
+        let _ = source_hl.read(); // re-run when HTML is replaced
+        let sections = outline.read().clone();
+        if sections.is_empty() { return; }
+        let starts: Vec<u32> = sections.iter()
+            .map(|s| s.start_line.unwrap_or(0))
+            .collect();
+        let starts_json = serde_json::to_string(&starts).unwrap_or_else(|_| "[]".to_string());
+        let script = format!(r#"
+(function() {{
+  var pre = document.getElementById('source-pre');
+  if (!pre) return;
+  // The highlighted HTML is one logical text block — to map scroll → line we
+  // measure the pre's scrollTop against the line height. Cheaper and more
+  // robust than wrapping every line in a span.
+  var starts = {starts_json};
+  if (!starts.length) return;
+
+  function lineHeight() {{
+    var s = getComputedStyle(pre);
+    var lh = parseFloat(s.lineHeight);
+    if (isNaN(lh) || lh <= 0) lh = parseFloat(s.fontSize) * 1.4;
+    return lh || 18;
+  }}
+
+  function activeIdx() {{
+    var lh = lineHeight();
+    // Treat the line that's ~25% from the top of the viewport as "current"
+    // so the user sees the section name align with what they're reading.
+    var anchorLine = Math.floor((pre.scrollTop + pre.clientHeight * 0.25) / lh) + 1;
+    var idx = 0;
+    for (var i = 0; i < starts.length; i++) {{
+      if (starts[i] > 0 && starts[i] <= anchorLine) idx = i;
+    }}
+    return idx;
+  }}
+
+  var last = -1;
+  function tick() {{
+    var i = activeIdx();
+    if (i !== last) {{
+      last = i;
+      dioxus.send(i);
+    }}
+  }}
+  pre.removeEventListener('scroll', pre.__outlineHandler || (function(){{}}));
+  pre.__outlineHandler = tick;
+  pre.addEventListener('scroll', tick, {{ passive: true }});
+  // Initial fire so the first section is highlighted before any scroll.
+  setTimeout(tick, 0);
+}})();
+"#);
+        spawn(async move {
+            let mut eval = document::eval(&script);
+            while let Ok(val) = eval.recv::<serde_json::Value>().await {
+                if let Some(i) = val.as_u64() {
+                    active_section.set(i as usize);
+                }
+            }
+        });
+    });
+
+    // Wire the outline-rail resize handle. Runs whenever the outline is
+    // (re)mounted; idempotent — re-running re-attaches handlers cleanly.
+    use_effect(move || {
+        let _ = outline.read(); // re-run when outline materialises
+        let script = r#"
+(function() {
+  var handle = document.getElementById('outline-resize');
+  var rail   = document.querySelector('.outline-rail');
+  if (!handle || !rail) return;
+
+  // Restore persisted width on every (re-)render so navigating between
+  // workflows keeps the user's preferred layout.
+  var saved = parseInt(localStorage.getItem('outline-rail-width') || '0', 10);
+  if (saved >= 120 && saved <= 600) rail.style.width = saved + 'px';
+
+  if (handle.__wired) return;
+  handle.__wired = true;
+
+  var dragging = false;
+  var startX = 0, startW = 0;
+  handle.addEventListener('mousedown', function(e) {
+    dragging = true;
+    startX = e.clientX;
+    startW = rail.getBoundingClientRect().width;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', function(e) {
+    if (!dragging) return;
+    var w = Math.max(140, Math.min(600, startW + (e.clientX - startX)));
+    rail.style.width = w + 'px';
+  });
+  window.addEventListener('mouseup', function() {
+    if (!dragging) return;
+    dragging = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    var w = parseInt(rail.style.width, 10);
+    if (!isNaN(w)) localStorage.setItem('outline-rail-width', String(w));
+  });
+})();
+"#;
+        spawn(async move {
+            let _ = document::eval(script);
+        });
+    });
+
+    // Keep the active rail row in view. When the user scrolls through a long
+    // workflow, the section that becomes active may sit outside the rail's
+    // visible window — without this the highlight is technically correct but
+    // invisible, which feels broken. `scrollIntoView({block:"nearest"})` is
+    // a no-op when the row is already visible, so we don't fight short rails.
+    use_effect(move || {
+        let _ = active_section.read(); // re-run on transition
+        let script = r#"
+(function() {
+  var rail = document.querySelector('.outline-rail');
+  if (!rail) return;
+  var el = rail.querySelector('.outline-item.active');
+  if (!el) return;
+  // Use the row wrapper as the scroll target so the chevron column is
+  // included in the visibility calculation.
+  var target = el.closest('.outline-row') || el;
+  // 'nearest' = only scroll if needed. 'smooth' for a gentle follow.
+  target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+})();
+"#;
+        spawn(async move {
+            let _ = document::eval(script);
+        });
+    });
+
+    // Click on a rail item → scroll the source pane to that line.
+    let scroll_to_line = move |line: u32| {
+        let script = format!(r#"
+(function() {{
+  var pre = document.getElementById('source-pre');
+  if (!pre) return;
+  var s = getComputedStyle(pre);
+  var lh = parseFloat(s.lineHeight) || (parseFloat(s.fontSize) * 1.4) || 18;
+  // Leave a few lines of headroom so the section header isn't flush against
+  // the top of the viewport.
+  pre.scrollTo({{ top: Math.max(0, ({line} - 2) * lh), behavior: 'smooth' }});
+}})();
+"#);
+        spawn(async move {
+            let _ = document::eval(&script);
+        });
+    };
+
+    // JSON syntax highlighting — re-runs whenever source_text changes.
+    // We feed the *pretty* source to the highlighter so the rendered <pre>
+    // line layout matches the outline's line-range pass, keeping the
+    // scroll-sync highlight aligned with the section under the cursor.
+    use_effect(move || {
+        let raw = pretty_source.read().clone();
         if raw.is_empty() { source_hl.set(String::new()); return; }
         let raw_json = serde_json::to_string(&raw).unwrap_or_default();
         let script = format!(r#"
@@ -147,6 +361,33 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                             class: "btn btn-small btn-clear",
                             onclick: move |_| props.on_clear_runs.call(()),
                             "⊘ Flush"
+                        }
+                    }
+                    {
+                        let run_ids: Vec<String> = props.runs.iter().map(|r| r.name.clone()).collect();
+                        let all_collapsed = !run_ids.is_empty()
+                            && run_ids.iter().all(|id| collapsed_runs.read().contains(id));
+                        let (label, tip) = if all_collapsed {
+                            ("⊞ Expand all", "Expand all run blocks")
+                        } else {
+                            ("⊟ Collapse all", "Collapse all run blocks")
+                        };
+                        rsx! {
+                            Tooltip { text: "{tip}", direction: "bottom",
+                                button {
+                                    class: "btn btn-run btn-small",
+                                    disabled: run_ids.is_empty() || *active_tab.read() != "Run",
+                                    onclick: move |_| {
+                                        if all_collapsed {
+                                            collapsed_runs.write().clear();
+                                        } else {
+                                            let mut set = collapsed_runs.write();
+                                            for id in &run_ids { set.insert(id.clone()); }
+                                        }
+                                    },
+                                    "{label}"
+                                }
+                            }
                         }
                     }
                     if props.is_live {
@@ -296,6 +537,14 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                                     span { class: "wf-name", "{m}" }
                                 }
                             }
+                            // sql stored procedures
+                            for sp in &a.sql_sprocs {
+                                SqlSprocChip {
+                                    name:   sp.name.clone(),
+                                    params: sp.params.clone(),
+                                    status: props.sproc_status.read().get(&sp.name).copied().unwrap_or(None),
+                                }
+                            }
                         }
                     }
                 } else { rsx! {} }
@@ -315,13 +564,20 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                             is_live: props.is_live,
                             workflow: workflow_name.clone(),
                             on_select_run: props.on_select_run.clone(),
+                            collapsed_runs: collapsed_runs,
                         }
                     }
                 }
             } else if *active_tab.read() == "Logs" {
                 div { id: "status-view",
                     if props.workflow.is_none() {
-                        div { class: "empty-state", "Select a workflow to view its logs." }
+                        div { class: "empty-state",
+                            {
+                                let az = az_state.clone();
+                                let fu = func_state.clone();
+                                render_service_hint(&az, &fu, on_start_az, on_start_func, props.services_ready, props.workflow_count, "logs")
+                            }
+                        }
                     } else {
                         if let Some(err) = props.health_error.clone() {
                             div { class: "status-container",
@@ -355,7 +611,13 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
             } else {
                 div { id: "source-view",
                     if props.workflow.is_none() {
-                        div { class: "empty-state", "Select a workflow to view its source." }
+                        div { class: "empty-state",
+                            {
+                                let az = az_state.clone();
+                                let fu = func_state.clone();
+                                render_service_hint(&az, &fu, on_start_az, on_start_func, props.services_ready, props.workflow_count, "source")
+                            }
+                        }
                     } else {
                         div { class: "source-wrap",
                             // "Copied!" toast
@@ -368,6 +630,7 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                                     "✅ Copied!"
                                 }
                             }
+                            div { class: "source-toolbar",
                             button {
                                 class: "source-copy-btn",
                                 title: "Copy to clipboard",
@@ -407,7 +670,115 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                                     if *opening.read() { "⏳" } else { "✎" }
                                 }
                             }
-                            pre { id: "source-pre", dangerous_inner_html: "{source_hl.read()}" }
+                            } // source-toolbar
+                            div { class: "source-body",
+                                // ── Outline rail (generic section summary, hierarchical) ──
+                                {
+                                    let sections = outline.read().clone();
+                                    if sections.is_empty() {
+                                        rsx! {}
+                                    } else {
+                                        let active   = *active_section.read();
+                                        let collapsed_snap = collapsed.read().clone();
+                                        rsx! {
+                                            nav { class: "outline-rail",
+                                                div { class: "outline-rail-header", "Outline" }
+                                                for (i, s) in sections.iter().enumerate() {
+                                                    {
+                                                        // Skip rows whose ancestor chain is collapsed.
+                                                        if workflow_outline::is_under_collapsed(&sections, i, &collapsed_snap) {
+                                                            rsx! {}
+                                                        } else {
+                                                            let line = s.start_line.unwrap_or(1);
+                                                            let icon = match &s.kind {
+                                                                SectionKind::Trigger        => "⚡",
+                                                                SectionKind::Container(t) => match t.as_str() {
+                                                                    "Scope"   => "▦",
+                                                                    "If"      => "◆",
+                                                                    "Switch"  => "◇",
+                                                                    "Foreach" => "↻",
+                                                                    "Until"   => "⟲",
+                                                                    "Try"     => "⌖",
+                                                                    "Case"    => "▸",
+                                                                    _          => "▣",
+                                                                },
+                                                                SectionKind::Steps          => "›",
+                                                            };
+                                                            let cls = if i == active { "outline-item active" } else { "outline-item" };
+                                                            let label = s.label.clone();
+                                                            let hint  = s.hint.clone();
+                                                            let scroll = scroll_to_line;
+                                                            let indent_px = 4 + (s.depth as i32) * 14;
+                                                            let style = format!("padding-left: {indent_px}px");
+                                                            let has_kids = workflow_outline::has_children(&sections, i);
+                                                            let is_collapsed = collapsed_snap.contains(&i);
+                                                            // Chevron toggle for collapsible rows. We stop
+                                                            // propagation by handling the click here and not
+                                                            // also calling `scroll` — clicking the chevron
+                                                            // is a "manage the tree" gesture, distinct from
+                                                            // "jump to this section" on the label.
+                                                            let chevron_idx = i;
+                                                            rsx! {
+                                                                div { class: "outline-row", style: "{style}",
+                                                                    if has_kids {
+                                                                        button {
+                                                                            class: "outline-chevron",
+                                                                            title: if is_collapsed { "Expand" } else { "Collapse" },
+                                                                            onclick: move |_| {
+                                                                                let mut set = collapsed.write();
+                                                                                if set.contains(&chevron_idx) {
+                                                                                    set.remove(&chevron_idx);
+                                                                                } else {
+                                                                                    set.insert(chevron_idx);
+                                                                                }
+                                                                            },
+                                                                            if is_collapsed { "▸" } else { "▾" }
+                                                                        }
+                                                                    } else {
+                                                                        span { class: "outline-chevron outline-chevron-placeholder" }
+                                                                    }
+                                                                    button {
+                                                                        class: "{cls}",
+                                                                        title: "{hint}",
+                                                                        onclick: move |_| scroll(line),
+                                                                        span { class: "outline-icon", "{icon}" }
+                                                                        span { class: "outline-text",
+                                                                            div { class: "outline-label-row",
+                                                                                span { class: "outline-label", "{label}" }
+                                                                                if !s.tags.is_empty() {
+                                                                                    span { class: "outline-tags",
+                                                                                        for tag in s.tags.iter() {
+                                                                                            {
+                                                                                                let slug = tag.css_slug();
+                                                                                                let cls  = format!("chip chip-{slug}");
+                                                                                                let lbl  = tag.chip_label();
+                                                                                                rsx! { span { class: "{cls}", "{lbl}" } }
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                            div { class: "outline-hint",  "{hint}" }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                // Drag handle — the user can drag this to widen or
+                                // narrow the outline rail. Initialised once by JS
+                                // (see use_effect below). When the outline is empty
+                                // the handle is hidden so the source spans the full width.
+                                if !outline.read().is_empty() {
+                                    div { id: "outline-resize", title: "Drag to resize outline" }
+                                }
+                                pre { id: "source-pre", dangerous_inner_html: "{source_hl.read()}" }
+                            }
                         }
                     }
                 }
@@ -421,12 +792,13 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
 
 #[derive(Props, Clone, PartialEq)]
 struct RunBlockProps {
-    run:           RunItem,
-    actions:       Vec<ActionItem>,
-    max_ms:        i64,
-    is_live:       bool,
-    workflow:      String,
-    on_select_run: EventHandler<String>,
+    run:            RunItem,
+    actions:        Vec<ActionItem>,
+    max_ms:         i64,
+    is_live:        bool,
+    workflow:       String,
+    on_select_run:  EventHandler<String>,
+    collapsed_runs: Signal<HashSet<String>>,
 }
 
 #[component]
@@ -435,13 +807,36 @@ fn RunBlock(props: RunBlockProps) -> Element {
     let status_class = format!("run-status {}", status_lower);
     let run_id  = props.run.name.clone();
     let run_id2 = run_id.clone();
+    let run_id3 = run_id.clone();
+
+    let mut collapsed_runs = props.collapsed_runs;
+    let is_collapsed = collapsed_runs.read().contains(&run_id);
 
     rsx! {
         div { class: "run-block",
             div {
                 class: "run-header",
                 style: "cursor:pointer",
-                onclick: move |_| props.on_select_run.call(run_id2.clone()),
+                onclick: move |_| {
+                    let now_collapsed = {
+                        let mut set = collapsed_runs.write();
+                        if set.contains(&run_id3) {
+                            set.remove(&run_id3);
+                            false
+                        } else {
+                            set.insert(run_id3.clone());
+                            true
+                        }
+                    };
+                    if !now_collapsed {
+                        props.on_select_run.call(run_id2.clone());
+                    }
+                },
+                span {
+                    class: "run-collapse-chevron",
+                    style: "display:inline-block;width:14px;text-align:center;margin-right:4px;font-size:10px;",
+                    if is_collapsed { "▶" } else { "▼" }
+                }
                 span { class: "{status_class}", "{props.run.properties.status}" }
                 span { "{run_id}" }
                 if let Some(start) = &props.run.properties.start_time {
@@ -450,14 +845,16 @@ fn RunBlock(props: RunBlockProps) -> Element {
                     }
                 }
             }
-            for action in props.actions.clone() {
-                ActionRow {
-                    action: action,
-                    max_ms: props.max_ms,
-                    is_live: props.is_live,
-                    workflow: props.workflow.clone(),
-                    run_id: run_id.clone(),
-                    depth: 0,
+            if !is_collapsed {
+                for action in props.actions.clone() {
+                    ActionRow {
+                        action: action,
+                        max_ms: props.max_ms,
+                        is_live: props.is_live,
+                        workflow: props.workflow.clone(),
+                        run_id: run_id.clone(),
+                        depth: 0,
+                    }
                 }
             }
         }
@@ -653,10 +1050,21 @@ fn ActionRow(props: ActionRowProps) -> Element {
             div { class: "{err_class}", style: "padding-left:{indent_px}px", "{msg}" }
         }
         if *detail_open.read() {
-            pre {
-                class: "action-detail-pre",
-                style: "padding-left:{indent_px}px",
-                "{detail_json.read()}"
+            {
+                let raw = detail_json.read().clone();
+                let hint = serde_json::from_str::<serde_json::Value>(&raw)
+                    .ok()
+                    .and_then(|v| crate::services::sql_hint::detect(&v));
+                rsx! {
+                    if let Some(h) = hint {
+                        SqlMissingHint { hint: h, indent_px: indent_px }
+                    }
+                    pre {
+                        class: "action-detail-pre",
+                        style: "padding-left:{indent_px}px",
+                        "{raw}"
+                    }
+                }
             }
         }
         if *expanded.read() {
@@ -670,6 +1078,203 @@ fn ActionRow(props: ActionRowProps) -> Element {
                     depth: props.depth + 1,
                 }
             }
+        }
+    }
+}
+
+// ── SQL stored-procedure chip in analysis bar ─────────────────────────────
+
+#[component]
+fn SqlSprocChip(name: String, params: Vec<String>, status: Option<bool>) -> Element {
+    let mut open = use_signal(|| false);
+    let mut copied = use_signal(|| false);
+    let param_refs: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
+    let stub = crate::services::sql_hint::stub_sproc_with_params(&name, &param_refs);
+
+    let (dot_color, dot_title) = match status {
+        Some(true)  => ("#3fb950", format!("Found in local SQL: {}", name)),
+        Some(false) => ("#f85149", format!("MISSING in local SQL: {}", name)),
+        None        => ("#8b949e", format!("Probing local SQL for: {}", name)),
+    };
+
+    rsx! {
+        span { class: "wf-chip wf-chip-sql", title: "Calls stored procedure: {name}",
+            span {
+                title: "{dot_title}",
+                style: "display:inline-block;width:7px;height:7px;border-radius:50%;background:{dot_color};margin-right:5px;vertical-align:middle",
+            }
+            span { class: "wf-type", "SP" }
+            span { class: "wf-name", "{name}" }
+            button {
+                class: "wf-chip-payload-btn",
+                title: "Show stub DDL",
+                onclick: move |e| { e.stop_propagation(); open.set(!open()); },
+                "📋"
+            }
+        }
+        if open() {
+            div { class: "wf-payload-popover",
+                div { class: "wf-payload-popover-header",
+                    span { "Stub DDL — {name}" }
+                    div { style: "display:flex;gap:6px;align-items:center",
+                        button {
+                            class: "wf-payload-copy-btn",
+                            onclick: {
+                                let s = stub.clone();
+                                move |_| {
+                                    let _ = document::eval(&format!(
+                                        "navigator.clipboard.writeText({})",
+                                        serde_json::to_string(&s).unwrap_or_default()
+                                    ));
+                                    copied.set(true);
+                                    let mut c = copied;
+                                    spawn(async move {
+                                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                        c.set(false);
+                                    });
+                                }
+                            },
+                            if copied() { "✅ Copied" } else { "📋 Copy" }
+                        }
+                        button {
+                            class: "btn-icon",
+                            onclick: move |_| open.set(false),
+                            "×"
+                        }
+                    }
+                }
+                pre { class: "wf-payload-code", "{stub}" }
+            }
+        }
+    }
+}
+
+// ── Missing-SQL-object hint banner (under failed action detail) ────────────
+
+#[component]
+fn SqlMissingHint(hint: crate::services::sql_hint::SqlMissingObject, indent_px: u32) -> Element {
+    let mut copied = use_signal(|| false);
+    let kind_label = hint.kind.label();
+    let name       = hint.name.clone();
+    let ddl        = hint.stub_ddl.clone();
+    let raw        = hint.raw_message.clone();
+
+    rsx! {
+        div {
+            class: "sql-missing-hint",
+            style: "margin:6px 0; padding:10px 12px; background:rgba(210,153,34,0.12); \
+                    border-left:3px solid #d29922; border-radius:4px; font-size:13px; \
+                    padding-left:{indent_px + 12}px;",
+            div { style: "display:flex;justify-content:space-between;align-items:center;gap:10px",
+                div {
+                    strong { "⚠ Missing {kind_label} locally: " }
+                    code { style: "background:rgba(0,0,0,0.25); padding:1px 6px; border-radius:3px", "{name}" }
+                    div { style: "opacity:0.8; margin-top:4px; font-size:12px", "{raw}" }
+                }
+                button {
+                    class: "wf-payload-copy-btn",
+                    onclick: {
+                        let s = ddl.clone();
+                        move |_| {
+                            let _ = document::eval(&format!(
+                                "navigator.clipboard.writeText({})",
+                                serde_json::to_string(&s).unwrap_or_default()
+                            ));
+                            copied.set(true);
+                            let mut c = copied;
+                            spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                c.set(false);
+                            });
+                        }
+                    },
+                    if copied() { "✅ Copied DDL" } else { "📋 Copy stub DDL" }
+                }
+            }
+            pre {
+                style: "margin-top:8px; padding:8px; background:rgba(0,0,0,0.35); \
+                        border-radius:4px; font-size:11px; overflow-x:auto; white-space:pre",
+                "{ddl}"
+            }
+        }
+    }
+}
+
+/// Empty-state hint with inline service buttons.
+///
+/// Renders the right sentence for the current readiness state and, when one
+/// or both services are stopped, embeds them as clickable buttons exactly
+/// where the words "Azurite" / "Functions host" used to sit — so the user
+/// can start a service in one click without scrolling up to the toolbar.
+///
+/// `tab` is "logs" or "source" — only used to vary the trailing fragment
+/// ("view its source." vs "view its logs.") so the message reads naturally.
+fn render_service_hint(
+    azurite_state:   &ServiceState,
+    func_state:      &ServiceState,
+    on_start_az:     EventHandler<()>,
+    on_start_func:   EventHandler<()>,
+    services_ready:  bool,
+    workflow_count:  usize,
+    tab:             &'static str,
+) -> Element {
+    // Services up: either the workflow list has loaded (prompt user to pick
+    // one) or the scan is still running (show a spinner — far more obvious
+    // than a static sentence that looks like an error).
+    if services_ready {
+        if workflow_count == 0 {
+            return rsx! {
+                span { class: "az-spinner", "⟳" }
+                " Loading workflows…"
+            };
+        }
+        let text = if tab == "logs" {
+            "Select a workflow to view its logs."
+        } else {
+            "Select a workflow to view its source."
+        };
+        return rsx! { "{text}" };
+    }
+
+    // Per-service button factory — picks label + class + disabled state
+    // from the live service state and lets the caller wire the click.
+    fn svc_button(
+        state:    &ServiceState,
+        name:     &'static str,
+        on_start: EventHandler<()>,
+    ) -> Element {
+        match state {
+            ServiceState::Running => rsx! {
+                span { class: "inline-svc inline-svc-running",
+                    span { class: "inline-svc-icon", "✓" }
+                    "{name}"
+                }
+            },
+            ServiceState::Starting => rsx! {
+                span { class: "inline-svc inline-svc-starting",
+                    span { class: "az-spinner inline-svc-icon", "⟳" }
+                    "{name}"
+                }
+            },
+            ServiceState::Stopped => rsx! {
+                button {
+                    class: "inline-svc inline-svc-stopped",
+                    title: "Start {name}",
+                    onclick: move |_| on_start.call(()),
+                    span { class: "inline-svc-icon", "▶" }
+                    "{name}"
+                }
+            },
+        }
+    }
+
+    rsx! {
+        span { class: "service-hint",
+            "Start "
+            { svc_button(azurite_state, "Azurite", on_start_az) }
+            " and the "
+            { svc_button(func_state, "Functions", on_start_func) }
+            " host to load workflows."
         }
     }
 }
