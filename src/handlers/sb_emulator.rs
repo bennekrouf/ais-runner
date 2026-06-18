@@ -30,6 +30,116 @@ pub fn work_dir() -> PathBuf {
     }
 }
 
+/// Classify a single emulator output line so we can dampen the noise the
+/// Microsoft Service Bus emulator emits for benign idle states.
+///
+/// The two big offenders are:
+///
+/// 1. **Session-idle timeouts** — every 30 s, a session-aware receiver that
+///    has no session-tagged message to drain logs a multi-line `WRN`+`ERR`
+///    block with a full stack trace. This is normal idle behaviour, not a
+///    failure, but it floods the SB Emulator tab and looks alarming.
+///
+/// 2. **Tenant-cache refresh PlatformNotSupportedException** — the emulator
+///    fires this once per startup on Linux containers (it's a benign quirk
+///    of the bundled .NET host on non-Windows hosts).
+///
+/// Returns the rewritten line to show, or `None` to drop the line entirely.
+fn classify_emu_line(raw: &str) -> Option<String> {
+    // ── Idle session receiver timeout ──────────────────────────────────
+    // The emulator emits this whenever a session-aware receiver waits the
+    // full 30-second AMQP timeout without a session arriving. The line
+    // contains an embedded `source(address:/<queue>,filter:[com.microsoft:
+    // session-filter:])` token we use to identify both the pattern and the
+    // affected queue.
+    if raw.contains("com.microsoft:session-filter:")
+        && (raw.contains("did not complete within the allotted timeout")
+            || raw.contains("com.microsoft:timeout"))
+    {
+        let queue = extract_queue_from_source(raw)
+            .unwrap_or_else(|| "(unknown queue)".to_string());
+        return Some(format!(
+            "ℹ {queue}: idle — waiting for session-tagged message (normal)"
+        ));
+    }
+
+    // ── TenantCache benign warning at emulator boot ────────────────────
+    if raw.contains("TenantCache")
+        && raw.contains("PlatformNotSupportedException")
+    {
+        return Some(
+            "ℹ TenantCache refresh skipped on this platform (harmless)".into()
+        );
+    }
+
+    // Anything else passes through unchanged.
+    Some(raw.to_string())
+}
+
+/// Parse a `source(address:/<queue>,…)` fragment out of the emulator's
+/// trace line and return the queue name. The emulator embeds this token
+/// in every link-level message, with the leading `/` stripped here so it
+/// matches Config.json queue names.
+fn extract_queue_from_source(raw: &str) -> Option<String> {
+    let start = raw.find("source(address:/")?;
+    let rest  = &raw[start + "source(address:/".len()..];
+    let end   = rest.find(',').or_else(|| rest.find(')'))?;
+    Some(rest[..end].to_string())
+}
+
+/// Collapse runs of identical lines into one entry plus a count suffix.
+/// Stateful: keeps the last visible line, how many times it's repeated,
+/// and how many lines pushed since we last emitted. Caller drives it with
+/// `feed()` which returns Vec<String> — possibly empty, possibly one, very
+/// rarely two (the flushed previous + the new distinct one).
+struct EmuLineDeduper {
+    last:        Option<String>,
+    repeat:      u32,
+    /// Index of the last entry we wrote to `emu_lines`, so we can rewrite
+    /// it in place when a duplicate arrives instead of appending another
+    /// `(×N)` line. -1 sentinel = no current entry.
+    last_idx:    isize,
+}
+
+impl EmuLineDeduper {
+    fn new() -> Self {
+        Self { last: None, repeat: 0, last_idx: -1 }
+    }
+
+    /// Decide what to do with a fresh line. Returns one of:
+    /// - `DedupAction::Append(s)` — a new distinct line; push it.
+    /// - `DedupAction::Rewrite(idx, s)` — the same line as before; replace
+    ///   the entry at `idx` with `s` (which carries the "(×N)" suffix).
+    /// - `DedupAction::Drop` — line was a noise pattern we suppress entirely.
+    fn feed(&mut self, raw: &str, current_len: usize) -> DedupAction {
+        let Some(visible) = classify_emu_line(raw) else {
+            return DedupAction::Drop;
+        };
+
+        // Same as last visible line → bump counter, rewrite in place.
+        if self.last.as_deref() == Some(visible.as_str()) && self.last_idx >= 0 {
+            self.repeat += 1;
+            let count = self.repeat + 1;
+            return DedupAction::Rewrite(
+                self.last_idx as usize,
+                format!("{visible}  (×{count})"),
+            );
+        }
+
+        // Different line — reset state and append.
+        self.last     = Some(visible.clone());
+        self.repeat   = 0;
+        self.last_idx = current_len as isize;
+        DedupAction::Append(visible)
+    }
+}
+
+enum DedupAction {
+    Append(String),
+    Rewrite(usize, String),
+    Drop,
+}
+
 /// Validate a Service Bus queue/topic name against the same rules the SB emulator
 /// enforces internally: `^[A-Za-z0-9]$|^[A-Za-z0-9][\w-\.\/]*[A-Za-z0-9]$`.
 /// Must start and end with an alphanumeric; interior chars may be letters, digits,
@@ -404,15 +514,33 @@ pub fn handle_start(
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
             crate::services::process::stream_output(stdout, stderr, tx, true);
 
-            // Route all container output to the Service Bus tab.
+            // Route all container output to the Service Bus tab — with a
+            // small classifier + de-duper to keep the noise floor down.
+            // Without this, the emulator's session-idle timeouts and the
+            // bundled .NET host's tenant-cache quirk flood the pane with
+            // alarming `WRN`/`ERR` traces every 30 s for queues that are
+            // simply waiting for traffic.
             spawn(async move {
+                let mut dedup = EmuLineDeduper::new();
                 while let Some((line, _)) = rx.recv().await {
                     let line = line.trim().to_string();
                     if line.is_empty() { continue; }
                     let mut w = emu_lines.write();
-                    w.push(line);
-                    let len = w.len();
-                    if len > 2000 { w.drain(..len - 2000); }
+                    let current_len = w.len();
+                    match dedup.feed(&line, current_len) {
+                        DedupAction::Drop => {}
+                        DedupAction::Append(s) => {
+                            w.push(s);
+                            let len = w.len();
+                            if len > 2000 { w.drain(..len - 2000); }
+                        }
+                        DedupAction::Rewrite(idx, s) => {
+                            // The drain above can shift indices; only rewrite
+                            // when the slot is still in range and matches our
+                            // expectation.
+                            if idx < w.len() { w[idx] = s; }
+                        }
+                    }
                 }
             });
 
@@ -561,4 +689,94 @@ pub fn handle_reset(
         push2("✅ Reset complete — restarting SB Emulator…".into(), LogLevel::Ok);
         handle_start(state, proc, log_lines, emu_lines, logic_apps_dir);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const IDLE_WRN: &str = r#"[09:34:17 WRN] <Trc Id="30101" Ch="Debug" Lvl="Warning" Kw="1000000000000100" UTC="2026-06-18T09:34:17.835Z" Msg="Protocol client of type 'aDx' Open failed. Affected entity name = sbemulatorns:queue:ais.teams.notif. Stack Trace = Session id: , locktoken: , mode: PeekLock, errormessage: The operation did not complete within the allotted timeout of 00:00:29.9109964. ... source(address:/ais.teams.notif,filter:[com.microsoft:session-filter:])" />"#;
+    const IDLE_ERR: &str = r#"[09:34:17 ERR] in-connection194 ... com.microsoft:timeout TrackingId:... source(address:/ais.teams.notif,filter:[com.microsoft:session-filter:]) ..."#;
+    const TENANT_WRN: &str = r#"[08:39:41 WRN] <Trc ... Msg="An exception was handled at TenantCacheComponent.OnEndRefresh. Exception message ExceptionId: ...-System.PlatformNotSupportedException: Operation is not supported on this platform." />"#;
+    const REAL_ERR: &str = r#"[08:39:41 ERR] Error occured while running emulator launcher: Expected string to match regex ..."#;
+
+    #[test]
+    fn idle_session_warning_is_rewritten_with_queue_name() {
+        let out = classify_emu_line(IDLE_WRN).unwrap();
+        assert!(out.contains("ais.teams.notif"), "rewrite should mention the queue, got: {out}");
+        assert!(out.contains("idle"), "rewrite should signal idle state, got: {out}");
+        // The rewrite must not preserve the original alarming `WRN`/stack-trace text.
+        assert!(!out.contains("ERR"));
+        assert!(!out.contains("Stack Trace"));
+    }
+
+    #[test]
+    fn idle_session_err_block_is_collapsed_too() {
+        // The ERR companion line carries the same source(address:…) token,
+        // so it should also be re-classified to the friendly idle hint.
+        let out = classify_emu_line(IDLE_ERR).unwrap();
+        assert!(out.contains("ais.teams.notif"));
+        assert!(out.contains("idle"));
+    }
+
+    #[test]
+    fn tenant_cache_platform_exception_is_demoted() {
+        let out = classify_emu_line(TENANT_WRN).unwrap();
+        assert!(out.contains("harmless"), "rewrite should mark it harmless, got: {out}");
+        assert!(!out.contains("PlatformNotSupportedException"));
+    }
+
+    #[test]
+    fn real_error_lines_pass_through_unchanged() {
+        // Anything we don't recognise must reach the user verbatim — the
+        // classifier is there to dampen *known* noise, not to swallow signal.
+        let out = classify_emu_line(REAL_ERR).unwrap();
+        assert_eq!(out, REAL_ERR);
+    }
+
+    #[test]
+    fn deduper_collapses_consecutive_duplicates_with_count() {
+        let mut d = EmuLineDeduper::new();
+        // First idle warning → appended at slot 0.
+        match d.feed(IDLE_WRN, 0) {
+            DedupAction::Append(s) => assert!(s.contains("idle")),
+            _ => panic!("first feed should append"),
+        }
+        // Next idle warning (same rewritten text) → rewrite slot 0 with ×2.
+        match d.feed(IDLE_WRN, 1) {
+            DedupAction::Rewrite(idx, s) => {
+                assert_eq!(idx, 0);
+                assert!(s.contains("(×2)"), "expected count suffix, got: {s}");
+            }
+            _ => panic!("second feed should rewrite"),
+        }
+        // Third → rewrite with ×3.
+        match d.feed(IDLE_WRN, 1) {
+            DedupAction::Rewrite(_, s) => assert!(s.contains("(×3)")),
+            _ => panic!("third feed should rewrite"),
+        }
+    }
+
+    #[test]
+    fn deduper_distinct_line_resets_the_counter() {
+        let mut d = EmuLineDeduper::new();
+        let _ = d.feed(IDLE_WRN, 0);
+        let _ = d.feed(IDLE_WRN, 1); // ×2
+        // A distinct line → append, not rewrite.
+        match d.feed(REAL_ERR, 1) {
+            DedupAction::Append(s) => assert_eq!(s, REAL_ERR),
+            _ => panic!("distinct line should append"),
+        }
+        // And a subsequent IDLE_WRN should start fresh as a new entry.
+        match d.feed(IDLE_WRN, 2) {
+            DedupAction::Append(_) => {}
+            _ => panic!("counter should have reset after a distinct line"),
+        }
+    }
+
+    #[test]
+    fn extract_queue_from_source_handles_realistic_input() {
+        let q = extract_queue_from_source(IDLE_WRN);
+        assert_eq!(q.as_deref(), Some("ais.teams.notif"));
+    }
 }
