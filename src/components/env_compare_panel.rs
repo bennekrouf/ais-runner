@@ -3,6 +3,7 @@ use indexmap::IndexMap;
 use std::collections::HashSet;
 use crate::services::{env_compare::{self, EnvValues, VarGroup}, config, azure_cli};
 use crate::components::security_compare_panel::SecurityComparePanel;
+use crate::components::app_config_panel::AppConfigPanel;
 
 // ── Fetch state ───────────────────────────────────────────────────────────────
 
@@ -296,16 +297,28 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                 }
             }
 
-            // ── Sub-view tabs (below env selection) ───────────────────
+            // ── Sub-view tabs ────────────────────────────────────────
+            // Use the true Azure product names — "Application Settings" and
+            // "App Configuration" are distinct services with different scoping
+            // rules. Keeping them on separate tabs preserves that semantic so
+            // customers can reason about each correctly.
             div { class: "settings-tabs", style: "border-bottom:1px solid #2a2f3a;margin-bottom:6px",
                 button {
                     class: if mode == "settings" { "settings-tab active" } else { "settings-tab" },
                     onclick: move |_| view_mode.set("settings"),
-                    "⚙ Settings"
+                    title: "Per-site key/value pairs on the Function App (az webapp config appsettings list)",
+                    "⚙ Application Settings"
+                }
+                button {
+                    class: if mode == "appconfig" { "settings-tab active" } else { "settings-tab" },
+                    onclick: move |_| view_mode.set("appconfig"),
+                    title: "Azure App Configuration stores (Microsoft.AppConfiguration/configurationStores)",
+                    "🗂 App Configuration"
                 }
                 button {
                     class: if mode == "security" { "settings-tab active" } else { "settings-tab" },
                     onclick: move |_| view_mode.set("security"),
+                    title: "Identity, RBAC and network rules",
                     "🔐 Security"
                 }
             }
@@ -314,6 +327,10 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
                 SecurityComparePanel {
                     groups:    vg_all,
                     col_order: col_order,
+                }
+            } else if mode == "appconfig" {
+                AppConfigPanel {
+                    local_pairs: props.local_pairs,
                 }
             } else {
 

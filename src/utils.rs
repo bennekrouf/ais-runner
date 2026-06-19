@@ -53,6 +53,19 @@ pub fn now() -> String {
     Local::now().format("%H:%M:%S").to_string()
 }
 
+/// Format a Logic Apps RFC3339 timestamp (always UTC, e.g.
+/// `2026-06-18T15:45:36.7891234Z`) as a local-time `YYYY-MM-DD HH:MM:SS` string.
+///
+/// Returns the original string trimmed to its first 19 characters if parsing
+/// fails — that way unexpected formats degrade to the previous behaviour
+/// rather than rendering an empty cell.
+pub fn fmt_utc_as_local(rfc3339: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(rfc3339) {
+        Ok(dt) => dt.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S").to_string(),
+        Err(_) => rfc3339.chars().take(19).collect::<String>().replace('T', " "),
+    }
+}
+
 /// Build a `push_log` closure that writes into a Dioxus signal.
 pub fn make_push(
     mut log_lines: dioxus::prelude::Signal<Vec<LogLine>>,

@@ -41,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "ais-runner"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "ais-chain",
  "arboard",
@@ -63,6 +63,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "tiberius",
  "tokio",
  "tokio-util",

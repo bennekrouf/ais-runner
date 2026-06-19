@@ -1718,6 +1718,68 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
 
 .empty-state { color: var(--text2); font-size: 13px; text-align: center; padding: 22px; }
 
+/* "Failures only" toggle button on the Run-tab toolbar. */
+.btn-toggle {
+    color: var(--text2);
+    border-color: var(--border);
+    background: transparent;
+}
+.btn-toggle:hover { color: var(--text1); border-color: var(--text2); }
+.btn-toggle.on {
+    color: var(--red);
+    border-color: var(--red);
+    background: rgba(248,81,73,0.08);
+    font-weight: 600;
+}
+
+.failures-only-empty {
+    color: var(--text3); font-size: 12px; padding: 10px 14px; text-align: center;
+    font-style: italic;
+}
+
+/* ── Missing app settings panel (Settings editor) ──
+   Shows every @appsetting('K') reference across the project whose key is
+   absent from local.settings.json — grouped by key, with the list of
+   workflows / files that reference each. Lives just under the settings
+   status bar so it's the first thing you see when the project breaks. */
+.missing-settings-ok {
+    padding: 8px 12px; margin: 8px 0;
+    color: var(--text3); font-size: 11px;
+    background: rgba(63,185,80,0.05);
+    border: 1px solid rgba(63,185,80,0.20);
+    border-radius: 5px;
+}
+.missing-settings-panel {
+    border: 1px solid rgba(248,81,73,0.40);
+    background: rgba(248,81,73,0.04);
+    border-radius: 6px; padding: 8px 10px; margin: 8px 0;
+}
+.missing-settings-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.missing-settings-toggle {
+    flex: 1; text-align: left;
+    background: transparent; border: none; color: var(--red); font: inherit; cursor: pointer;
+    font-weight: 600;
+    display: flex; align-items: center; gap: 6px;
+}
+.missing-settings-chevron { font-size: 11px; color: var(--text3); }
+.missing-settings-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.missing-settings-status  { margin-top: 6px; font-size: 11px; color: var(--text2); }
+.missing-settings-list    { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.missing-settings-row {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 4px 6px; border-radius: 4px; background: var(--bg2);
+}
+.missing-settings-key {
+    font-family: var(--font-mono, 'SF Mono', monospace);
+    font-size: 12px; font-weight: 600; color: var(--text1); flex-shrink: 0;
+}
+.missing-settings-by {
+    font-size: 11px; color: var(--text3);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* ── Inline service buttons inside the empty-state hint ──
    Render small "▶ Azurite" / "▶ Functions" pills where the words used to
    sit, so the user can launch a service in one click without scrolling to
@@ -1890,6 +1952,77 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
 /* Table */
 .env-compare-scroll { flex: 1; overflow: auto; }
 .env-compare-empty  { padding: 40px; text-align: center; color: var(--text3); font-size: 13px; line-height: 1.7; }
+
+/* ──────────────────────────────────────────────────────────────
+   AZURE APP CONFIGURATION PANEL
+   Deliberately styled as a peer of env-compare so the tabs feel
+   consistent, but never sharing the same CSS classes — the panels
+   express different Azure concepts and must remain visually distinct.
+   ──────────────────────────────────────────────────────────────*/
+.appcfg-panel { display: flex; flex-direction: column; gap: 12px; padding: 6px 2px; }
+.appcfg-empty { padding: 32px; color: var(--text2); text-align: center; }
+.appcfg-empty h3 { margin: 0 0 8px; color: var(--text1); font-size: 14px; }
+.appcfg-empty p  { margin: 6px auto; max-width: 540px; font-size: 12px; line-height: 1.6; }
+.appcfg-empty code { background: var(--bg2); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+.appcfg-hint { color: var(--text3); }
+
+.appcfg-section-title {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text3); margin: 0 0 4px;
+}
+.appcfg-section-title-spaced { margin-top: 14px; }
+.appcfg-endpoint-inline { color: var(--text2); font-weight: 400; text-transform: none; letter-spacing: 0; }
+
+.appcfg-stores { display: flex; flex-wrap: wrap; gap: 8px; }
+.appcfg-store {
+    text-align: left; background: var(--bg2); border: 1px solid var(--border);
+    color: var(--text1); padding: 8px 12px; border-radius: 6px; cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+    min-width: 220px; max-width: 360px;
+    font: inherit;
+}
+.appcfg-store:hover  { border-color: var(--text2); }
+.appcfg-store.active { border-color: var(--blue); background: rgba(88,166,255,0.08); }
+.appcfg-store-name     { font-weight: 600; font-size: 13px; }
+.appcfg-store-endpoint { font-size: 10px; color: var(--text3); margin-top: 1px; word-break: break-all; }
+.appcfg-store-refs     { margin-top: 4px; font-size: 10px; color: var(--text2); }
+.appcfg-ref            { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.appcfg-add-row {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    margin-bottom: 6px;
+}
+.appcfg-label-input, .appcfg-filter {
+    flex: 1 1 200px;
+    background: var(--bg1); border: 1px solid var(--border); color: var(--text1);
+    border-radius: 5px; padding: 4px 8px; font: inherit; font-size: 12px; min-width: 0;
+}
+.appcfg-only-diff { display: flex; align-items: center; gap: 4px; color: var(--text2); font-size: 12px; }
+
+.appcfg-label-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.appcfg-label-chip {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 14px; padding: 2px 4px 2px 8px; font-size: 12px;
+}
+.appcfg-label-status { font-size: 11px; color: var(--text3); }
+.appcfg-label-name   { font-weight: 600; }
+.appcfg-label-err    { color: var(--red); font-size: 10px; margin-left: 4px; }
+.appcfg-label-remove {
+    background: transparent; border: none; color: var(--text3);
+    cursor: pointer; padding: 0 4px; font-size: 14px; line-height: 1;
+}
+.appcfg-label-remove:hover { color: var(--red); }
+
+.appcfg-table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+.appcfg-table      { width: 100%; border-collapse: collapse; font-size: 12px; }
+.appcfg-table th, .appcfg-table td { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--border2); }
+.appcfg-th-key { font-weight: 600; color: var(--text2); }
+.appcfg-th-col { font-weight: 600; color: var(--text2); }
+.appcfg-td-key { font-family: 'SF Mono', monospace; color: var(--text1); }
+.appcfg-td     { color: var(--text1); font-family: 'SF Mono', monospace; word-break: break-all; }
+.appcfg-td-missing { color: var(--text3); }
+.appcfg-td-diff    { background: var(--diff-bg); color: var(--diff-val); }
 .env-compare-table  { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
 .env-compare-table thead { position: sticky; top: 0; background: var(--bg1); z-index: 1; }
 .env-th-key, .env-th-val {
@@ -2597,6 +2730,35 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
     word-break: break-all;
     color: var(--text1);
     flex: 1;
+}
+
+/* AMQP delivery-count chip — small pill rendered next to the index in the
+   queue browser. Three colour bands: neutral for first delivery, amber for
+   a re-delivery (workflow abandoned or timed out), red for likely poison
+   loops (≥5 prior failures — most queues dead-letter at 10 by default). */
+.db-dc-chip {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 1px 6px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    color: var(--text2);
+    background: var(--bg3);
+    margin-right: 6px;
+    white-space: nowrap;
+}
+.db-dc-warn {
+    color: var(--yellow);
+    border-color: rgba(210,153,34,0.5);
+    background: rgba(210,153,34,0.10);
+}
+.db-dc-poison {
+    color: var(--red);
+    border-color: rgba(248,81,73,0.5);
+    background: rgba(248,81,73,0.10);
 }
 
 /* ── Azure queue sync badges ────────────────────────────────────────────── */

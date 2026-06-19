@@ -4,6 +4,16 @@ use crate::services::{
     azure_cli::{self, SbQueueStats},
     sb_check::SbQueueInfo,
 };
+use crate::services::sb_amqp::PeekedMessage;
+
+/// One row in the inline peek list. Either a real peeked message (body + the
+/// AMQP `delivery-count` so the user can spot poison-loop messages without
+/// leaving the queue browser) or a textual error from the peek call itself.
+#[derive(Clone, Debug, PartialEq)]
+enum PeekRow {
+    Msg(PeekedMessage),
+    Err(String),
+}
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SbTabProps {
@@ -24,7 +34,10 @@ pub fn SbTab(props: SbTabProps) -> Element {
     let mut sb_send_open:   Signal<HashSet<String>>   = use_signal(HashSet::new);
     let mut sb_send_bodies: Signal<HashMap<String, String>> = use_signal(HashMap::new);
     let mut sb_peek_open:   Signal<HashSet<String>>   = use_signal(HashSet::new);
-    let mut sb_peek_msgs:   Signal<HashMap<String, Vec<String>>> = use_signal(HashMap::new);
+    // Holds either `Ok(PeekedMessage)` rows or a single `Err(error_text)` slot
+    // — modelled with `PeekRow` so we can render the body + delivery-count
+    // chip per row while still surfacing peek-level errors.
+    let mut sb_peek_msgs:   Signal<HashMap<String, Vec<PeekRow>>> = use_signal(HashMap::new);
     let mut sb_peeking:     Signal<HashSet<String>>   = use_signal(HashSet::new);
 
     let mut new_queue_name:     Signal<String> = use_signal(String::new);
@@ -285,8 +298,11 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                                     "localhost", &qn, 10
                                                 ).await;
                                                 match result {
-                                                    Ok(msgs) => { sb_peek_msgs.write().insert(qn2.clone(), msgs); }
-                                                    Err(e)   => { sb_peek_msgs.write().insert(qn2.clone(), vec![format!("⚠ {e}")]); }
+                                                    Ok(msgs) => {
+                                                        let rows: Vec<PeekRow> = msgs.into_iter().map(PeekRow::Msg).collect();
+                                                        sb_peek_msgs.write().insert(qn2.clone(), rows);
+                                                    }
+                                                    Err(e)   => { sb_peek_msgs.write().insert(qn2.clone(), vec![PeekRow::Err(format!("⚠ {e}"))]); }
                                                 }
                                                 sb_peeking.write().remove(&qn2);
                                             });
@@ -322,20 +338,28 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                                 class: "btn btn-run btn-small",
                                                 onclick: move |_| {
                                                     let qn4  = qn2.clone();
-                                                    let body = sb_send_bodies.read()
+                                                    let raw  = sb_send_bodies.read()
                                                         .get(&qn2).cloned().unwrap_or_default();
+                                                    // Strip a top-level `contentData` envelope if the user
+                                                    // pasted a captured-message body — see
+                                                    // payload::normalise_send_body for the why.
+                                                    let normalised = crate::services::payload::normalise_send_body(&raw);
                                                     spawn(async move {
                                                         let emulator_up = tokio::net::TcpStream::connect("127.0.0.1:5672").await.is_ok();
                                                         let result = if emulator_up {
                                                             crate::services::sb_amqp::send_amqp_message(
-                                                                "localhost", &qn4, &body,
+                                                                "localhost", &qn4, &normalised.body,
                                                             ).await
                                                         } else {
                                                             Err("SB Emulator is not running — start it from the toolbar first.".into())
                                                         };
                                                         match result {
                                                             Ok(()) => status.set(Some((
-                                                                format!("✅ Sent to {}", qn4), false,
+                                                                if normalised.stripped_envelope {
+                                                                    format!("✅ Sent to {} — auto-unwrapped contentData envelope (the SB trigger adds one)", qn4)
+                                                                } else {
+                                                                    format!("✅ Sent to {}", qn4)
+                                                                }, false,
                                                             ))),
                                                             Err(e) => status.set(Some((e, true))),
                                                         }
@@ -358,10 +382,46 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                     if msgs.is_empty() {
                                         div { class: "db-peek-empty", "Queue is empty" }
                                     } else {
-                                        for (i, msg) in msgs.iter().enumerate() {
-                                            div { class: "db-peek-msg",
-                                                span { class: "db-peek-idx", "#{i}" }
-                                                pre { class: "db-peek-body", "{msg}" }
+                                        for (i, row) in msgs.iter().enumerate() {
+                                            {
+                                                match row {
+                                                    PeekRow::Err(e) => rsx! {
+                                                        div { class: "db-peek-msg",
+                                                            span { class: "db-peek-idx", "#{i}" }
+                                                            pre { class: "db-peek-body", "{e}" }
+                                                        }
+                                                    },
+                                                    PeekRow::Msg(m) => {
+                                                        // Surface the AMQP delivery-count so the user
+                                                        // can spot poison-loop messages (workflow keeps
+                                                        // failing → broker keeps redelivering) without
+                                                        // having to leave the queue browser.
+                                                        let dc = m.delivery_count;
+                                                        let chip_cls = if dc >= 5      { "db-dc-chip db-dc-poison" }
+                                                                       else if dc >= 1 { "db-dc-chip db-dc-warn" }
+                                                                       else            { "db-dc-chip" };
+                                                        let label = if dc == 0 {
+                                                            "first".to_string()
+                                                        } else {
+                                                            format!("×{}", dc + 1)
+                                                        };
+                                                        let title = if dc >= 5 {
+                                                            "Poison-loop signature — workflow has abandoned this message many times; it will dead-letter on the next abandon."
+                                                        } else if dc >= 1 {
+                                                            "Message has been re-delivered — workflow either abandoned or timed out previously."
+                                                        } else {
+                                                            "First delivery attempt."
+                                                        };
+                                                        let body = &m.body;
+                                                        rsx! {
+                                                            div { class: "db-peek-msg",
+                                                                span { class: "db-peek-idx", "#{i}" }
+                                                                span { class: "{chip_cls}", title: "{title}", "delivery {label}" }
+                                                                pre { class: "db-peek-body", "{body}" }
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -377,8 +437,11 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                                     "localhost", &qn, 10
                                                 ).await;
                                                 match result {
-                                                    Ok(msgs) => { sb_peek_msgs.write().insert(qn2.clone(), msgs); }
-                                                    Err(e)   => { sb_peek_msgs.write().insert(qn2.clone(), vec![format!("⚠ {e}")]); }
+                                                    Ok(msgs) => {
+                                                        let rows: Vec<PeekRow> = msgs.into_iter().map(PeekRow::Msg).collect();
+                                                        sb_peek_msgs.write().insert(qn2.clone(), rows);
+                                                    }
+                                                    Err(e)   => { sb_peek_msgs.write().insert(qn2.clone(), vec![PeekRow::Err(format!("⚠ {e}"))]); }
                                                 }
                                                 sb_peeking.write().remove(&qn2);
                                             });
@@ -434,16 +497,22 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                             class: "btn btn-run btn-small",
                                             onclick: move |_| {
                                                 let qn3 = qname.clone();
-                                                let body = sb_send_bodies.read().get(&qname).cloned().unwrap_or_default();
+                                                let raw = sb_send_bodies.read().get(&qname).cloned().unwrap_or_default();
+                                                let normalised = crate::services::payload::normalise_send_body(&raw);
                                                 spawn(async move {
                                                     let emulator_up = tokio::net::TcpStream::connect("127.0.0.1:5672").await.is_ok();
                                                     let result = if emulator_up {
-                                                        crate::services::sb_amqp::send_amqp_message("localhost", &qn3, &body).await
+                                                        crate::services::sb_amqp::send_amqp_message("localhost", &qn3, &normalised.body).await
                                                     } else {
                                                         Err("SB Emulator is not running — start it from the toolbar first.".into())
                                                     };
                                                     match result {
-                                                        Ok(()) => status.set(Some((format!("✅ Sent to {}", qn3), false))),
+                                                        Ok(()) => status.set(Some((
+                                                            if normalised.stripped_envelope {
+                                                                format!("✅ Sent to {} — auto-unwrapped contentData envelope (the SB trigger adds one)", qn3)
+                                                            } else {
+                                                                format!("✅ Sent to {}", qn3)
+                                                            }, false))),
                                                         Err(e) => status.set(Some((e, true))),
                                                     }
                                                 });

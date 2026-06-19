@@ -320,3 +320,106 @@ fn sample_named(name: &str, schema: &Value) -> Value {
     };
     Value::String(s.to_string())
 }
+
+/// Result of normalising a user-typed Send Message payload.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NormalisedSendBody {
+    /// What to actually push down the AMQP wire.
+    pub body:   String,
+    /// True when we stripped a top-level `contentData` envelope so the UI can
+    /// flag that to the user — silently double-wrapped messages cause hours
+    /// of "param NULL" debugging downstream.
+    pub stripped_envelope: bool,
+}
+
+/// Normalise a payload before sending it to a Service Bus queue.
+///
+/// **Why this exists.** The Logic Apps Service Bus trigger automatically
+/// wraps the AMQP message body inside `{ contentData: …, contentType: …, … }`
+/// for the workflow to consume. If the user pastes a payload that ALREADY
+/// has a top-level `contentData` key — typically because they copied it from
+/// a captured message — and we send it verbatim, the trigger wraps it again
+/// and the workflow sees `contentData.contentData.data.msg.…` instead of
+/// `contentData.data.msg.…`. The symptom is a cryptic "param NULL" SP error
+/// or a JSON-schema validation failure deep inside the workflow.
+///
+/// We detect that shape conservatively — only when `contentData` is the
+/// single top-level key (or paired with `contentType` / `userProperties`,
+/// the canonical envelope shape) so payloads that legitimately use
+/// `contentData` as a field name alongside other top-level data aren't
+/// molested.
+///
+/// Non-JSON payloads pass through untouched.
+pub fn normalise_send_body(raw: &str) -> NormalisedSendBody {
+    let Ok(v) = serde_json::from_str::<Value>(raw) else {
+        // Not JSON — send as-is. Plain-text payloads are valid.
+        return NormalisedSendBody { body: raw.to_string(), stripped_envelope: false };
+    };
+    let Value::Object(ref map) = v else {
+        return NormalisedSendBody { body: raw.to_string(), stripped_envelope: false };
+    };
+    let is_envelope = map.contains_key("contentData") && match map.len() {
+        1 => true,
+        2 => map.keys().all(|k| k == "contentData" || k == "contentType"),
+        3 => map.keys().all(|k| k == "contentData" || k == "contentType" || k == "userProperties"),
+        _ => false,
+    };
+    if !is_envelope {
+        return NormalisedSendBody { body: raw.to_string(), stripped_envelope: false };
+    }
+    let inner = map.get("contentData").cloned().unwrap_or(Value::Null);
+    let body = serde_json::to_string_pretty(&inner)
+        .unwrap_or_else(|_| raw.to_string());
+    NormalisedSendBody { body, stripped_envelope: true }
+}
+
+#[cfg(test)]
+mod send_body_tests {
+    use super::*;
+
+    #[test]
+    fn strips_pure_contentdata_envelope() {
+        let raw = r#"{ "contentData": { "data": { "msg": { "id": 1 } } } }"#;
+        let n = normalise_send_body(raw);
+        assert!(n.stripped_envelope);
+        let parsed: serde_json::Value = serde_json::from_str(&n.body).unwrap();
+        assert_eq!(parsed["data"]["msg"]["id"], 1);
+    }
+
+    #[test]
+    fn strips_canonical_two_key_envelope() {
+        // What you get when you copy a peeked SB message verbatim.
+        let raw = r#"{
+            "contentData": { "x": 1 },
+            "contentType": "application/json"
+        }"#;
+        let n = normalise_send_body(raw);
+        assert!(n.stripped_envelope);
+        let parsed: serde_json::Value = serde_json::from_str(&n.body).unwrap();
+        assert_eq!(parsed["x"], 1);
+    }
+
+    #[test]
+    fn leaves_payload_alone_when_contentdata_is_one_of_many_fields() {
+        let raw = r#"{ "contentData": "abc", "otherField": "xyz", "another": 1 }"#;
+        let n = normalise_send_body(raw);
+        assert!(!n.stripped_envelope);
+        assert_eq!(n.body, raw);
+    }
+
+    #[test]
+    fn leaves_non_json_payloads_alone() {
+        let raw = "this is plain text; not JSON";
+        let n = normalise_send_body(raw);
+        assert!(!n.stripped_envelope);
+        assert_eq!(n.body, raw);
+    }
+
+    #[test]
+    fn leaves_payload_without_contentdata_alone() {
+        let raw = r#"{ "data": { "msg": { "id": 1 } } }"#;
+        let n = normalise_send_body(raw);
+        assert!(!n.stripped_envelope);
+        assert_eq!(n.body, raw);
+    }
+}

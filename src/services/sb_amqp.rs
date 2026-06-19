@@ -50,9 +50,22 @@ pub async fn send_amqp_message(host: &str, queue: &str, body: &str) -> Result<()
     Err(last_err)
 }
 
+/// One message returned from a peek. Carries the body text plus AMQP-level
+/// metadata that helps the user diagnose poison-message loops without having
+/// to leave the queue browser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeekedMessage {
+    pub body:           String,
+    /// AMQP `header.delivery-count` — number of *prior* unsuccessful delivery
+    /// attempts. A growing delivery-count on a single message is the classic
+    /// "poison" signature: the workflow keeps abandoning the message, the
+    /// broker keeps re-presenting it, eventually the queue dead-letters it.
+    pub delivery_count: u32,
+}
+
 /// Peek up to `max` messages from a queue without consuming them.
 /// Receives messages then releases them back to the broker.
-pub async fn peek_amqp_messages(host: &str, queue: &str, max: usize) -> Result<Vec<String>, String> {
+pub async fn peek_amqp_messages(host: &str, queue: &str, max: usize) -> Result<Vec<PeekedMessage>, String> {
     let url = format!("amqp://{}:5672", host);
 
     let mut connection = Connection::open("ais-runner-peek", url.as_str())
@@ -82,8 +95,9 @@ pub async fn peek_amqp_messages(host: &str, queue: &str, max: usize) -> Result<V
         match tokio::time::timeout(timeout, receiver.recv::<Body<String>>()).await {
             Ok(Ok(delivery)) => {
                 let body_text = body_to_string(delivery.body());
+                let delivery_count = delivery_count_from(&delivery);
                 receiver.release(&delivery).await.ok();
-                messages.push(body_text);
+                messages.push(PeekedMessage { body: body_text, delivery_count });
             }
             Ok(Err(_)) => break,
             Err(_) => break,
@@ -95,6 +109,19 @@ pub async fn peek_amqp_messages(host: &str, queue: &str, max: usize) -> Result<V
     connection.close().await.ok();
 
     Ok(messages)
+}
+
+/// Extract the `delivery-count` field from an AMQP delivery's header, with a
+/// defensive default of 0 (matches the AMQP spec — `delivery-count` is
+/// optional in the wire format, and "absent" is semantically equivalent to
+/// zero prior attempts).
+fn delivery_count_from<T>(delivery: &fe2o3_amqp::link::delivery::Delivery<T>) -> u32 {
+    delivery
+        .message()
+        .header
+        .as_ref()
+        .map(|h| h.delivery_count)
+        .unwrap_or(0)
 }
 
 /// Extract a human-readable string from an AMQP Body.

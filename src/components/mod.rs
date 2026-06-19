@@ -9,6 +9,7 @@ pub mod azure_panel;
 pub mod devops_panel;
 pub mod tooltip;
 pub mod env_compare_panel;
+pub mod app_config_panel;
 pub mod security_compare_panel;
 pub mod func_panel;
 pub mod graph_panel;

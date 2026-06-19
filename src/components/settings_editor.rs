@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 use indexmap::IndexMap;
-use crate::services::{azure_cli, config, settings_file};
+use crate::services::{azure_cli, config, settings_file, missing_settings, setup_manager};
 use crate::components::env_compare_panel::EnvComparePanel;
 use crate::components::eventgrid_panel::EventGridPanel;
 use crate::components::sb_compare_panel::SbComparePanel;
@@ -211,6 +211,14 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                     "{status}"
                 }
             }
+
+            // ── Missing app settings panel ──────────────────────────────
+            // Lists every @appsetting('K') reference across the project's
+            // workflows + connections.json + parameters.json + host.json
+            // whose key is absent from local.settings.json. Grouped by key,
+            // each entry showing which workflows reference it so the user
+            // can decide what value to stub.
+            MissingSettingsPanel { logic_apps_dir: props.logic_apps_dir.clone() }
 
             // ── Azure config ────────────────────────────────────────────
             div {
@@ -686,6 +694,118 @@ fn AddKeyRow(mut props: AddKeyRowProps) -> Element {
                     }
                 },
                 "+ Add"
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct MissingSettingsPanelProps {
+    logic_apps_dir: String,
+}
+
+/// Collapsible widget that lists every `@appsetting('K')` reference across
+/// the project whose key is absent from `local.settings.json`. Folded by
+/// default when the project is clean so it doesn't compete with the editor;
+/// auto-expands when there's anything missing so the user sees the problem
+/// on arrival.
+#[component]
+fn MissingSettingsPanel(props: MissingSettingsPanelProps) -> Element {
+    let dir = props.logic_apps_dir.clone();
+
+    // Re-scan whenever the file watcher would fire — but cheaper: scan on
+    // mount, expose a Refresh button so the user can re-check after edits.
+    let dir_for_scan = dir.clone();
+    let missing = use_memo(move || missing_settings::scan(&dir_for_scan));
+
+    let mut auto_status: Signal<Option<String>> = use_signal(|| None);
+    let mut expanded:    Signal<bool>           = use_signal(|| true);
+    let mut refresh_tick: Signal<u32>           = use_signal(|| 0);
+
+    // Re-derive when the user clicks Refresh — bumping refresh_tick is enough
+    // to invalidate the memo because we capture it.
+    let dir_for_refresh = dir.clone();
+    let _ = refresh_tick.read();
+    let live = use_memo(move || {
+        let _ = refresh_tick.read();
+        missing_settings::scan(&dir_for_refresh)
+    });
+
+    let snap = live.read().clone();
+    let _ = missing.read(); // keep the first scan referenced
+
+    if snap.is_empty() {
+        return rsx! {
+            div { class: "missing-settings-ok",
+                "✓ All @appsetting references resolve in local.settings.json."
+            }
+        };
+    }
+
+    let is_open = *expanded.read();
+    let total = snap.len();
+
+    rsx! {
+        div { class: "missing-settings-panel",
+            div { class: "missing-settings-header",
+                button {
+                    class: "missing-settings-toggle",
+                    onclick: move |_| expanded.set(!is_open),
+                    span { class: "missing-settings-chevron", if is_open { "▾" } else { "▸" } }
+                    "⚠ {total} app setting(s) referenced but missing from local.settings.json"
+                }
+                div { class: "missing-settings-actions",
+                    button {
+                        class: "btn btn-small",
+                        title: "Add an empty entry to local.settings.json for every missing key — value left blank for you to fill in.",
+                        onclick: {
+                            let dir = dir.clone();
+                            let snap = snap.clone();
+                            move |_| {
+                                let keys: Vec<String> = snap.iter().map(|m| m.key.clone()).collect();
+                                match setup_manager::stub_missing_keys(&dir, &keys) {
+                                    Ok(_)  => {
+                                        auto_status.set(Some(format!("✓ Stubbed {} key(s) — fill in the values then save.", keys.len())));
+                                        let next = *refresh_tick.read() + 1;
+                                        refresh_tick.set(next);
+                                    }
+                                    Err(e) => auto_status.set(Some(format!("⚠ {}", e))),
+                                }
+                            }
+                        },
+                        "Auto-stub all"
+                    }
+                    button {
+                        class: "btn btn-small",
+                        style: "margin-left:6px",
+                        onclick: move |_| {
+                            let next = *refresh_tick.read() + 1;
+                            refresh_tick.set(next);
+                            auto_status.set(None);
+                        },
+                        "↻ Refresh"
+                    }
+                }
+            }
+            if let Some(s) = auto_status.read().clone() {
+                div { class: "missing-settings-status", "{s}" }
+            }
+            if is_open {
+                div { class: "missing-settings-list",
+                    for m in snap.iter() {
+                        {
+                            let by = m.referenced_by.join(", ");
+                            rsx! {
+                                div { class: "missing-settings-row",
+                                    span { class: "missing-settings-key", "{m.key}" }
+                                    span { class: "missing-settings-by", title: "{by}",
+                                        "referenced by: {by}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

@@ -1289,7 +1289,7 @@ fn env_badge(
         EnvMode::Mixed   => ("env-badge mixed",   "⚠ Mixed"),
         EnvMode::Unknown => ("env-badge unknown", "? Env"),
     };
-    rsx! { span { class: "{badge_class}", title: "Blob storage mode — open Connections to switch", "{badge_label}" } }
+    rsx! { span { class: "{badge_class}", title: "Blob storage mode — open Connectors to switch", "{badge_label}" } }
 }
 
 // ── Connections button ────────────────────────────────────────────────────────
@@ -1344,7 +1344,7 @@ fn connections_button(
                     });
                 }
             },
-            "🔌 Connections"
+            "🔌 Connectors"
         }
     }
 }

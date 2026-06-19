@@ -494,6 +494,28 @@ pub fn handle_start(
 
     let compose_file = dir.join("docker-compose.yml");
     let compose_file_str = compose_file.to_string_lossy().to_string();
+
+    // Silently wipe leftover containers + volumes from any previous run before
+    // bringing the stack up. Without this, SQL Edge spends 20-30 s on parallel
+    // redo against a stale `SbGatewayDatabase` / `SbMessageContainerDatabase00001`
+    // and the SB emulator finishes its AMQP probe on top of a not-yet-quiescent
+    // broker — which produces the `Connection reset by peer` storm the Functions
+    // host hits the moment it tries to consume.
+    //
+    // Best-effort: a missing/already-clean compose project is fine, so a non-zero
+    // exit code here doesn't fail the Start. We swallow output to avoid polluting
+    // the user-visible log; the existing "$ docker compose -f … up" line below
+    // remains the only Start marker the user sees.
+    //
+    // `--timeout 10` caps the SIGTERM wait per container; the surrounding
+    // `.output()` blocks until docker compose exits. Uses the same
+    // `docker_compose_cmd` wrapper as the other call sites for Windows-safe
+    // invocation through `cmd /c`.
+    let _ = docker_compose_cmd(&[
+        "-f", &compose_file_str,
+        "down", "--volumes", "--remove-orphans", "--timeout", "10",
+    ]).output();
+
     push(format!("$ docker compose -f {} up", compose_file_str), LogLevel::Info);
 
     // Build the ManagedProcess start args through docker_compose_cmd so the

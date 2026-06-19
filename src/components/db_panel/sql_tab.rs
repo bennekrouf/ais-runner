@@ -25,6 +25,12 @@ pub fn SqlTab(props: SqlTabProps) -> Element {
     let mut dev_sql_result: Signal<Option<Result<String, String>>> = use_signal(|| None);
     let mut dev_sql_busy:   Signal<bool>                = use_signal(|| false);
 
+    // Status line for the "Copy shell command" button (item 6 in the
+    // batch-B bug report). Hoisted to component scope because Dioxus tracks
+    // hook call order — calling `use_signal` from inside an rsx block can
+    // panic at render time if rendering order isn't perfectly stable.
+    let mut shell_status: Signal<Option<String>> = use_signal(|| None);
+
     // ── Database tree ──────────────────────────────────────────────────
     // Vec<(db_name, Vec<(schema, table, row_count)>)>
     let mut db_tree: Signal<Vec<(String, Vec<(String, String, u64)>)>> = use_signal(Vec::new);
@@ -81,6 +87,52 @@ pub fn SqlTab(props: SqlTabProps) -> Element {
                 disabled: *tree_loading.read(),
                 onclick: move |_| refresh_tree(),
                 if *tree_loading.read() { "↻ …" } else { "↻ Refresh" }
+            }
+            // "Copy shell command" — auto-detects whether the container ships
+            // `mssql-tools` (legacy) or `mssql-tools18` (newer, needs -C) and
+            // copies a docker-exec command line the user can paste into their
+            // own terminal. Cross-platform safer than trying to spawn an
+            // interactive PTY from inside the GUI.
+            {
+                let status_text = shell_status.read().clone();
+                rsx! {
+                    button {
+                        class: "btn btn-small",
+                        style: "margin-left:6px; font-size:11px;",
+                        title: "Copy a docker-exec sqlcmd command line to the clipboard",
+                        onclick: move |_| {
+                            spawn(async move {
+                                match sql_runner::detect_sqlcmd_path().await {
+                                    Some((path, needs_c)) => {
+                                        let line = sql_runner::shell_command_line(&path, needs_c);
+                                        let copied = tokio::task::spawn_blocking(move || {
+                                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                                cb.set_text(line).is_ok()
+                                            } else { false }
+                                        }).await.unwrap_or(false);
+                                        let suffix = if needs_c { " (tools18)" } else { " (legacy tools)" };
+                                        shell_status.set(Some(if copied {
+                                            format!("📋 Copied{}", suffix)
+                                        } else {
+                                            format!("⚠ Detected{} — clipboard unavailable", suffix)
+                                        }));
+                                    }
+                                    None => shell_status.set(Some(
+                                        "⚠ sqlcmd not found in container — is SQL Dev running?".into()
+                                    )),
+                                }
+                                // Auto-clear after 3s so the button label doesn't stay
+                                // permanently in a transient state.
+                                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                                shell_status.set(None);
+                            });
+                        },
+                        "📋 Copy shell command"
+                    }
+                    if let Some(s) = status_text {
+                        span { style: "margin-left:8px; font-size:11px; color: var(--text2);", "{s}" }
+                    }
+                }
             }
         }
 
@@ -318,7 +370,31 @@ pub fn SqlTab(props: SqlTabProps) -> Element {
                     oninput: move |e| { dev_sql_input.set(e.value()); dev_sql_result.set(None); },
                 }
             }
-            div { style: "display:flex; justify-content:flex-end; margin-top:4px;",
+            div { style: "display:flex; justify-content:flex-end; gap:6px; margin-top:4px;",
+                button {
+                    class: "btn btn-small",
+                    title: "Load SQL from a .sql file on disk",
+                    onclick: move |_| {
+                        let picked = rfd::FileDialog::new()
+                            .add_filter("SQL", &["sql"])
+                            .add_filter("All files", &["*"])
+                            .pick_file();
+                        if let Some(path) = picked {
+                            match std::fs::read_to_string(&path) {
+                                Ok(contents) => {
+                                    dev_sql_input.set(contents);
+                                    dev_sql_result.set(None);
+                                }
+                                Err(e) => {
+                                    dev_sql_result.set(Some(Err(format!(
+                                        "Failed to read {}: {}", path.display(), e
+                                    ))));
+                                }
+                            }
+                        }
+                    },
+                    "📂 Import .sql"
+                }
                 button {
                     class: "btn btn-small btn-fetch",
                     disabled: *dev_sql_busy.read()

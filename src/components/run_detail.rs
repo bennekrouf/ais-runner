@@ -59,6 +59,12 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
 
     // Tracks which run blocks are currently collapsed (by run id).
     let mut collapsed_runs = use_signal(HashSet::<String>::new);
+    // "Failures only" toggle on the Run tab. When on, each run block hides
+    // every action except the first one with a failed/timedout/cancelled
+    // status — which is the action that actually caused the run to fail.
+    // Downstream-skipped actions are noise in a failure investigation, so
+    // collapsing them surfaces the real culprit in a single glance.
+    let mut failures_only = use_signal(|| false);
 
     // ── Payload popover ────────────────────────────────────────────────────
     let mut payload_open   = use_signal(|| false);
@@ -364,6 +370,25 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                         }
                     }
                     {
+                        let on = *failures_only.read();
+                        let cls = if on { "btn btn-small btn-toggle on" } else { "btn btn-small btn-toggle" };
+                        let tip = if on {
+                            "Showing only the first failed action per run — click to show every action."
+                        } else {
+                            "Hide downstream-skipped noise: show only the first failed action per run."
+                        };
+                        rsx! {
+                            Tooltip { text: "{tip}", direction: "bottom",
+                                button {
+                                    class: "{cls}",
+                                    disabled: *active_tab.read() != "Run",
+                                    onclick: move |_| failures_only.set(!on),
+                                    if on { "● Failures only" } else { "○ Failures only" }
+                                }
+                            }
+                        }
+                    }
+                    {
                         let run_ids: Vec<String> = props.runs.iter().map(|r| r.name.clone()).collect();
                         let all_collapsed = !run_ids.is_empty()
                             && run_ids.iter().all(|id| collapsed_runs.read().contains(id));
@@ -565,6 +590,7 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                             workflow: workflow_name.clone(),
                             on_select_run: props.on_select_run.clone(),
                             collapsed_runs: collapsed_runs,
+                            failures_only: *failures_only.read(),
                         }
                     }
                 }
@@ -799,6 +825,11 @@ struct RunBlockProps {
     workflow:       String,
     on_select_run:  EventHandler<String>,
     collapsed_runs: Signal<HashSet<String>>,
+    /// When true, the action list is filtered to just the first action whose
+    /// status indicates failure (failed / timedout / cancelled). Lets the
+    /// user pin down the culprit in a long action list without skipping past
+    /// downstream "skipped" noise.
+    failures_only:  bool,
 }
 
 #[component]
@@ -840,20 +871,52 @@ fn RunBlock(props: RunBlockProps) -> Element {
                 span { class: "{status_class}", "{props.run.properties.status}" }
                 span { "{run_id}" }
                 if let Some(start) = &props.run.properties.start_time {
-                    span { style: "margin-left:auto",
-                        "{&start[..19].replace('T', \" \")}"
+                    {
+                        // Render the run's start time in the user's local zone.
+                        // Logic Apps always reports UTC ("…Z") — without the
+                        // conversion the user sees a wall-clock that's offset
+                        // by their TZ and assumes the run hasn't happened yet.
+                        let label = crate::utils::fmt_utc_as_local(start);
+                        rsx! { span { style: "margin-left:auto", "{label}" } }
                     }
                 }
             }
             if !is_collapsed {
-                for action in props.actions.clone() {
-                    ActionRow {
-                        action: action,
-                        max_ms: props.max_ms,
-                        is_live: props.is_live,
-                        workflow: props.workflow.clone(),
-                        run_id: run_id.clone(),
-                        depth: 0,
+                {
+                    // Apply the "Failures only" filter: keep just the first
+                    // action whose status indicates a real failure (not
+                    // "skipped" — that's downstream noise we want to hide).
+                    // The Logic Apps action listing is execution-ordered, so
+                    // the first failure IS the root cause of the run failing.
+                    let visible: Vec<ActionItem> = if props.failures_only {
+                        props.actions.iter()
+                            .find(|a| matches!(
+                                a.properties.status.to_lowercase().as_str(),
+                                "failed" | "timedout" | "cancelled"
+                            ))
+                            .cloned().into_iter().collect()
+                    } else {
+                        props.actions.clone()
+                    };
+                    if props.failures_only && visible.is_empty() {
+                        rsx! {
+                            div { class: "failures-only-empty",
+                                "No failed action in this run."
+                            }
+                        }
+                    } else {
+                        rsx! {
+                            for action in visible {
+                                ActionRow {
+                                    action: action,
+                                    max_ms: props.max_ms,
+                                    is_live: props.is_live,
+                                    workflow: props.workflow.clone(),
+                                    run_id: run_id.clone(),
+                                    depth: 0,
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1044,6 +1107,66 @@ fn ActionRow(props: ActionRowProps) -> Element {
                 if *detail_loading.read() { "…" }
                 else if *detail_open.read() { "▲" }
                 else { "⋯" }
+            }
+            // ── download output ──────────────────────────────────────────
+            // Generic across every customer: derives format from the action's
+            // own schema (Table action with inputs.format=CSV → .csv, JSON
+            // bodies → .json, plain strings → .txt or .csv if shaped that way).
+            // Hidden for actions that ran but were `skipped`, since the body
+            // is empty in that case.
+            if !matches!(status_l.as_str(), "skipped" | "notspecified") {
+                {
+                    let wf   = props.workflow.clone();
+                    let rid  = props.run_id.clone();
+                    let name = props.action.name.clone();
+                    let atype_owned = props.action.properties.action_type.clone();
+                    rsx! {
+                        button {
+                            class: "btn-icon action-detail-btn",
+                            title: "Save this action's output to disk (auto-detects CSV / JSON / text)",
+                            onclick: move |_| {
+                                let wf2   = wf.clone();
+                                let rid2  = rid.clone();
+                                let name2 = name.clone();
+                                let at    = atype_owned.clone();
+                                spawn(async move {
+                                    let detail = match workflows::get_action_detail(&wf2, &rid2, &name2).await {
+                                        Ok(v)  => v,
+                                        Err(_) => return,
+                                    };
+                                    // Logic Apps's `Table` action puts the
+                                    // requested format under `properties.inputs.format`.
+                                    let req_fmt = detail
+                                        .pointer("/properties/inputs/format")
+                                        .and_then(|v| v.as_str())
+                                        .map(str::to_string);
+                                    let prep = crate::services::action_io::prepare_download(
+                                        &name2,
+                                        at.as_deref(),
+                                        req_fmt.as_deref(),
+                                        &detail,
+                                    );
+                                    let Some(prep) = prep else { return };
+                                    let filename = prep.suggested_filename.clone();
+                                    let bytes    = prep.bytes.clone();
+                                    let label    = prep.format.label().to_string();
+                                    let ext      = prep.format.extension().to_string();
+                                    tokio::task::spawn_blocking(move || {
+                                        if let Some(path) = rfd::FileDialog::new()
+                                            .set_title("Save action output")
+                                            .set_file_name(&filename)
+                                            .add_filter(&label, &[&ext])
+                                            .save_file()
+                                        {
+                                            let _ = std::fs::write(&path, &bytes);
+                                        }
+                                    }).await.ok();
+                                });
+                            },
+                            "💾"
+                        }
+                    }
+                }
             }
         }
         if let Some(msg) = error_msg {

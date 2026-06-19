@@ -155,7 +155,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
         div { class: "db-panel",
             // ── Header ──────────────────────────────────────────────────────
             div { class: "db-panel-header",
-                span { class: "db-panel-title", "🔌 Connections" }
+                span { class: "db-panel-title", "🔌 Connectors" }
                 div { style: "display:flex;gap:8px;align-items:center",
                     if *active_tab.read() != "blob" || !props.blob_connections.is_empty() {
                         button { class: "btn btn-run btn-small", onclick: on_save, "💾 Save" }

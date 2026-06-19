@@ -849,7 +849,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                 if sql_display.is_empty() {
                     div { class: "log-line",
                         span { class: "log-msg info", style: "opacity:0.45;font-style:italic",
-                            "No SQL Dev activity yet — use SQL Dev Console in Connections."
+                            "No SQL Dev activity yet — use SQL Dev Console in Connectors."
                         }
                     }
                 } else {
