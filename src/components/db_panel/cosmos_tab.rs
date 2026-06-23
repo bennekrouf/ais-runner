@@ -1,6 +1,259 @@
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
 use crate::services::cosmos_check::{self, CosmosConnection};
+use crate::services::cosmos_query;
+
+/// Per-connection query console — same UI as the ad-hoc one but the endpoint
+/// and key come from the connection's resolved values. We hold them as
+/// independent signals so the user can override per-query (e.g. point at the
+/// emulator for a quick check) without dirtying the saved settings.
+#[component]
+fn CosmosConnQueryConsole(endpoint_seed: String, account_key_seed: String, console_id: String) -> Element {
+    let endpoint:    Signal<String> = use_signal(|| endpoint_seed.clone());
+    let account_key: Signal<String> = use_signal(|| account_key_seed.clone());
+    rsx! {
+        CosmosQueryConsole { endpoint, account_key, console_id }
+    }
+}
+
+/// Reusable query-console UI used by both the ad-hoc Emulator card and each
+/// detected connection card. Owns its own state: db list, container list,
+/// query input, results. `console_id` namespaces the signals so two consoles
+/// in the same view don't collide.
+#[component]
+fn CosmosQueryConsole(
+    endpoint: Signal<String>,
+    account_key: Signal<String>,
+    console_id: String,
+) -> Element {
+    let mut dbs:        Signal<Vec<String>> = use_signal(Vec::new);
+    let mut dbs_busy:   Signal<bool>        = use_signal(|| false);
+    let mut dbs_status: Signal<Option<String>> = use_signal(|| None);
+    let mut db_sel:     Signal<String>      = use_signal(String::new);
+
+    let mut colls:      Signal<Vec<String>> = use_signal(Vec::new);
+    let mut colls_busy: Signal<bool>        = use_signal(|| false);
+    let mut coll_sel:   Signal<String>      = use_signal(String::new);
+
+    let mut query:      Signal<String>      = use_signal(|| "SELECT TOP 10 * FROM c".to_string());
+    let mut q_busy:     Signal<bool>        = use_signal(|| false);
+    let mut q_result:   Signal<Option<Result<String, String>>> = use_signal(|| None);
+
+    // Treat a value as "really selected" only when it matches a known entry
+    // in the loaded list. Webview select onchange has been observed to fire
+    // with the option's text content ("— select —") instead of its empty
+    // value attribute on some platforms — this guard catches that case so a
+    // ghost selection can't slip through to the REST call.
+    let normalize_sel = |raw: &str, options: &[String]| -> String {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.starts_with('—') { return String::new(); }
+        if options.iter().any(|o| o == trimmed) { trimmed.to_string() } else { String::new() }
+    };
+
+    let load_dbs = move |_| {
+        let ep = endpoint.read().clone();
+        let key = account_key.read().clone();
+        dbs_busy.set(true);
+        dbs_status.set(None);
+        spawn(async move {
+            match cosmos_query::list_databases(&ep, &key).await {
+                Ok(list) => {
+                    let n = list.len();
+                    dbs.set(list);
+                    // Reset any stale selection so the dropdown shows the
+                    // placeholder until the user picks from the fresh list.
+                    db_sel.set(String::new());
+                    coll_sel.set(String::new());
+                    colls.set(Vec::new());
+                    dbs_status.set(Some(if n == 0 {
+                        "⚠ Connected, but the account has no databases.".to_string()
+                    } else {
+                        format!("✅ Loaded {n} database(s).")
+                    }));
+                }
+                Err(e) => {
+                    dbs_status.set(Some(format!("❌ {e}")));
+                    q_result.set(Some(Err(format!("List databases failed: {e}"))));
+                }
+            }
+            dbs_busy.set(false);
+        });
+    };
+
+    let load_colls = move |_| {
+        let ep   = endpoint.read().clone();
+        let key  = account_key.read().clone();
+        let db_list = dbs.read().clone();
+        let db   = normalize_sel(&db_sel.read(), &db_list);
+        if db.is_empty() {
+            q_result.set(Some(Err(
+                "Pick a database from the dropdown before loading containers.".into(),
+            )));
+            return;
+        }
+        colls_busy.set(true);
+        spawn(async move {
+            match cosmos_query::list_containers(&ep, &key, &db).await {
+                Ok(list) => { colls.set(list); }
+                Err(e)   => { q_result.set(Some(Err(format!("List containers failed: {e}")))); }
+            }
+            colls_busy.set(false);
+        });
+    };
+
+    let run_q = move |_| {
+        let ep      = endpoint.read().clone();
+        let key     = account_key.read().clone();
+        let db_list = dbs.read().clone();
+        let cl_list = colls.read().clone();
+        let db   = normalize_sel(&db_sel.read(),  &db_list);
+        let coll = normalize_sel(&coll_sel.read(), &cl_list);
+        let q    = query.read().clone();
+        if db.is_empty() || coll.is_empty() || q.trim().is_empty() {
+            q_result.set(Some(Err(
+                "Pick a database and container, and enter a query, before running.".into(),
+            )));
+            return;
+        }
+        q_busy.set(true);
+        q_result.set(None);
+        spawn(async move {
+            let r = cosmos_query::run_query(&ep, &key, &db, &coll, &q).await
+                .and_then(|v| serde_json::to_string_pretty(&v).map_err(|e| e.to_string()));
+            q_result.set(Some(r));
+            q_busy.set(false);
+        });
+    };
+
+    let _ = console_id; // currently only used for visual diff in the DOM tree
+
+    rsx! {
+        div { class: "db-card-header", style: "margin-top:12px;",
+            span { class: "db-card-name", "Query Console" }
+        }
+
+        // ── Database picker ─────────────────────────────────────────────
+        div { class: "db-field-row",
+            label { class: "db-field-label", "Database" }
+            select {
+                class: "db-field-input",
+                value: "{db_sel.read()}",
+                onchange: move |e| {
+                    // Normalize against the loaded list before storing so the
+                    // placeholder option (or a webview-quirk text bubble-up)
+                    // never lands in db_sel as a literal "— select —".
+                    let raw = e.value();
+                    let dbs_list = dbs.read().clone();
+                    let cleaned = if raw.trim().is_empty() || raw.trim().starts_with('—')
+                        || !dbs_list.iter().any(|o| o == raw.trim())
+                    { String::new() } else { raw.trim().to_string() };
+                    db_sel.set(cleaned);
+                    colls.set(Vec::new());
+                    coll_sel.set(String::new());
+                },
+                // `disabled` keeps the placeholder visible as a label but
+                // prevents the user from re-selecting it after loading the
+                // real list, and stops some webview builds from re-emitting
+                // its textContent as the active value.
+                option { value: "", disabled: true, "— select —" }
+                for d in dbs.read().iter() {
+                    option { value: "{d}", "{d}" }
+                }
+            }
+            button {
+                class: "btn btn-small",
+                style: "flex-shrink:0;",
+                disabled: *dbs_busy.read(),
+                onclick: load_dbs,
+                if *dbs_busy.read() { "…" } else { "↻ Load" }
+            }
+        }
+        if let Some(status) = dbs_status.read().clone() {
+            div {
+                style: "font-size:11px; margin:2px 0 6px 110px; opacity:0.85;",
+                "{status}"
+            }
+        }
+
+        // ── Container picker ────────────────────────────────────────────
+        div { class: "db-field-row",
+            label { class: "db-field-label", "Container" }
+            select {
+                class: "db-field-input",
+                value: "{coll_sel.read()}",
+                onchange: move |e| {
+                    let raw = e.value();
+                    let cl = colls.read().clone();
+                    let cleaned = if raw.trim().is_empty() || raw.trim().starts_with('—')
+                        || !cl.iter().any(|o| o == raw.trim())
+                    { String::new() } else { raw.trim().to_string() };
+                    coll_sel.set(cleaned);
+                },
+                option { value: "", disabled: true, "— select —" }
+                for c in colls.read().iter() {
+                    option { value: "{c}", "{c}" }
+                }
+            }
+            button {
+                class: "btn btn-small",
+                style: "flex-shrink:0;",
+                disabled: *colls_busy.read() || db_sel.read().is_empty(),
+                onclick: load_colls,
+                if *colls_busy.read() { "…" } else { "↻ Load" }
+            }
+        }
+
+        // ── Query input ─────────────────────────────────────────────────
+        div { class: "db-field-row", style: "align-items:flex-start;",
+            label { class: "db-field-label", style: "padding-top:6px;", "Query" }
+            textarea {
+                class: "db-field-textarea",
+                style: "font-family:monospace; font-size:12px; min-height:80px;",
+                placeholder: "SELECT * FROM c WHERE c.id = '...'",
+                value: "{query.read()}",
+                oninput: move |e| { query.set(e.value()); q_result.set(None); },
+            }
+        }
+        div { style: "display:flex; justify-content:flex-end; margin-top:4px;",
+            button {
+                class: "btn btn-small btn-fetch",
+                disabled: *q_busy.read()
+                    || db_sel.read().is_empty()
+                    || coll_sel.read().is_empty()
+                    || query.read().trim().is_empty(),
+                onclick: run_q,
+                if *q_busy.read() { "Running…" } else { "▶ Run Query" }
+            }
+        }
+
+        {
+            let r = q_result.read();
+            match r.as_ref() {
+                Some(Ok(text)) => {
+                    let body = text.clone();
+                    rsx! {
+                        pre {
+                            class: "db-test-ok",
+                            style: "font-size:11px; white-space:pre-wrap; max-height:300px; overflow:auto; margin:4px 0 0;",
+                            "{body}"
+                        }
+                    }
+                }
+                Some(Err(e)) => {
+                    let body = e.clone();
+                    rsx! {
+                        pre {
+                            class: "db-test-error-detail",
+                            style: "font-size:11px; white-space:pre-wrap; max-height:300px; overflow:auto; margin:4px 0 0;",
+                            "{body}"
+                        }
+                    }
+                }
+                None => rsx! {},
+            }
+        }
+    }
+}
 
 #[derive(Props, Clone, PartialEq)]
 pub struct CosmosTabProps {
@@ -110,6 +363,12 @@ pub fn CosmosTab(props: CosmosTabProps) -> Element {
                 "Port 1234 is the data-explorer UI only — Logic Apps connects to "
                 code { "8081" } "."
             }
+
+            CosmosQueryConsole {
+                endpoint:    cosmos_adhoc_endpoint,
+                account_key: cosmos_adhoc_key,
+                console_id:  "adhoc".to_string(),
+            }
         }
 
         if !props.cosmos_connections.is_empty() {
@@ -213,6 +472,12 @@ pub fn CosmosTab(props: CosmosTabProps) -> Element {
                         div { class: "db-msi-note",
                             "After saving, restart func start. The emulator uses a self-signed cert — "
                             "Logic Apps Standard accepts it locally."
+                        }
+
+                        CosmosConnQueryConsole {
+                            endpoint_seed:    cosmos_edits.read().get(&conn.endpoint_key.clone().unwrap_or_default()).cloned().unwrap_or_else(|| conn.endpoint.clone()),
+                            account_key_seed: cosmos_edits.read().get(&conn.key_key.clone().unwrap_or_default()).cloned().unwrap_or_else(|| conn.account_key.clone()),
+                            console_id:       conn.connection_name.clone(),
                         }
                     }
                 }

@@ -222,7 +222,36 @@ pub fn FuncPanel(props: FuncPanelProps) -> Element {
                 }
 
                 // Resize handle — same id/JS as the workflow panel
-                div { id: "wf-resize-handle" }
+                div {
+                    id: "wf-resize-handle",
+                    onmousedown: move |e| {
+                        let start_x = e.client_coordinates().x;
+                        document::eval(&format!(r#"
+                            (function() {{
+                                var wp = document.getElementById('workflows'); if (!wp) return;
+                                var h  = document.getElementById('wf-resize-handle'); if (h) h.classList.add('dragging');
+                                var startX = {start_x};
+                                var startW = wp.getBoundingClientRect().width;
+                                document.body.style.cursor = 'ew-resize';
+                                document.body.style.userSelect = 'none';
+                                document.body.style.webkitUserSelect = 'none';
+                                var onMove = function(ev) {{
+                                    wp.style.width = Math.max(160, Math.min(520, startW + (ev.clientX - startX))) + 'px';
+                                }};
+                                var onUp = function() {{
+                                    if (h) h.classList.remove('dragging');
+                                    document.body.style.cursor = '';
+                                    document.body.style.userSelect = '';
+                                    document.body.style.webkitUserSelect = '';
+                                    document.removeEventListener('mousemove', onMove);
+                                    document.removeEventListener('mouseup', onUp);
+                                }};
+                                document.addEventListener('mousemove', onMove);
+                                document.addEventListener('mouseup', onUp);
+                            }})();
+                        "#));
+                    }
+                }
 
                 // Right: content
                 div { style: "flex:1; display:flex; flex-direction:column; overflow:hidden;",

@@ -375,23 +375,33 @@ pub fn SqlTab(props: SqlTabProps) -> Element {
                     class: "btn btn-small",
                     title: "Load SQL from a .sql file on disk",
                     onclick: move |_| {
-                        let picked = rfd::FileDialog::new()
-                            .add_filter("SQL", &["sql"])
-                            .add_filter("All files", &["*"])
-                            .pick_file();
-                        if let Some(path) = picked {
-                            match std::fs::read_to_string(&path) {
-                                Ok(contents) => {
-                                    dev_sql_input.set(contents);
-                                    dev_sql_result.set(None);
-                                }
-                                Err(e) => {
-                                    dev_sql_result.set(Some(Err(format!(
-                                        "Failed to read {}: {}", path.display(), e
-                                    ))));
+                        spawn(async move {
+                            let picked = rfd::AsyncFileDialog::new()
+                                .add_filter("SQL", &["sql"])
+                                .add_filter("All files", &["*"])
+                                .pick_file()
+                                .await;
+                            if let Some(handle) = picked {
+                                let path = handle.path().to_path_buf();
+                                let read = tokio::task::spawn_blocking(move || {
+                                    std::fs::read_to_string(&path).map_err(|e| (path, e))
+                                }).await;
+                                match read {
+                                    Ok(Ok(contents)) => {
+                                        dev_sql_input.set(contents);
+                                        dev_sql_result.set(None);
+                                    }
+                                    Ok(Err((path, e))) => {
+                                        dev_sql_result.set(Some(Err(format!(
+                                            "Failed to read {}: {}", path.display(), e
+                                        ))));
+                                    }
+                                    Err(e) => {
+                                        dev_sql_result.set(Some(Err(format!("Read task failed: {e}"))));
+                                    }
                                 }
                             }
-                        }
+                        });
                     },
                     "📂 Import .sql"
                 }

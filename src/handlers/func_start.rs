@@ -69,7 +69,8 @@ pub fn handle_start(
                 push("  ✅ Created missing package.json".into(), LogLevel::Ok);
             }
 
-            // 2. connections.json — fix ARM syntax + patch MSI → local equivalents.
+            // 2. connections.json — fix ARM syntax + patch MSI → local equivalents,
+            //    then apply connections.local.json (gitignored per-developer override).
             //    Done on every func start so the user never has to run Setup manually
             //    and the file is never committed in patched form (it reverts on git checkout).
             let conn_path = std::path::Path::new(&d).join("connections.json");
@@ -77,8 +78,34 @@ pub fn handle_start(
                 if let Ok(raw) = std::fs::read_to_string(&conn_path) {
                     let syntax_fixed = setup_manager::fix_connections_json(&raw);
                     let fully_fixed  = setup_manager::patch_connections_for_local(&syntax_fixed);
-                    if fully_fixed != raw {
-                        let _ = std::fs::write(&conn_path, &fully_fixed);
+                    // Layer connections.local.json on top of the auto-patched result.
+                    // Done as a JSON merge (not a string patch) so the override can
+                    // target individual fields without having to mirror the full file.
+                    let mut merged_value: serde_json::Value =
+                        serde_json::from_str(&fully_fixed).unwrap_or(serde_json::Value::Null);
+                    let dir_path = std::path::Path::new(&d);
+                    let local_applied = match crate::services::connections_local::load_overrides(dir_path) {
+                        Ok(Some(ov)) => {
+                            let touched = crate::services::connections_local::apply_overrides(&mut merged_value, &ov);
+                            let summary = crate::services::connections_local::override_summary(&ov);
+                            Some((touched, summary))
+                        }
+                        Ok(None) => None,
+                        Err(e) => {
+                            push(
+                                format!("  ⚠ connections.local.json present but invalid — skipped: {e}"),
+                                LogLevel::Warn,
+                            );
+                            None
+                        }
+                    };
+                    let final_text = if local_applied.is_some() {
+                        serde_json::to_string_pretty(&merged_value).unwrap_or(fully_fixed.clone())
+                    } else {
+                        fully_fixed.clone()
+                    };
+                    if final_text != raw {
+                        let _ = std::fs::write(&conn_path, &final_text);
                         let syntax_changed = syntax_fixed != raw;
                         let msi_changed    = fully_fixed != syntax_fixed;
                         if syntax_changed {
@@ -87,6 +114,23 @@ pub fn handle_start(
                         if msi_changed {
                             push("  ✅ Patched connections.json: MSI → local (AzureBlob → Azurite, ServiceBus → emulator)".into(), LogLevel::Ok);
                         }
+                        if let Some((touched, summary)) = local_applied {
+                            push(
+                                format!(
+                                    "  ✅ Applied connections.local.json — {touched} field(s) overridden \
+                                     ({sp} service-provider, {ma} managed-api connection(s) touched)",
+                                    sp = summary.service_provider, ma = summary.managed_api,
+                                ),
+                                LogLevel::Ok,
+                            );
+                        }
+                    } else if let Some((touched, _)) = local_applied {
+                        // Override loaded but ended up matching what's on disk —
+                        // still worth surfacing so users know it was honoured.
+                        push(
+                            format!("  ✓ connections.local.json applied ({touched} field(s) matched current state)"),
+                            LogLevel::Info,
+                        );
                     }
                 }
             }

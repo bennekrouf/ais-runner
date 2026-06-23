@@ -10,7 +10,8 @@
       "Bash(rtk cargo *)",
       "Bash(rtk read *)",
       "Bash(rtk find *)",
-      "Bash(rtk wc *)"
+      "Bash(rtk wc *)",
+      "Bash(find ~ -maxdepth 4 -name \"connections.json\" -not -path \"*/node_modules/*\" -not -path \"*/.cargo/*\" -not -path \"*/target/*\" 2>/dev/null | head -10)"
     ]
   }
 }

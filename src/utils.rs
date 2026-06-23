@@ -67,11 +67,19 @@ pub fn fmt_utc_as_local(rfc3339: &str) -> String {
 }
 
 /// Build a `push_log` closure that writes into a Dioxus signal.
+///
+/// Caps the buffer so a long-running session can't accumulate unbounded log
+/// lines and freeze the UI — the SB emulator alone can emit thousands of
+/// session-idle traces per hour.
 pub fn make_push(
     mut log_lines: dioxus::prelude::Signal<Vec<LogLine>>,
 ) -> impl FnMut(String, LogLevel) + 'static {
+    const MAX_LOG_LINES: usize = 2000;
     move |msg: String, level: LogLevel| {
-        log_lines.write().push(LogLine { time: now(), msg, level });
+        let mut w = log_lines.write();
+        w.push(LogLine { time: now(), msg, level });
+        let len = w.len();
+        if len > MAX_LOG_LINES { w.drain(..len - MAX_LOG_LINES); }
     }
 }
 

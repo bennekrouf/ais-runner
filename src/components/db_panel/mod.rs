@@ -156,6 +156,47 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
             // ── Header ──────────────────────────────────────────────────────
             div { class: "db-panel-header",
                 span { class: "db-panel-title", "🔌 Connectors" }
+                {
+                    // Local-override status: surface whether the developer has
+                    // a connections.local.json layered on top of the committed
+                    // connections.json. Helps explain "why is my local DB
+                    // working when the cloud one shouldn't?" at a glance, and
+                    // offers one-click scaffold+open when no override exists.
+                    let dir = std::path::Path::new(&props.logic_apps_dir).to_path_buf();
+                    let summary = crate::services::connections_local::load_overrides(&dir).ok().flatten()
+                        .map(|ov| crate::services::connections_local::override_summary(&ov));
+                    let dir_for_action = dir.clone();
+                    if let Some(s) = summary {
+                        let total = s.total();
+                        rsx! {
+                            span {
+                                class: "db-auth-badge cs",
+                                style: "margin-left:10px; font-size:11px;",
+                                title: "connections.local.json overrides are applied at func start. Click to open.",
+                                onclick: move |_| {
+                                    let p = dir_for_action.join(crate::services::connections_local::FILENAME);
+                                    crate::utils::open_in_editor(&p.to_string_lossy());
+                                },
+                                "📌 {total} local override(s)"
+                            }
+                        }
+                    } else {
+                        rsx! {
+                            button {
+                                class: "btn btn-small",
+                                style: "margin-left:10px; font-size:11px;",
+                                title: "Create connections.local.json next to connections.json, add it to .gitignore, and open it.",
+                                onclick: move |_| {
+                                    match crate::services::connections_local::scaffold_override_file(&dir_for_action) {
+                                        Ok(path) => crate::utils::open_in_editor(&path.to_string_lossy()),
+                                        Err(_) => {} // best effort — error surfaces in func start log
+                                    }
+                                },
+                                "📌 Setup local override"
+                            }
+                        }
+                    }
+                }
                 div { style: "display:flex;gap:8px;align-items:center",
                     if *active_tab.read() != "blob" || !props.blob_connections.is_empty() {
                         button { class: "btn btn-run btn-small", onclick: on_save, "💾 Save" }

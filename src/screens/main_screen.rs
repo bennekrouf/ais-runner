@@ -418,7 +418,10 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
         }
     });
 
-    use_effect(move || { document::eval(RESIZE_JS); });
+    // (Resize handles now use per-element Dioxus onmousedown — see below.
+    //  The previous global document.body delegate was removed because it
+    //  occasionally lost the mousedown after the workflow-filter input took
+    //  focus in some webview builds.)
 
     // Re-scan connector usage whenever the workflow list is refreshed.
     use_effect({
@@ -804,7 +807,40 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                             }
                         },
                     }
-                    div { id: "wf-resize-handle" }
+                    div {
+                        id: "wf-resize-handle",
+                        // Dioxus-native mousedown — survives re-renders triggered
+                        // by the workflow filter input. The previous global
+                        // document.body delegate occasionally lost events once
+                        // the input took focus on some webview versions.
+                        onmousedown: move |e| {
+                            let start_x = e.client_coordinates().x;
+                            document::eval(&format!(r#"
+                                (function() {{
+                                    var wp = document.getElementById('workflows'); if (!wp) return;
+                                    var h  = document.getElementById('wf-resize-handle'); if (h) h.classList.add('dragging');
+                                    var startX = {start_x};
+                                    var startW = wp.getBoundingClientRect().width;
+                                    document.body.style.cursor = 'ew-resize';
+                                    document.body.style.userSelect = 'none';
+                                    document.body.style.webkitUserSelect = 'none';
+                                    var onMove = function(ev) {{
+                                        wp.style.width = Math.max(160, Math.min(520, startW + (ev.clientX - startX))) + 'px';
+                                    }};
+                                    var onUp = function() {{
+                                        if (h) h.classList.remove('dragging');
+                                        document.body.style.cursor = '';
+                                        document.body.style.userSelect = '';
+                                        document.body.style.webkitUserSelect = '';
+                                        document.removeEventListener('mousemove', onMove);
+                                        document.removeEventListener('mouseup', onUp);
+                                    }};
+                                    document.addEventListener('mousemove', onMove);
+                                    document.addEventListener('mouseup', onUp);
+                                }})();
+                            "#));
+                        }
+                    }
                     RunDetail {
                         workflow:       selected_wf.read().clone(),
                         source_text:    source_text,
@@ -985,7 +1021,39 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                 }
             }
 
-            div { id: "log-resize-handle" }
+            div {
+                id: "log-resize-handle",
+                // Native Dioxus mousedown — same reasoning as wf-resize-handle:
+                // global delegated listeners on document.body can get clipped
+                // once a text input takes focus in some webview builds.
+                onmousedown: move |e| {
+                    let start_y = e.client_coordinates().y;
+                    document::eval(&format!(r#"
+                        (function() {{
+                            var lp = document.getElementById('log-panel'); if (!lp) return;
+                            var h  = document.getElementById('log-resize-handle'); if (h) h.classList.add('dragging');
+                            var startY = {start_y};
+                            var startH = lp.getBoundingClientRect().height;
+                            document.body.style.cursor = 'ns-resize';
+                            document.body.style.userSelect = 'none';
+                            document.body.style.webkitUserSelect = 'none';
+                            var onMove = function(ev) {{
+                                lp.style.height = Math.max(80, Math.min(Math.floor(window.innerHeight / 3), startH + (startY - ev.clientY))) + 'px';
+                            }};
+                            var onUp = function() {{
+                                if (h) h.classList.remove('dragging');
+                                document.body.style.cursor = '';
+                                document.body.style.userSelect = '';
+                                document.body.style.webkitUserSelect = '';
+                                document.removeEventListener('mousemove', onMove);
+                                document.removeEventListener('mouseup', onUp);
+                            }};
+                            document.addEventListener('mousemove', onMove);
+                            document.addEventListener('mouseup', onUp);
+                        }})();
+                    "#));
+                }
+            }
 
             LogPanel {
                 lines:         log_lines,
@@ -1349,42 +1417,5 @@ fn connections_button(
     }
 }
 
-// ── Resize JS ─────────────────────────────────────────────────────────────────
-
-const RESIZE_JS: &str = r#"
-(function() {
-    if (window.__ais_resize_init) return;
-    window.__ais_resize_init = true;
-    document.body.addEventListener('mousedown', function(e) {
-        var target = e.target;
-        if (!target) return;
-        if (target.id === 'log-resize-handle') {
-            e.preventDefault();
-            var lp = document.getElementById('log-panel'); if (!lp) return;
-            var startY = e.clientY, startH = lp.getBoundingClientRect().height;
-            target.classList.add('dragging');
-            document.body.style.cursor = 'ns-resize'; document.body.style.userSelect = 'none'; document.body.style.webkitUserSelect = 'none';
-            var onMove = function(ev) { lp.style.height = Math.max(80, Math.min(Math.floor(window.innerHeight / 3), startH + (startY - ev.clientY))) + 'px'; };
-            var onUp   = function() {
-                var h = document.getElementById('log-resize-handle'); if (h) h.classList.remove('dragging');
-                document.body.style.cursor = ''; document.body.style.userSelect = ''; document.body.style.webkitUserSelect = '';
-                document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp);
-            };
-            document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
-        } else if (target.id === 'wf-resize-handle') {
-            e.preventDefault();
-            var wp = document.getElementById('workflows'); if (!wp) return;
-            var startX = e.clientX, startW = wp.getBoundingClientRect().width;
-            target.classList.add('dragging');
-            document.body.style.cursor = 'ew-resize'; document.body.style.userSelect = 'none'; document.body.style.webkitUserSelect = 'none';
-            var onMove2 = function(ev) { wp.style.width = Math.max(160, Math.min(520, startW + (ev.clientX - startX))) + 'px'; };
-            var onUp2   = function() {
-                var h = document.getElementById('wf-resize-handle'); if (h) h.classList.remove('dragging');
-                document.body.style.cursor = ''; document.body.style.userSelect = ''; document.body.style.webkitUserSelect = '';
-                document.removeEventListener('mousemove', onMove2); document.removeEventListener('mouseup', onUp2);
-            };
-            document.addEventListener('mousemove', onMove2); document.addEventListener('mouseup', onUp2);
-        }
-    });
-})();
-"#;
+// Resize handles wire up their own mousedown via Dioxus `onmousedown` —
+// see the rsx! blocks above. No global JS is needed any more.

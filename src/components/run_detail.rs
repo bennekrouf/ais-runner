@@ -581,16 +581,28 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                     if props.runs.is_empty() {
                         div { class: "empty-state", "No runs yet. Click ▶ to trigger the workflow." }
                     }
-                    for run in props.runs.clone() {
-                        RunBlock {
-                            run: run,
-                            actions: props.actions.clone(),
-                            max_ms: max_ms,
-                            is_live: props.is_live,
-                            workflow: workflow_name.clone(),
-                            on_select_run: props.on_select_run.clone(),
-                            collapsed_runs: collapsed_runs,
-                            failures_only: *failures_only.read(),
+                    {
+                        // Pre-scan the workflow-filtered logs once per render
+                        // to build `action_name → error message`. ActionRow
+                        // reads from this when the management API returns
+                        // NotSpecified — the actual ParseJson/Compose error
+                        // string only appears in the Functions host stdout
+                        // that we've already captured here.
+                        let action_log_errors = build_action_error_map(&props.logs);
+                        rsx! {
+                            for run in props.runs.clone() {
+                                RunBlock {
+                                    run: run,
+                                    actions: props.actions.clone(),
+                                    max_ms: max_ms,
+                                    is_live: props.is_live,
+                                    workflow: workflow_name.clone(),
+                                    on_select_run: props.on_select_run.clone(),
+                                    collapsed_runs: collapsed_runs,
+                                    failures_only: *failures_only.read(),
+                                    action_log_errors: action_log_errors.clone(),
+                                }
+                            }
                         }
                     }
                 }
@@ -830,6 +842,11 @@ struct RunBlockProps {
     /// user pin down the culprit in a long action list without skipping past
     /// downstream "skipped" noise.
     failures_only:  bool,
+    /// Pre-computed `action_name → error message` map, scraped from the
+    /// Functions host stdout that this run produced. Used as the fallback
+    /// when the Logic Apps management API returns NotSpecified — the real
+    /// ParseJson / Compose / expression-failure text only appears in stdout.
+    action_log_errors: HashMap<String, String>,
 }
 
 #[component]
@@ -907,13 +924,20 @@ fn RunBlock(props: RunBlockProps) -> Element {
                     } else {
                         rsx! {
                             for action in visible {
-                                ActionRow {
-                                    action: action,
-                                    max_ms: props.max_ms,
-                                    is_live: props.is_live,
-                                    workflow: props.workflow.clone(),
-                                    run_id: run_id.clone(),
-                                    depth: 0,
+                                {
+                                    let log_err = props.action_log_errors.get(&action.name).cloned();
+                                    rsx! {
+                                        ActionRow {
+                                            action: action,
+                                            max_ms: props.max_ms,
+                                            is_live: props.is_live,
+                                            workflow: props.workflow.clone(),
+                                            run_id: run_id.clone(),
+                                            depth: 0,
+                                            log_error: log_err,
+                                            action_log_errors: props.action_log_errors.clone(),
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -921,6 +945,280 @@ fn RunBlock(props: RunBlockProps) -> Element {
                 }
             }
         }
+    }
+}
+
+// ── Failed-action message extraction ──────────────────────────────────────
+//
+// The action listing endpoint omits `properties.error` for some failure
+// modes — most notably ParseJson, where the runtime stuffs the actual
+// schema-mismatch message into the outputs blob instead. We probe a handful
+// of well-known paths in the expanded action detail and return the first
+// non-empty string we find. Order is deliberate: top-level error first,
+// then outputs.body.error (the ParseJson shape), then any nested message.
+fn extract_error_from_detail(v: &serde_json::Value) -> Option<String> {
+    // Paths checked, in priority order, against the detail object returned
+    // by `get_action_detail` (which has already inlined inputs/outputs).
+    const PATHS: &[&str] = &[
+        "/properties/error/message",
+        "/properties/outputs/body/error/message",
+        "/properties/outputs/body/message",
+        "/properties/outputs/error/message",
+        "/properties/outputs/message",
+        "/error/message",
+    ];
+    for p in PATHS {
+        if let Some(s) = v.pointer(p).and_then(|x| x.as_str()) {
+            let s = s.trim();
+            if !s.is_empty() { return Some(s.to_string()); }
+        }
+    }
+    // Fallback: if outputs.body is itself a JSON-encoded string from a
+    // ParseJson failure, the message may be the body text directly.
+    if let Some(s) = v.pointer("/properties/outputs/body").and_then(|x| x.as_str()) {
+        let s = s.trim();
+        if !s.is_empty() { return Some(s.to_string()); }
+    }
+    // Last resort: surface the error code so the user at least sees *what*
+    // kind of failure it was rather than a silent red row. The runtime puts
+    // the code at one of two paths depending on the action type — Foreach
+    // and Scope put it at properties.code, leaf actions at properties.error.code.
+    let code = v.pointer("/properties/error/code")
+        .or_else(|| v.pointer("/properties/code"))
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    code.map(|c| {
+        // "NotSpecified" by itself is unhelpful, but it means different things
+        // depending on the action type — Logic Apps stamps it on scope-type
+        // actions (Foreach / Scope / Until / If) when a child action failed,
+        // and on expression-evaluation actions like ParseJson / Compose /
+        // Set variable when schema validation or template parsing fails.
+        // For the latter the runtime intentionally does NOT attach the
+        // message to the action record — it goes to the Functions host
+        // stdout instead (known Logic Apps Standard limitation). Tell the
+        // user where to look so they don't think this is an ais-runner bug.
+        let atype = v.pointer("/properties/type")
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        let is_scope = matches!(atype, "Foreach" | "Scope" | "Until" | "If");
+        let is_expr  = matches!(atype, "ParseJson" | "Compose" | "InitializeVariable"
+                              | "SetVariable" | "AppendToStringVariable" | "AppendToArrayVariable"
+                              | "IncrementVariable" | "DecrementVariable");
+        if c.eq_ignore_ascii_case("NotSpecified") && is_scope {
+            format!("{c} — a child action failed; expand to see which.")
+        } else if c.eq_ignore_ascii_case("NotSpecified") && is_expr {
+            format!(
+                "{c} — Logic Apps Standard does not expose {atype} errors via API. \
+                 Check the func start console (Logs → console) for the schema/expression message."
+            )
+        } else if c.eq_ignore_ascii_case("NotSpecified") {
+            format!(
+                "{c} — runtime did not attach a message. \
+                 Check the func start console for action-level errors."
+            )
+        } else {
+            c.to_string()
+        }
+    })
+}
+
+#[cfg(test)]
+mod extract_error_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn picks_top_level_error_message_first() {
+        let v = json!({
+            "properties": {
+                "error": { "message": "top-level", "code": "X" },
+                "outputs": { "body": { "error": { "message": "deeper" } } },
+            }
+        });
+        assert_eq!(extract_error_from_detail(&v).as_deref(), Some("top-level"));
+    }
+
+    #[test]
+    fn falls_through_to_outputs_body_error_for_parsejson_shape() {
+        let v = json!({
+            "properties": {
+                "outputs": {
+                    "body": { "error": { "message": "Invalid type. Expected Integer but got String." } }
+                }
+            }
+        });
+        assert_eq!(
+            extract_error_from_detail(&v).as_deref(),
+            Some("Invalid type. Expected Integer but got String."),
+        );
+    }
+
+    #[test]
+    fn falls_back_to_code_when_no_message_found() {
+        let v = json!({ "properties": { "error": { "code": "BadRequest" } } });
+        assert_eq!(extract_error_from_detail(&v).as_deref(), Some("BadRequest"));
+    }
+
+    #[test]
+    fn falls_back_to_top_level_properties_code() {
+        // For_each_page shape: code is at properties.code, no error object.
+        let v = json!({ "properties": { "status": "Failed", "code": "ActionFailed" } });
+        assert_eq!(extract_error_from_detail(&v).as_deref(), Some("ActionFailed"));
+    }
+
+    #[test]
+    fn notspecified_on_scope_is_annotated_with_child_hint() {
+        let v = json!({
+            "properties": { "status": "Failed", "code": "NotSpecified", "type": "Foreach" }
+        });
+        let msg = extract_error_from_detail(&v).unwrap();
+        assert!(msg.contains("NotSpecified"));
+        assert!(msg.contains("child"), "expected child-action hint, got: {msg}");
+    }
+
+    #[test]
+    fn notspecified_on_parsejson_points_at_func_console() {
+        let v = json!({
+            "properties": { "status": "Failed", "code": "NotSpecified", "type": "ParseJson" }
+        });
+        let msg = extract_error_from_detail(&v).unwrap();
+        assert!(msg.contains("ParseJson"), "expected action type in hint, got: {msg}");
+        assert!(msg.contains("func start") || msg.contains("console"),
+                "expected console hint, got: {msg}");
+    }
+
+    #[test]
+    fn returns_none_when_no_error_information_present() {
+        let v = json!({ "properties": { "status": "Succeeded" } });
+        assert_eq!(extract_error_from_detail(&v), None);
+    }
+}
+
+// ── Log-derived action error extraction ───────────────────────────────────
+//
+// Logic Apps Standard does not write ParseJson / Compose / expression-evaluation
+// failures to the management API — they only appear in the Functions host
+// stdout. We've already captured that stdout in `log_lines`; this builds a
+// per-action lookup so the action row can show the real error inline.
+//
+// Heuristic: walk the workflow-filtered log lines (already pre-filtered in
+// RunDetail to those mentioning the workflow name), find ones that mention
+// any action name *and* an error keyword, and keep the most recent match per
+// action. Tolerant by design — every Logic Apps runtime version phrases the
+// failure line slightly differently ("Action 'X' failed:", "action='X' …
+// Exception:", schema-validation lines that name the action somewhere in the
+// middle of the message, etc.).
+fn build_action_error_map(logs: &[LogLine]) -> HashMap<String, String> {
+    let mut out: HashMap<String, String> = HashMap::new();
+    // Walk newest first so the latest matching line wins per action. The
+    // earlier lines are the "starting…" / "evaluating…" traces we don't want.
+    for line in logs.iter().rev() {
+        if let Some((action, msg)) = parse_action_error_line(&line.msg) {
+            out.entry(action).or_insert(msg);
+        }
+    }
+    out
+}
+
+/// Try to pull out (action_name, error_message) from a single log line.
+/// Returns `None` if the line doesn't look like an action-level failure.
+fn parse_action_error_line(line: &str) -> Option<(String, String)> {
+    let lower = line.to_lowercase();
+    // Filter: must mention an error/failure keyword. Pure "info" lines about
+    // an action's success don't make it into the map.
+    let has_err_keyword = lower.contains("failed")
+        || lower.contains("error")
+        || lower.contains("exception")
+        || lower.contains("invalid")
+        || lower.contains("schema validation");
+    if !has_err_keyword { return None; }
+
+    // Most Logic Apps runtime error lines name the action in single quotes,
+    // e.g. "Action 'Restrictive_Parse_JSON' failed: ..." or
+    // "action 'X' status 'Failed'. Exception: ...". Use the single-quoted
+    // token immediately after the word "action" as a strong signal.
+    let action = extract_quoted_after(line, "action");
+    let action = action.or_else(|| extract_quoted_after(line, "Action"));
+    let action = action?;
+
+    // Trim known fluff to surface the bit the user actually cares about.
+    let msg = clean_action_error_message(line, &action);
+    if msg.trim().is_empty() { return None; }
+    Some((action, msg))
+}
+
+/// Find the first single-quoted substring that follows a marker word.
+/// Returns the inner text (without the quotes). Case-sensitive on the marker.
+fn extract_quoted_after(line: &str, marker: &str) -> Option<String> {
+    let idx = line.find(marker)?;
+    let tail = &line[idx + marker.len()..];
+    let q1 = tail.find('\'')?;
+    let after_q1 = &tail[q1 + 1..];
+    let q2 = after_q1.find('\'')?;
+    let inner = &after_q1[..q2];
+    if inner.is_empty() { None } else { Some(inner.to_string()) }
+}
+
+/// Cut the action-error line down to the part the user cares about: take
+/// everything after "<action>'" so the leading "Action 'X'" boilerplate is
+/// dropped. If no obvious cut point exists, return the raw line.
+fn clean_action_error_message(line: &str, action: &str) -> String {
+    let needle = format!("'{}'", action);
+    if let Some(i) = line.find(&needle) {
+        let after = &line[i + needle.len()..];
+        // Strip leading punctuation/spaces — ":" / "." / " " / ","
+        let trimmed = after.trim_start_matches(|c: char|
+            c.is_whitespace() || c == ':' || c == '.' || c == ',' || c == '-'
+        );
+        if !trimmed.is_empty() { return trimmed.to_string(); }
+    }
+    line.trim().to_string()
+}
+
+#[cfg(test)]
+mod log_scrape_tests {
+    use super::*;
+    use crate::components::log_panel::LogLevel;
+
+    fn mk(msg: &str) -> LogLine {
+        LogLine { time: "00:00:00".into(), msg: msg.into(), level: LogLevel::Error }
+    }
+
+    #[test]
+    fn picks_parsejson_validation_message_from_runtime_log() {
+        let logs = vec![mk(
+            "[2026-06-19T20:31:02Z] Action 'Restrictive_Parse_JSON' failed: \
+             Invalid type. Expected Integer but got String at #/properties/age",
+        )];
+        let m = build_action_error_map(&logs);
+        let v = m.get("Restrictive_Parse_JSON").unwrap();
+        assert!(v.contains("Invalid type"), "got: {v}");
+        assert!(v.contains("#/properties/age"), "got: {v}");
+    }
+
+    #[test]
+    fn ignores_success_lines_even_if_they_name_the_action() {
+        let logs = vec![mk("Action 'X' completed successfully")];
+        assert!(build_action_error_map(&logs).is_empty());
+    }
+
+    #[test]
+    fn most_recent_line_per_action_wins() {
+        let logs = vec![
+            mk("Action 'X' failed: first try"),
+            mk("Action 'X' failed: retry attempt"),
+        ];
+        // We walk newest-first; the SECOND entry is newer in the vec, so it wins.
+        let m = build_action_error_map(&logs);
+        assert!(m.get("X").unwrap().contains("retry attempt"));
+    }
+
+    #[test]
+    fn skips_lines_that_dont_name_an_action_in_quotes() {
+        let logs = vec![mk("[ERROR] something failed somewhere")];
+        assert!(build_action_error_map(&logs).is_empty());
     }
 }
 
@@ -968,6 +1266,15 @@ struct ActionRowProps {
     workflow: String,
     run_id:   String,
     depth:    u8,
+    /// Pre-resolved log-scraped error for this action, if any. Comes from
+    /// the parent's `action_log_errors` map; this row receives just its own
+    /// slot so child rendering doesn't re-do the lookup.
+    #[props(default)]
+    log_error: Option<String>,
+    /// Full map, so recursively-rendered child actions (inside scopes,
+    /// for-each iterations, etc.) can look up their own log error.
+    #[props(default)]
+    action_log_errors: HashMap<String, String>,
 }
 
 #[component]
@@ -981,6 +1288,18 @@ fn ActionRow(props: ActionRowProps) -> Element {
     let mut detail_open    = use_signal(|| false);
     let mut detail_loading = use_signal(|| false);
     let mut detail_json    = use_signal(|| String::new());
+
+    // Background-fetched error message for actions whose listing doesn't
+    // carry `properties.error` (notably ParseJson failures — the runtime
+    // returns `code: "BadRequest"` on the action row but pushes the actual
+    // "Invalid type. Expected … but got …" message into the outputs blob).
+    // Triggered by the use_effect below only when the inline error is empty.
+    let mut fetched_error: Signal<Option<String>> = use_signal(|| None);
+    let mut error_fetched: Signal<bool>           = use_signal(|| false);
+    // For failed actions where extraction came up empty, surface the raw
+    // properties object so the user can copy-paste it for diagnosis — we
+    // can't iterate on the extractor without seeing the real shape.
+    let mut fallback_dump: Signal<Option<String>> = use_signal(|| None);
 
     let status_l = props.action.properties.status.to_lowercase();
     let is_running = props.is_live && !matches!(status_l.as_str(),
@@ -1013,10 +1332,68 @@ fn ActionRow(props: ActionRowProps) -> Element {
     let icon_class  = if is_running { "action-icon spin" } else { "action-icon" };
     let indent_px   = props.depth as u32 * 18;
 
-    let error_msg = props.action.properties.error.as_ref().and_then(|e| {
+    let inline_error = props.action.properties.error.as_ref().and_then(|e| {
         // Prefer message; fall back to code so skipped-reason is always visible
         e.message.clone().or_else(|| e.code.clone())
     });
+
+    // For terminal-failed actions with no inline error (ParseJson and a few
+    // other expression-evaluation failures), fetch the action detail in the
+    // background and pull the real message out of the outputs blob. Runs once
+    // per action — gated by `error_fetched` so a re-render doesn't restart it.
+    {
+        let inline_empty = inline_error.is_none();
+        let is_failed = matches!(status_l.as_str(), "failed" | "timedout");
+        let wf  = props.workflow.clone();
+        let rid = props.run_id.clone();
+        let name  = props.action.name.clone();
+        // The Logic Apps detail endpoint strips `properties.type` on scope
+        // actions, but the listing has it — pass it through so the helper
+        // can recognise Foreach/Scope/Until/If and annotate the "NotSpecified"
+        // fallback with the "expand to see which child failed" hint.
+        let atype = props.action.properties.action_type.clone();
+        use_effect(move || {
+            if !is_failed || !inline_empty { return; }
+            if *error_fetched.read() { return; }
+            error_fetched.set(true);
+            let wf2 = wf.clone();
+            let rid2 = rid.clone();
+            let name2 = name.clone();
+            let atype2 = atype.clone();
+            spawn(async move {
+                if let Ok(mut detail) = workflows::get_action_detail(&wf2, &rid2, &name2).await {
+                    if let Some(t) = atype2 {
+                        if let Some(p) = detail.pointer_mut("/properties").and_then(|v| v.as_object_mut()) {
+                            p.entry("type".to_string())
+                                .or_insert_with(|| serde_json::Value::String(t));
+                        }
+                    }
+                    let extracted = extract_error_from_detail(&detail);
+                    // Diagnostic dump only when extraction returned NOTHING
+                    // at all — for the known runtime-limitation cases we
+                    // already explain in the message itself, and the JSON
+                    // dump just adds noise.
+                    if extracted.is_none() {
+                        if let Some(props) = detail.get("properties") {
+                            let dump = serde_json::to_string_pretty(props)
+                                .unwrap_or_else(|_| props.to_string());
+                            fallback_dump.set(Some(dump));
+                        }
+                    }
+                    if let Some(msg) = extracted {
+                        fetched_error.set(Some(msg));
+                    }
+                }
+            });
+        });
+    }
+
+    // Priority: API-attached error → log-scraped error (covers the ParseJson
+    // and friends case where the runtime doesn't write `properties.error`) →
+    // the fetched fallback ("NotSpecified — check the func start console").
+    let error_msg = inline_error
+        .or_else(|| props.log_error.clone())
+        .or_else(|| fetched_error.read().clone());
 
     let child_max_ms = {
         let c = children.read();
@@ -1172,6 +1549,17 @@ fn ActionRow(props: ActionRowProps) -> Element {
         if let Some(msg) = error_msg {
             div { class: "{err_class}", style: "padding-left:{indent_px}px", "{msg}" }
         }
+        // Diagnostic dump for failures where extraction came up thin —
+        // shows the raw `properties` object so the user can copy-paste it.
+        // Auto-shown only when fetched_error is the fallback variant; the
+        // user can always still hit the ⋯ button to see the full action JSON.
+        if let Some(dump) = fallback_dump.read().clone() {
+            pre {
+                class: "action-detail-pre",
+                style: "padding-left:{indent_px}px; font-size:11px; max-height:240px; overflow:auto;",
+                "{dump}"
+            }
+        }
         if *detail_open.read() {
             {
                 let raw = detail_json.read().clone();
@@ -1192,13 +1580,20 @@ fn ActionRow(props: ActionRowProps) -> Element {
         }
         if *expanded.read() {
             for child in children.read().clone() {
-                ActionRow {
-                    action: child,
-                    max_ms: child_max_ms,
-                    is_live: props.is_live,
-                    workflow: props.workflow.clone(),
-                    run_id: props.run_id.clone(),
-                    depth: props.depth + 1,
+                {
+                    let child_log_err = props.action_log_errors.get(&child.name).cloned();
+                    rsx! {
+                        ActionRow {
+                            action: child,
+                            max_ms: child_max_ms,
+                            is_live: props.is_live,
+                            workflow: props.workflow.clone(),
+                            run_id: props.run_id.clone(),
+                            depth: props.depth + 1,
+                            log_error: child_log_err,
+                            action_log_errors: props.action_log_errors.clone(),
+                        }
+                    }
                 }
             }
         }

@@ -14,6 +14,8 @@ pub mod sftp_check;
 pub mod connection_diag;
 pub mod blob_check;
 pub mod cosmos_check;
+pub mod cosmos_query;
+pub mod connections_local;
 pub mod azure_sync;
 pub mod env_mode;
 pub mod setup_manager;
