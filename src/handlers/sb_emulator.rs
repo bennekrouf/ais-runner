@@ -273,13 +273,18 @@ networks:
         effective_queues.push(("ais.default".to_string(), false));
     }
 
+    // LockDuration: PT5M (5 minutes) — generous default for local cold-start runs.
+    // Logic Apps consumers commonly need >1 min for the first invocation
+    // (function host JIT + child-workflow warmup + SQL roundtrips), producing
+    // confusing MessageLockLost errors at the default PT1M. Real production
+    // queues should tune this per workflow; PT5M is a safe local default.
     let queue_entries: String = effective_queues.iter().map(|(q, session)| format!(
         r#"          {{
             "Name": "{q}",
             "Properties": {{
               "DeadLetteringOnMessageExpiration": false,
               "DefaultMessageTimeToLive": "PT1H",
-              "LockDuration": "PT1M",
+              "LockDuration": "PT5M",
               "MaxDeliveryCount": 10,
               "RequiresDuplicateDetection": false,
               "RequiresSession": {session}
