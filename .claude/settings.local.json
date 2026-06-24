@@ -11,7 +11,16 @@
       "Bash(rtk read *)",
       "Bash(rtk find *)",
       "Bash(rtk wc *)",
-      "Bash(find ~ -maxdepth 4 -name \"connections.json\" -not -path \"*/node_modules/*\" -not -path \"*/.cargo/*\" -not -path \"*/target/*\" 2>/dev/null | head -10)"
+      "Bash(find ~ -maxdepth 4 -name \"connections.json\" -not -path \"*/node_modules/*\" -not -path \"*/.cargo/*\" -not -path \"*/target/*\" 2>/dev/null | head -10)",
+      "Bash(rtk ps *)",
+      "Bash(awk 'NR==1 || $4>1.0')",
+      "Bash(sort -k4 -nr)",
+      "Bash(awk 'NR>1 {$3=$3/1024; print}')",
+      "Bash(sort -k3 -nr)",
+      "Bash(python3 -c ' *)",
+      "Bash(rtk curl *)",
+      "Bash(curl -s \"http://localhost:7071/runtime/webhooks/workflow/api/management/workflows/Rcv-Event-Pivot\")",
+      "Bash(curl -s \"http://localhost:7071/runtime/webhooks/workflow/api/management/workflows/Read-JDE-COA/runs\")"
     ]
   }
 }

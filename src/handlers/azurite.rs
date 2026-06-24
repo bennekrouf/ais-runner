@@ -55,7 +55,7 @@ pub fn handle_start(
         }).await.unwrap_or_else(|_| ("azurite".into(), "/tmp/azurite".into(), "/tmp/azurite/debug.log".into()));
 
         make_push(log_lines)(
-            format!("$ {} --location {} --debug {} --skipApiVersionCheck", az_bin, az_dir_s, az_log_s),
+            format!("$ {} --location {} --debug {} --skipApiVersionCheck --loose", az_bin, az_dir_s, az_log_s),
             LogLevel::Info,
         );
 
@@ -67,9 +67,13 @@ pub fn handle_start(
             let bin   = az_bin.clone();
             let dir_s = az_dir_s.clone();
             let log_s = az_log_s.clone();
+            // --loose: relax strict request validation. Workflow engines (Logic
+            // Apps / Durable Task) sometimes emit non-standard storage headers
+            // that strict Azurite rejects with 400/500, which surfaces as
+            // "workflow stuck/hanging" rather than a clear error.
             move || proc_arc.start(
                 &bin,
-                &["--location", &dir_s, "--debug", &log_s, "--skipApiVersionCheck"],
+                &["--location", &dir_s, "--debug", &log_s, "--skipApiVersionCheck", "--loose"],
                 None,
             )
         }).await;

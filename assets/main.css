@@ -1563,7 +1563,9 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
     display: flex;
     flex-direction: column;
     background: var(--bg0);
-    max-height: 33vh;
+    height: 25vh;
+    min-height: 80px;
+    max-height: 60vh;
 }
 #log-header {
     display: flex;

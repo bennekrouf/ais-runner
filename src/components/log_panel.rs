@@ -252,6 +252,7 @@ fn az_split(line: &str) -> (&str, &str) {
 #[derive(Props, Clone, PartialEq)]
 pub struct LogPanelProps {
     pub lines:        Signal<Vec<LogLine>>,
+    pub az_lines:     Signal<Vec<String>>,
     pub sb_emu_lines: Signal<Vec<String>>,
     pub java_lines:    Signal<Vec<String>>,
     pub sql_dev_lines: Signal<Vec<String>>,
@@ -264,7 +265,10 @@ pub struct LogPanelProps {
 #[component]
 pub fn LogPanel(props: LogPanelProps) -> Element {
     let mut active_tab = use_signal(|| "console");
-    let mut az_lines: Signal<Vec<String>> = use_signal(Vec::new);
+    // az_lines is owned by the parent screen so RunDetail can render storage
+    // events inline next to actions. The tail-debug.log coroutine below still
+    // lives here — it writes into the shared Signal.
+    let mut az_lines: Signal<Vec<String>> = props.az_lines;
     let mut sb_emu_lines = props.sb_emu_lines;
     let mut java_lines    = props.java_lines;
     let mut sql_dev_lines = props.sql_dev_lines;

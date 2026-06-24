@@ -7,3 +7,4 @@ pub mod java;
 pub mod setup;
 pub mod workflow_select;
 pub mod workflow_run;
+pub mod debug_mode;

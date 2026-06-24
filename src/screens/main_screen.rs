@@ -25,7 +25,7 @@ use crate::services::{
     workflows::{self, WorkflowItem},
 };
 use crate::utils::make_push;
-use crate::handlers::{azurite, cosmos_emulator, func_start, sb_emulator, sql_emulator, setup, workflow_select, workflow_run};
+use crate::handlers::{azurite, cosmos_emulator, debug_mode, func_start, sb_emulator, sql_emulator, setup, workflow_select, workflow_run};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct MainScreenProps {
@@ -77,6 +77,9 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     let sb_emu_lines:    Signal<Vec<String>> = use_signal(Vec::new);
     let java_func_lines: Signal<Vec<String>> = use_signal(Vec::new);
     let mut sql_dev_lines:   Signal<Vec<String>> = use_signal(Vec::new);
+    // Azurite debug.log lines, tailed by LogPanel and read by RunDetail to
+    // render storage events inside each run block.
+    let az_lines:        Signal<Vec<String>> = use_signal(Vec::new);
 
     // resolve_logic_apps_dir may descend into a logic_apps/ subfolder,
     // so derive func_apps_dir from the resolved path's parent (the platform
@@ -104,6 +107,8 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     let mut traced_wfs  = use_signal(|| HashSet::<String>::new());
     let mut cleared_wfs = use_signal(|| HashMap::<String, String>::new());
     let mut last_ran: Signal<HashMap<String, u64>> = use_signal(HashMap::new);
+    let mut debug_mode_on = use_signal(|| false);
+    let mut debug_mode_count = use_signal(|| 0usize);
     let mut auto_watch  = use_signal(|| true);
     // Track which views have been opened — panels are lazy-mounted on first visit
     // but stay in the DOM afterwards so their state (caches, signals) survives tab switches.
@@ -115,6 +120,29 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
 
     // ── Log ────────────────────────────────────────────────────────────────
     let mut log_lines = use_signal(|| Vec::<LogLine>::new());
+
+    // Debug-mode startup: revert any patches left from a previous crashed
+    // session before the user does anything else.
+    use_effect({
+        let dir = dir.clone();
+        move || {
+            let d = dir.clone();
+            spawn(async move {
+                let mut push = crate::utils::make_push(log_lines);
+                let out = tokio::task::spawn_blocking(move || debug_mode::cleanup_orphans(&d))
+                    .await.unwrap_or_else(|_| debug_mode::RevertOutcome { reverted: vec![], skipped: vec![] });
+                if !out.reverted.is_empty() {
+                    push(format!("🐞 Debug mode: cleaned up {} orphan patch(es) from a previous session: {}",
+                        out.reverted.len(), out.reverted.join(", ")),
+                        crate::components::log_panel::LogLevel::Warn);
+                }
+                for (name, why) in out.skipped {
+                    push(format!("🐞 Debug mode: orphan for '{name}' left in place — {why}"),
+                        crate::components::log_panel::LogLevel::Warn);
+                }
+            });
+        }
+    });
 
     // ── SQL Dev log channel ────────────────────────────────────────────────
     use_hook(|| {
@@ -467,6 +495,41 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
         });
     });
 
+    // ── Global running-state poll ─────────────────────────────────────────
+    // Detects externally-triggered runs (e.g. Service Bus messages posted from
+    // outside ais-runner) so the spinner next to the workflow name lights up
+    // even when the user didn't click Run/Watch in the UI.
+    //
+    // Every 3 s, queries the latest run for every workflow. To avoid stepping
+    // on poll_for_run (which already manages its own entries in running_wfs),
+    // we track separately which entries WE added and only reconcile those.
+    use_effect(move || {
+        spawn(async move {
+            use std::collections::HashSet;
+            let mut owned: HashSet<String> = HashSet::new();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+                let names: Vec<String> = workflows.read().iter().map(|w| w.name.clone()).collect();
+                for name in names {
+                    let Ok(r) = workflows::list_runs(&name).await else { continue };
+                    let cleared_at = cleared_wfs.read().get(&name).cloned();
+                    let r = crate::utils::filter_cleared(r, cleared_at.as_deref());
+                    let is_running = r.first()
+                        .map(|x| x.properties.status.eq_ignore_ascii_case("Running"))
+                        .unwrap_or(false);
+                    let already_in_set = running_wfs.read().contains(&name);
+                    if is_running && !already_in_set {
+                        running_wfs.write().insert(name.clone());
+                        owned.insert(name);
+                    } else if !is_running && owned.contains(&name) {
+                        running_wfs.write().remove(&name);
+                        owned.remove(&name);
+                    }
+                }
+            }
+        });
+    });
+
     // ── Auto-select first workflow when list is first populated ───────────
     use_effect({
         let dir = dir.clone();
@@ -519,6 +582,66 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                         azurite_state, azurite_proc, func_state, func_proc, log_lines,
                     ),
                     "⟳ Reset"
+                }
+                button {
+                    class: if *debug_mode_on.read() { "btn btn-warn btn-svc" } else { "btn btn-svc" },
+                    title: if *debug_mode_on.read() {
+                        "Debug mode ON — Stateless workflows are temporarily Stateful. Click to revert. Restart func after."
+                    } else {
+                        "Flip all Stateless workflows to Stateful so their run history persists. Restart func after. Safe: edits are reverted on Off or next startup."
+                    },
+                    onclick: {
+                        let dir = dir.clone();
+                        move |_| {
+                            let dir = dir.clone();
+                            let currently_on = *debug_mode_on.read();
+                            spawn(async move {
+                                let mut push = crate::utils::make_push(log_lines);
+                                if !currently_on {
+                                    let d = dir.clone();
+                                    let out = tokio::task::spawn_blocking(move || debug_mode::enable(&d))
+                                        .await.unwrap_or_else(|_| debug_mode::PatchOutcome { patched: vec![], skipped: vec![] });
+                                    let n = out.patched.len();
+                                    debug_mode_count.set(n);
+                                    if n > 0 {
+                                        push(format!("🐞 Debug mode ON — patched {n} stateless workflow(s): {}",
+                                            out.patched.join(", ")),
+                                            crate::components::log_panel::LogLevel::Warn);
+                                    } else {
+                                        push("🐞 Debug mode ON — no stateless workflows found to patch.".into(),
+                                            crate::components::log_panel::LogLevel::Info);
+                                    }
+                                    for (name, why) in out.skipped {
+                                        push(format!("🐞 Skipped '{name}' — {why}"),
+                                            crate::components::log_panel::LogLevel::Warn);
+                                    }
+                                    debug_mode_on.set(true);
+                                    push("🐞 Next steps: ⏹ Stop func → ⟳ Reset Azurite → ▶ Start func. \
+                                          The runtime caches workflow 'kind' in Azurite tables and refuses to change it on a live registration.".into(),
+                                        crate::components::log_panel::LogLevel::Warn);
+                                } else {
+                                    let d = dir.clone();
+                                    let out = tokio::task::spawn_blocking(move || debug_mode::disable(&d))
+                                        .await.unwrap_or_else(|_| debug_mode::RevertOutcome { reverted: vec![], skipped: vec![] });
+                                    push(format!("🐞 Debug mode OFF — reverted {} workflow(s).", out.reverted.len()),
+                                        crate::components::log_panel::LogLevel::Ok);
+                                    for (name, why) in out.skipped {
+                                        push(format!("🐞 Could not revert '{name}' — {why}"),
+                                            crate::components::log_panel::LogLevel::Warn);
+                                    }
+                                    debug_mode_count.set(0);
+                                    debug_mode_on.set(false);
+                                    push("🐞 Restart func so the runtime re-reads the restored workflow.json files.".into(),
+                                        crate::components::log_panel::LogLevel::Info);
+                                }
+                            });
+                        }
+                    },
+                    if *debug_mode_on.read() {
+                        "🐞 Debug ON ({debug_mode_count})"
+                    } else {
+                        "🐞 Debug runs"
+                    }
                 }
                 ServiceBlock {
                     label: "SB Emulator".to_string(),
@@ -866,6 +989,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                                 logs.iter().filter(|l| l.msg.contains(&name)).cloned().collect()
                             } else { vec![] }
                         },
+                        az_lines: az_lines,
                         active_tab: active_tab,
                         on_run: {
                             let dir = dir.clone();
@@ -1038,7 +1162,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                             document.body.style.userSelect = 'none';
                             document.body.style.webkitUserSelect = 'none';
                             var onMove = function(ev) {{
-                                lp.style.height = Math.max(80, Math.min(Math.floor(window.innerHeight / 3), startH + (startY - ev.clientY))) + 'px';
+                                lp.style.height = Math.max(80, Math.min(Math.floor(window.innerHeight * 0.6), startH + (startY - ev.clientY))) + 'px';
                             }};
                             var onUp = function() {{
                                 if (h) h.classList.remove('dragging');
@@ -1057,6 +1181,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
 
             LogPanel {
                 lines:         log_lines,
+                az_lines:      az_lines,
                 sb_emu_lines:  sb_emu_lines,
                 java_lines:    java_func_lines,
                 sql_dev_lines: sql_dev_lines,

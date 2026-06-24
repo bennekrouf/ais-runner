@@ -4,7 +4,7 @@ use crate::services::workflows::{self, ActionItem, RunItem, duration_ms};
 use crate::services::workflow_analysis::{WorkflowAnalysis, TriggerKind};
 use crate::services::workflow_outline::{self, SectionKind};
 use crate::services::process::ServiceState;
-use crate::components::log_panel::LogLine;
+use crate::components::log_panel::{LogLine, is_azurite_poll_noise};
 use crate::components::tooltip::Tooltip;
 
 use crate::utils::open_in_editor;
@@ -19,6 +19,9 @@ pub struct RunDetailProps {
     pub active_tab:         Signal<String>,
     pub health_error:       Option<String>,
     pub logs:               Vec<LogLine>,
+    /// Live Azurite debug.log buffer (owned by main_screen). Used per-run to
+    /// surface storage events that happened during each run's time window.
+    pub az_lines:           Signal<Vec<String>>,
     pub analysis:           WorkflowAnalysis,
     /// sproc qualified name → Some(true|false) once probed, None while loading.
     pub sproc_status:       Signal<HashMap<String, Option<bool>>>,
@@ -599,6 +602,7 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                                     workflow: workflow_name.clone(),
                                     on_select_run: props.on_select_run.clone(),
                                     collapsed_runs: collapsed_runs,
+                                    az_lines:      props.az_lines,
                                     failures_only: *failures_only.read(),
                                     action_log_errors: action_log_errors.clone(),
                                 }
@@ -837,6 +841,9 @@ struct RunBlockProps {
     workflow:       String,
     on_select_run:  EventHandler<String>,
     collapsed_runs: Signal<HashSet<String>>,
+    /// Live Azurite debug.log buffer. Filtered per-run by time window to
+    /// surface storage events (4xx/5xx, table conflicts) inside this block.
+    az_lines:       Signal<Vec<String>>,
     /// When true, the action list is filtered to just the first action whose
     /// status indicates failure (failed / timedout / cancelled). Lets the
     /// user pin down the culprit in a long action list without skipping past
@@ -858,7 +865,10 @@ fn RunBlock(props: RunBlockProps) -> Element {
     let run_id3 = run_id.clone();
 
     let mut collapsed_runs = props.collapsed_runs;
-    let is_collapsed = collapsed_runs.read().contains(&run_id);
+    // Force-expand while the run is still in flight so the user can watch
+    // actions appear. Once it finishes, honor the user's collapse choice.
+    let is_running = status_lower == "running";
+    let is_collapsed = !is_running && collapsed_runs.read().contains(&run_id);
 
     rsx! {
         div { class: "run-block",
@@ -898,7 +908,106 @@ fn RunBlock(props: RunBlockProps) -> Element {
                     }
                 }
             }
+            // ── Failure summary strip ──────────────────────────────────────
+            // For failed/timedout/cancelled runs, surface the first failed
+            // action's name + error message inline so the user doesn't have
+            // to expand the run and the action to see what went wrong.
+            // Falls back to the log-scraped error when the API omits it
+            // (ParseJson / Compose / expression failures).
+            {
+                let is_failure = matches!(status_lower.as_str(),
+                    "failed" | "timedout" | "cancelled");
+                let summary = if is_failure {
+                    props.actions.iter().find(|a| matches!(
+                        a.properties.status.to_lowercase().as_str(),
+                        "failed" | "timedout" | "cancelled"
+                    )).map(|a| {
+                        let msg = a.properties.error.as_ref()
+                            .and_then(|e| e.message.clone())
+                            .or_else(|| props.action_log_errors.get(&a.name).cloned())
+                            .unwrap_or_else(|| a.properties.code.clone()
+                                .unwrap_or_else(|| "No error message reported.".to_string()));
+                        (a.name.clone(), msg)
+                    })
+                } else { None };
+                match (is_failure, summary) {
+                    (true, Some((act_name, msg))) => rsx! {
+                        div { class: "run-failure-summary",
+                            style: "padding:6px 10px;background:rgba(248,81,73,0.08);border-left:3px solid #f85149;font-size:12px;",
+                            span { style: "font-weight:600;color:#f85149;margin-right:6px;", "❌ {act_name}" }
+                            span { style: "opacity:0.9;", "{msg}" }
+                        }
+                    },
+                    (true, None) => rsx! {
+                        div { class: "run-failure-summary",
+                            style: "padding:6px 10px;background:rgba(248,81,73,0.08);border-left:3px solid #f85149;font-size:12px;opacity:0.8;",
+                            "❌ Failed — no action-level error available (runtime did not persist action history)."
+                        }
+                    },
+                    _ => rsx! {},
+                }
+            }
             if !is_collapsed {
+                {
+                    // Storage-events strip: Azurite debug.log lines that fell
+                    // within this run's time window, minus poll heartbeats.
+                    // Auto-expanded when any line is a 4xx/5xx so storage
+                    // failures (e.g. 409 Conflict on a table entity) surface
+                    // without the user having to flip to the Azurite log tab.
+                    let events = match props.run.properties.start_time.as_deref() {
+                        Some(start) => storage_events_for_run(
+                            &props.az_lines.read(),
+                            start,
+                            props.run.properties.end_time.as_deref(),
+                        ),
+                        None => Vec::new(),
+                    };
+                    let count    = events.len();
+                    let has_err  = has_storage_error(&events);
+                    let mut open = use_signal(|| false);
+                    // Re-evaluate auto-expand whenever the error state flips.
+                    use_effect(use_reactive!(|has_err| {
+                        if has_err { open.set(true); }
+                    }));
+                    if count == 0 {
+                        rsx! {}
+                    } else {
+                        let badge = if has_err { "az-events-strip error" } else { "az-events-strip" };
+                        let label = if has_err {
+                            format!("📦 Storage events ({count}) — ⚠ errors")
+                        } else {
+                            format!("📦 Storage events ({count})")
+                        };
+                        rsx! {
+                            div { class: "{badge}",
+                                div {
+                                    class: "az-events-header",
+                                    style: "cursor:pointer;padding:2px 8px;font-size:11px;opacity:0.8",
+                                    onclick: move |_| { let v = !open(); open.set(v); },
+                                    span { style: "display:inline-block;width:12px;",
+                                        if open() { "▼" } else { "▶" }
+                                    }
+                                    "{label}"
+                                }
+                                if open() {
+                                    div { class: "az-events-body",
+                                        style: "padding:4px 8px 4px 22px;font-family:monospace;font-size:11px;max-height:200px;overflow:auto;",
+                                        for line in events.iter() {
+                                            {
+                                                let is_err = matches!(az_status_code(line), Some(s) if s >= 400);
+                                                let cls = if is_err { "az-event-line error" } else { "az-event-line" };
+                                                let style = if is_err { "color:#f85149" } else { "opacity:0.75" };
+                                                rsx! {
+                                                    div { class: "{cls}", style: "{style}", "{line}" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 {
                     // Apply the "Failures only" filter: keep just the first
                     // action whose status indicates a real failure (not
@@ -1094,6 +1203,58 @@ mod extract_error_tests {
         let v = json!({ "properties": { "status": "Succeeded" } });
         assert_eq!(extract_error_from_detail(&v), None);
     }
+}
+
+// ── Azurite storage-event extraction ──────────────────────────────────────
+//
+// Azurite never names the action — its debug.log only knows about HTTP calls
+// to its Blob/Queue/Table endpoints. Correlation is by time window only: for
+// each run we have a UTC start_time and (once finished) end_time, and the
+// Azurite line prefix is an ISO8601 UTC timestamp like `2024-01-15T10:23:45.123Z`.
+// We filter to that window, drop the poll heartbeats, and return what's left.
+
+/// Parse the leading ISO8601 UTC timestamp from an azurite debug.log line.
+/// Format: `2024-01-15T10:23:45.123Z 127.0.0.1 - - [...]`.
+fn parse_az_timestamp(line: &str) -> Option<&str> {
+    let sp = line.find(' ')?;
+    let ts = &line[..sp];
+    if ts.len() >= 20 && ts.as_bytes().get(10) == Some(&b'T') && ts.ends_with('Z') {
+        Some(ts)
+    } else {
+        None
+    }
+}
+
+/// Extract the HTTP status code from an azurite access-log line.
+/// The line ends with `... HTTP/1.1" 409 -` (or `... 409 -` without quotes).
+fn az_status_code(line: &str) -> Option<u16> {
+    let s = line.trim_end();
+    let s = s.strip_suffix(" -").unwrap_or(s);
+    let last_sp = s.rfind(' ')?;
+    s[last_sp + 1..].parse().ok()
+}
+
+/// Filter az_lines to the (run_start..=run_end) window, dropping poll noise.
+/// `run_end` is `None` for in-flight runs — we include everything from start.
+pub fn storage_events_for_run(
+    az_lines: &[String],
+    run_start: &str,
+    run_end: Option<&str>,
+) -> Vec<String> {
+    az_lines.iter()
+        .filter(|l| {
+            let Some(ts) = parse_az_timestamp(l) else { return false; };
+            if ts < run_start { return false; }
+            if let Some(end) = run_end { if ts > end { return false; } }
+            !is_azurite_poll_noise(l)
+        })
+        .cloned()
+        .collect()
+}
+
+/// True if any line in `events` carries an HTTP 4xx or 5xx response.
+pub fn has_storage_error(events: &[String]) -> bool {
+    events.iter().any(|l| matches!(az_status_code(l), Some(s) if s >= 400))
 }
 
 // ── Log-derived action error extraction ───────────────────────────────────
