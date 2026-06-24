@@ -265,6 +265,18 @@ fn cell_to_string(row: &tiberius::Row, i: usize) -> String {
     // BIT.
     if let Ok(Some(v)) = row.try_get::<bool, _>(i) { return (if v { "1" } else { "0" }).to_string(); }
 
+    // DATETIME / DATETIME2 / SMALLDATETIME — rendered as ISO-8601.
+    // Tiberius 0.12 only exposes NaiveDateTime under the `chrono` feature;
+    // DATE / TIME / DATETIMEOFFSET fall through to the `<unsupported>` arm.
+    if let Ok(Some(v)) = row.try_get::<chrono::NaiveDateTime, _>(i) {
+        return v.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+    }
+
+    // UNIQUEIDENTIFIER — render as canonical hex with hyphens.
+    if let Ok(Some(v)) = row.try_get::<uuid::Uuid, _>(i) {
+        return v.to_string();
+    }
+
     // VARBINARY / BINARY / IMAGE — render as lowercase hex so the user can
     // inspect short blobs in the result panel.
     if let Ok(Some(v)) = row.try_get::<&[u8], _>(i) {
@@ -504,6 +516,13 @@ pub fn split_sql_batches(sql: &str) -> Vec<SqlBatch> {
         BlockComment,
     }
 
+    // Strip UTF-8 BOM if the source starts with one. SSDT / Visual Studio
+    // SQL projects save .sql files as UTF-8-with-BOM by default; pasting
+    // such a file (or its contents) into the query panel otherwise produces
+    // "Incorrect syntax near '»'" from SQL Server because the BOM bytes leak
+    // into the first token.
+    let sql = sql.strip_prefix('\u{FEFF}').unwrap_or(sql);
+
     let bytes = sql.as_bytes();
     let mut out: Vec<SqlBatch> = Vec::new();
     let mut buf = String::new();
@@ -693,6 +712,18 @@ fn match_go_line(bytes: &[u8], i: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf8_bom_is_stripped_before_splitting() {
+        // SSDT-saved .sql files start with a UTF-8 BOM (U+FEFF). Without
+        // stripping it, the first batch's first token is "\u{FEFF}CREATE"
+        // which SQL Server rejects as "Incorrect syntax near '»'".
+        let sql = "\u{FEFF}CREATE TABLE foo (id INT)\nGO\nSELECT 1\n";
+        let batches = split_sql_batches(sql);
+        assert_eq!(batches.len(), 2);
+        assert!(batches[0].text.starts_with("CREATE"));
+        assert!(batches[1].text.starts_with("SELECT"));
+    }
 
     #[test]
     fn multi_statement_batches_are_kept_together_without_go() {
