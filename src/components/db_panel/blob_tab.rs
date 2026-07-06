@@ -152,7 +152,6 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
             // ── Header row ───────────────────────────────────────────
             div { class: "db-section-header",
                 div { class: "db-section-title-row",
-                    span { class: "db-section-title", "🗄 Blob Storage" }
                     div { class: "db-section-title-right",
                         if *blob_loading.read() {
                             span { class: "db-fetching", "loading…" }

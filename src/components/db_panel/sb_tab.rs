@@ -83,10 +83,6 @@ pub fn SbTab(props: SbTabProps) -> Element {
     });
 
     rsx! {
-        div { class: "db-section-title", style: "margin-top:20px;",
-            span { "📨 Service Bus" }
-        }
-
         div { class: "db-create-row",
             input {
                 class: "db-field-input",

@@ -72,8 +72,6 @@ pub fn SqlTab(props: SqlTabProps) -> Element {
     let _status    = props.status; // passed to parent; unused locally
 
     rsx! {
-        div { class: "db-section-title", "🗄 SQL Connections" }
-
         if props.connections.is_empty() {
             div { class: "empty-state", "No SQL connections found in connections.json" }
         }

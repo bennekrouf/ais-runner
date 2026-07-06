@@ -20,7 +20,18 @@
       "Bash(python3 -c ' *)",
       "Bash(rtk curl *)",
       "Bash(curl -s \"http://localhost:7071/runtime/webhooks/workflow/api/management/workflows/Rcv-Event-Pivot\")",
-      "Bash(curl -s \"http://localhost:7071/runtime/webhooks/workflow/api/management/workflows/Read-JDE-COA/runs\")"
+      "Bash(curl -s \"http://localhost:7071/runtime/webhooks/workflow/api/management/workflows/Read-JDE-COA/runs\")",
+      "Bash(timeout 30 cargo run)",
+      "Bash(rtk git *)",
+      "Bash(timeout 30 cargo run --release)",
+      "Bash(timeout 60 cargo run --release)",
+      "Bash(pkill -f \"ais-runner\")",
+      "Bash(pkill -f \"cargo run\")",
+      "Bash(wait)",
+      "Bash(timeout 15 cargo run --release)",
+      "Bash(tee /tmp/app_output.log)",
+      "Bash(pkill -9 -f \"ais-runner\")",
+      "Read(//tmp/**)"
     ]
   }
 }

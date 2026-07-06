@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use chrono::Utc;
 use dioxus::prelude::*;
 
@@ -19,25 +18,31 @@ use crate::components::{
 use crate::services::{
     azure_cli, azure_sync, blob_check, config, connection_diag, cosmos_check,
     env_mode::{self, EnvMode},
-    process::{ManagedProcess, ServiceState},
+    process::ServiceState,
     setup_manager, sftp_check, sql_check, sb_check, system_check,
     workflow_analysis,
-    workflows::{self, WorkflowItem},
+    workflows,
 };
 use crate::utils::make_push;
 use crate::handlers::{azurite, cosmos_emulator, debug_mode, func_start, sb_emulator, sql_emulator, setup, workflow_select, workflow_run};
+use crate::screens::MainContext;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct MainScreenProps {
     pub logic_apps_dir: String,
     pub on_back: EventHandler<()>,
-    pub is_light: Signal<bool>,
-    pub theme_overridden: Signal<bool>,
 }
 
 #[component]
 pub fn MainScreen(mut props: MainScreenProps) -> Element {
     let dir            = props.logic_apps_dir.clone();
+    let instance_id = std::time::Instant::now().elapsed().as_micros();
+    eprintln!("[MainScreen#{}] Component mounted", instance_id);
+    let _ = std::io::Write::flush(&mut std::io::stderr());
+
+    // Get context - signals are now managed at App level to prevent re-mounts
+    let mut ctx = use_context::<MainContext>();
+
 
     // Update the window title to include the project basename so users running
     // multiple instances (one per customer) can tell them apart at a glance.
@@ -61,25 +66,23 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     // is the simplest way to sidestep the re-entrant borrow.
     let workspace_link = config::load().get_link(&dir).cloned();
 
-    // ── Service states & processes ─────────────────────────────────────────
-    let azurite_state    = use_signal(|| ServiceState::Stopped);
-    let func_state       = use_signal(|| ServiceState::Stopped);
-    let java_func_state  = use_signal(|| ServiceState::Stopped);
-    let sb_emu_state     = use_signal(|| ServiceState::Stopped);
-    let cosmos_emu_state = use_signal(|| ServiceState::Stopped);
-    let sql_dev_state    = use_signal(|| ServiceState::Stopped);
-    let azurite_proc     = use_signal(|| Arc::new(ManagedProcess::new()));
-    let func_proc        = use_signal(|| Arc::new(ManagedProcess::new()));
-    let java_func_proc   = use_signal(|| Arc::new(ManagedProcess::new()));
-    let sb_emu_proc      = use_signal(|| Arc::new(ManagedProcess::new()));
-    let cosmos_emu_proc  = use_signal(|| Arc::new(ManagedProcess::new()));
-    let sql_dev_proc     = use_signal(|| Arc::new(ManagedProcess::new()));
-    let sb_emu_lines:    Signal<Vec<String>> = use_signal(Vec::new);
-    let java_func_lines: Signal<Vec<String>> = use_signal(Vec::new);
-    let mut sql_dev_lines:   Signal<Vec<String>> = use_signal(Vec::new);
-    // Azurite debug.log lines, tailed by LogPanel and read by RunDetail to
-    // render storage events inside each run block.
-    let az_lines:        Signal<Vec<String>> = use_signal(Vec::new);
+    // ── Service states & processes (from context) ─────────────────────────────
+    let azurite_state    = ctx.azurite_state;
+    let func_state       = ctx.func_state;
+    let java_func_state  = ctx.java_func_state;
+    let sb_emu_state     = ctx.sb_emu_state;
+    let cosmos_emu_state = ctx.cosmos_emu_state;
+    let sql_dev_state    = ctx.sql_dev_state;
+    let azurite_proc     = ctx.azurite_proc;
+    let func_proc        = ctx.func_proc;
+    let java_func_proc   = ctx.java_func_proc;
+    let sb_emu_proc      = ctx.sb_emu_proc;
+    let cosmos_emu_proc  = ctx.cosmos_emu_proc;
+    let sql_dev_proc     = ctx.sql_dev_proc;
+    let sb_emu_lines     = ctx.sb_emu_lines;
+    let java_func_lines  = ctx.java_func_lines;
+    let mut sql_dev_lines = ctx.sql_dev_lines;
+    let az_lines         = ctx.az_lines;
 
     // resolve_logic_apps_dir may descend into a logic_apps/ subfolder,
     // so derive func_apps_dir from the resolved path's parent (the platform
@@ -92,16 +95,18 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
             .unwrap_or_else(|| format!("{}/function_apps", dir))
     };
 
-    // ── Data signals ───────────────────────────────────────────────────────
-    let mut workflows   = use_signal(|| Vec::<WorkflowItem>::new());
-    let selected_wf     = use_signal(|| Option::<String>::None);
-    let source_text = use_signal(String::new);
-    let wf_analysis = use_memo(move || workflow_analysis::analyse(&source_text.read()));
-    let mut runs        = use_signal(|| Vec::<workflows::RunItem>::new());
+    // ── Data signals (now from context) ────────────────────────────────────
+    let mut workflows   = ctx.workflows;
+    let selected_wf     = ctx.selected_wf;
+    let source_text = ctx.source_text;
+    let wf_analysis = use_memo(move || {
+        workflow_analysis::analyse(&source_text.read())
+    });
+    let mut runs        = ctx.runs;
     let mut actions     = use_signal(|| Vec::<workflows::ActionItem>::new());
     let mut running_wfs = use_signal(|| HashSet::<String>::new());
     let mut current_view = use_signal(|| "Workflows".to_string());
-    let mut is_light     = props.is_light;
+    let mut is_light     = ctx.is_light;
     let active_tab  = use_signal(|| "Source".to_string());
     let mut run_dialog  = use_signal(|| Option::<(String, String, String, String, Option<String>, Option<String>)>::None);
     let mut traced_wfs  = use_signal(|| HashSet::<String>::new());
@@ -118,8 +123,8 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
         s
     });
 
-    // ── Log ────────────────────────────────────────────────────────────────
-    let mut log_lines = use_signal(|| Vec::<LogLine>::new());
+    // ── Log (from context) ─────────────────────────────────────────────────────
+    let mut log_lines = ctx.log_lines;
 
     // Debug-mode startup: revert any patches left from a previous crashed
     // session before the user does anything else.
@@ -336,25 +341,23 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     });
 
     // ── Connection / SQL / SB signals ─────────────────────────────────────
-    let mut sql_wfs          = use_signal(|| HashSet::<String>::new());
-    let mut msi_wfs          = use_signal(|| HashSet::<String>::new());
+    let mut sql_wfs          = ctx.sql_wfs;
+    let mut msi_wfs          = ctx.msi_wfs;
     let mut wf_connectors    = use_signal(|| std::collections::HashMap::<String, Vec<workflows::ConnectorKind>>::new());
-    let mut sql_conns        = use_signal(|| Vec::<sql_check::SqlConnection>::new());
+    let mut sql_conns        = ctx.sql_conns;
     // sproc qualified name → Some(exists) once checked, None while loading.
     let mut sproc_status     = use_signal(|| std::collections::HashMap::<String, Option<bool>>::new());
     let mut db_panel_open    = use_signal(|| false);
     let mut azure_panel_open = use_signal(|| false);
     let az_diff_cache = use_signal(|| std::collections::HashMap::<String, crate::components::azure_panel::DiffStatus>::new());
     let mut sftp_conns       = use_signal(|| Vec::<sftp_check::SftpConnection>::new());
-    let mut blob_conns       = use_signal(|| Vec::<blob_check::BlobConnection>::new());
-    let mut cosmos_conns     = use_signal(|| Vec::<cosmos_check::CosmosConnection>::new());
-    let mut webjobs_storage  = use_signal(String::new);
-    let mut sb_namespace     = use_signal(|| {
-        config::load().get_link(&dir).and_then(|l| l.sb_namespace.clone()).unwrap_or_default()
-    });
-    let mut sb_namespace_key = use_signal(|| Option::<String>::None);
-    let mut sb_conn_str      = use_signal(|| Option::<(String, String)>::None);
-    let mut sb_queues        = use_signal(|| Vec::<sb_check::SbQueueInfo>::new());
+    let mut blob_conns       = ctx.blob_conns;
+    let mut cosmos_conns     = ctx.cosmos_conns;
+    let mut webjobs_storage  = ctx.webjobs_storage;
+    let mut sb_namespace     = ctx.sb_namespace;
+    let mut sb_namespace_key = ctx.sb_namespace_key;
+    let mut sb_conn_str      = ctx.sb_conn_str;
+    let mut sb_queues        = ctx.sb_queues;
 
     // ── Tool check / Azure login ───────────────────────────────────────────
     let mut tool_statuses    = use_signal(|| Vec::<system_check::ToolStatus>::new());
@@ -426,17 +429,29 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
         move || {
             let d = d.clone();
             spawn(async move {
+                eprintln!("[MainScreen] Starting project scan...");
+                let start = std::time::Instant::now();
                 let (wfs, msi, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, blobs, cosmos, wjs) =
                     tokio::task::spawn_blocking(move || {
+                        eprintln!("[MainScreen] Scanning SQL workflows...");
                         let wfs       = sql_check::detect_sql_workflows(&d);
+                        eprintln!("[MainScreen] Scanning MSI workflows...");
                         let msi       = connection_diag::scan_msi_local_trigger_workflows(&d);
+                        eprintln!("[MainScreen] Loading SQL connections...");
                         let conns     = sql_check::load_sql_connections(&d);
+                        eprintln!("[MainScreen] Detecting Service Bus queues...");
                         let sb        = sb_check::detect_sb_queues(&d);
+                        eprintln!("[MainScreen] Detecting Service Bus namespace key...");
                         let sb_key    = sb_check::detect_sb_namespace_key(&d);
+                        eprintln!("[MainScreen] Detecting Service Bus connection key...");
                         let sb_cs_key = sb_check::detect_sb_conn_str_key(&d);
+                        eprintln!("[MainScreen] Detecting blob connections...");
                         let blobs     = blob_check::detect_blob_connections(&d);
+                        eprintln!("[MainScreen] Detecting cosmos connections...");
                         let cosmos    = cosmos_check::detect_cosmos_connections(&d);
+                        eprintln!("[MainScreen] Reading WebJobs storage...");
                         let wjs       = blob_check::read_webjobs_storage(&d);
+                        eprintln!("[MainScreen] Project scan complete ({}ms)", start.elapsed().as_millis());
                         (wfs, msi, conns, sb, sb_key, sb_cs_key, blobs, cosmos, wjs)
                     }).await.unwrap_or_default();
                 sql_wfs.set(wfs); msi_wfs.set(msi); sql_conns.set(conns); sb_namespace.set(sb_ns);
@@ -472,6 +487,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     // Skips when poll_for_run is already active for this workflow.
     use_effect(move || {
         spawn(async move {
+            eprintln!("[MainScreen] Starting run-detail poll loop");
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
                 let wf = match selected_wf.read().clone() {
@@ -481,15 +497,24 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                 // Skip if the poll_for_run loop is already driving updates
                 if running_wfs.read().contains(&wf) { continue; }
                 // Fetch fresh data
-                if let Ok(r) = workflows::list_runs(&wf).await {
-                    let cleared_at = cleared_wfs.read().get(&wf).cloned();
-                    let r = crate::utils::filter_cleared(r, cleared_at.as_deref());
-                    if let Some(latest) = r.first() {
-                        if let Ok(a) = workflows::list_actions(&wf, &latest.name).await {
-                            actions.set(a);
+                eprintln!("[MainScreen] Polling runs for workflow (with 5s timeout)");
+                match tokio::time::timeout(std::time::Duration::from_secs(5), workflows::list_runs(&wf)).await {
+                    Ok(Ok(r)) => {
+                        let cleared_at = cleared_wfs.read().get(&wf).cloned();
+                        let r = crate::utils::filter_cleared(r, cleared_at.as_deref());
+                        if let Some(latest) = r.first() {
+                            if let Ok(a) = workflows::list_actions(&wf, &latest.name).await {
+                                actions.set(a);
+                            }
                         }
+                        runs.set(r);
                     }
-                    runs.set(r);
+                    Ok(Err(e)) => {
+                        eprintln!("[MainScreen] Error fetching runs: {:?}", e);
+                    }
+                    Err(_) => {
+                        eprintln!("[MainScreen] TIMEOUT fetching runs (5s) - network issue?");
+                    }
                 }
             }
         });
@@ -806,7 +831,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                     title: if *is_light.read() { "Switch to dark mode" } else { "Switch to light mode" },
                     onclick: move |_| {
                         let next = !*is_light.read();
-                        props.theme_overridden.set(true);
+                        ctx.theme_overridden.set(true);
                         is_light.set(next);
                         document::eval(&format!("document.body.className = '{}';", if next { "light" } else { "" }));
                     },

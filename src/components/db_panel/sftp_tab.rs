@@ -23,8 +23,6 @@ pub fn SftpTab(props: SftpTabProps) -> Element {
 
     rsx! {
         div { class: "db-section",
-            div { class: "db-section-title", "📡 SFTP Connections" }
-
             for conn in props.connections.clone() {
                 {
                     let name    = conn.connection_name.clone();

@@ -36,6 +36,11 @@ pub struct AppConfig {
     pub workspace_links: HashMap<String, WorkspaceLink>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub graph_prefs: HashMap<String, GraphPrefs>,
+    /// Last payload body the user entered, keyed by logic_apps_dir → workflow_name.
+    /// Survives restarts so users don't lose their crafted test bodies. Stored in
+    /// the OS config dir (NOT in the project workspace).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub last_payloads: HashMap<String, HashMap<String, String>>,
 }
 
 impl AppConfig {
@@ -59,6 +64,14 @@ impl AppConfig {
 
     pub fn set_graph_prefs(&mut self, dir: String, prefs: GraphPrefs) {
         self.graph_prefs.insert(dir, prefs);
+    }
+
+    pub fn get_last_payload(&self, dir: &str, workflow: &str) -> Option<String> {
+        self.last_payloads.get(dir).and_then(|m| m.get(workflow)).cloned()
+    }
+
+    pub fn set_last_payload(&mut self, dir: String, workflow: String, body: String) {
+        self.last_payloads.entry(dir).or_default().insert(workflow, body);
     }
 }
 

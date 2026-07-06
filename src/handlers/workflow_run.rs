@@ -46,8 +46,12 @@ pub fn handle_open_dialog(
     source_text.set(wf_text.clone());
     let blob_container = blob_container_for(dir, &name, &trigger_type);
     let queue_name     = sb_check::trigger_queue_for(dir, &name).map(|(_fqdn, q)| q);
-    let suggested      = payload::suggest_payload(dir, &name);
-    run_dialog.set(Some((name, trigger_name, trigger_type, suggested, blob_container, queue_name)));
+    // Prefer the last body the user entered for this workflow (persisted across
+    // restarts in the OS config dir); fall back to the schema-derived suggestion.
+    let initial_body = crate::services::config::load()
+        .get_last_payload(dir, &name)
+        .unwrap_or_else(|| payload::suggest_payload(dir, &name));
+    run_dialog.set(Some((name, trigger_name, trigger_type, initial_body, blob_container, queue_name)));
 }
 
 pub fn handle_trigger_from_detail(
@@ -62,8 +66,10 @@ pub fn handle_trigger_from_detail(
     let Some(wf) = workflows_sig.read().iter().find(|w| w.name == wf_name).cloned() else { return };
     let blob_container = blob_container_for(dir, &wf.name, &wf.trigger_type);
     let queue_name     = sb_check::trigger_queue_for(dir, &wf.name).map(|(_fqdn, q)| q);
-    let suggested      = payload::suggest_payload(dir, &wf.name);
-    run_dialog.set(Some((wf.name, wf.trigger_name, wf.trigger_type, suggested, blob_container, queue_name)));
+    let initial_body = crate::services::config::load()
+        .get_last_payload(dir, &wf.name)
+        .unwrap_or_else(|| payload::suggest_payload(dir, &wf.name));
+    run_dialog.set(Some((wf.name, wf.trigger_name, wf.trigger_type, initial_body, blob_container, queue_name)));
 }
 
 pub fn handle_run(
@@ -86,6 +92,14 @@ pub fn handle_run(
     run_dialog.set(None);
     active_tab.set("Run".into());
     traced_wfs.write().insert(name.clone());
+
+    // Persist the user-entered body so the next Run dialog opens with it.
+    // No-op when body is empty (e.g. recurrence triggers).
+    if !body.trim().is_empty() {
+        let mut cfg = crate::services::config::load();
+        cfg.set_last_payload(dir.to_string(), name.clone(), body.clone());
+        crate::services::config::save(&cfg);
+    }
 
     let trigger_ts = Utc::now().to_rfc3339();
     cleared_wfs.write().insert(name.clone(), trigger_ts.clone());

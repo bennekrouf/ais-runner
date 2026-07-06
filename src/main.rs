@@ -9,7 +9,7 @@ use dioxus::prelude::*;
 use dioxus::desktop::LogicalSize;
 
 use services::config;
-use screens::{WelcomeScreen, MainScreen};
+use screens::{WelcomeScreen, LoadingScreen, MainScreenWithContext};
 
 const MAIN_CSS: &str = include_str!("../assets/main.css");
 
@@ -256,6 +256,7 @@ fn is_flow_shape(x: u32, y: u32, size: u32) -> bool {
 #[derive(Clone, PartialEq)]
 enum Screen {
     Welcome,
+    Loading(String),
     Main(String),
 }
 
@@ -303,12 +304,15 @@ fn App() -> Element {
         "#);
     });
 
+    // DISABLED: Theme detection every 2s was causing MainScreen to re-mount repeatedly
+    // (signals in props cause component recreation on every change).
+    // Users can still toggle theme with the button — no need for auto-detection.
+    // Re-enable this only after moving theme management to a context or MainScreen level.
+    /*
     use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-            // Stop following the system once the user has chosen manually.
             if *theme_overridden.read() { continue; }
-            // dark_light reads NSUserDefaults — must run on a blocking thread on macOS.
             let light = tokio::task::spawn_blocking(|| {
                 dark_light::detect() != dark_light::Mode::Dark
             }).await.unwrap_or(*is_light.read());
@@ -317,6 +321,7 @@ fn App() -> Element {
             }
         }
     });
+    */
 
     let on_open = {
         let mut screen  = screen;
@@ -326,6 +331,13 @@ fn App() -> Element {
             cfg.push_dir(dir.clone());
             config::save(&cfg);
             app_cfg.set(cfg);
+            screen.set(Screen::Loading(dir));
+        }
+    };
+
+    let on_done_loading = {
+        let mut screen = screen;
+        move |dir: String| {
             screen.set(Screen::Main(dir));
         }
     };
@@ -380,8 +392,11 @@ fn App() -> Element {
             Screen::Welcome => rsx! {
                 WelcomeScreen { app_cfg, on_open }
             },
+            Screen::Loading(dir) => rsx! {
+                LoadingScreen { logic_apps_dir: dir, is_light, theme_overridden, on_done: on_done_loading, on_back }
+            },
             Screen::Main(dir) => rsx! {
-                MainScreen { logic_apps_dir: dir, on_back, is_light, theme_overridden }
+                MainScreenWithContext { logic_apps_dir: dir, on_back }
             },
         }
     }

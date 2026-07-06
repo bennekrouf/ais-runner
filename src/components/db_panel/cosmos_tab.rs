@@ -275,8 +275,6 @@ pub fn CosmosTab(props: CosmosTabProps) -> Element {
     let mut cosmos_edits = props.cosmos_edits;
 
     rsx! {
-        div { class: "db-section-title", "🌌 Cosmos DB" }
-
         // ── Standalone emulator test ──────────────────────────
         div { class: "db-card",
             div { class: "db-card-header",
