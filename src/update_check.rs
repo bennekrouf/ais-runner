@@ -27,7 +27,12 @@ pub struct UpdateInfo {
 
 /// Returns `Some(UpdateInfo)` if a newer release is available, else `None`.
 /// Any network / parse failure → `None`. Never panics.
+/// Disabled if DISABLE_UPDATE_CHECK environment variable is set.
 pub async fn check() -> Option<UpdateInfo> {
+    if std::env::var("DISABLE_UPDATE_CHECK").is_ok() {
+        return None;
+    }
+
     let current = env!("CARGO_PKG_VERSION");
     let body = reqwest::Client::new()
         .get(LATEST_URL)
