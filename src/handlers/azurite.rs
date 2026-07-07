@@ -51,6 +51,10 @@ pub fn handle_start(
             let dir_s = dir.to_string_lossy().to_string();
             let log_s = log.to_string_lossy().to_string();
             let _ = std::fs::create_dir_all(&dir);
+            // Truncate the previous session's debug log — azurite never
+            // rotates it, and constant queue polling grows it without bound
+            // (observed at 19.5 GB after two weeks).
+            let _ = std::fs::File::create(&log);
             (bin, dir_s, log_s)
         }).await.unwrap_or_else(|_| ("azurite".into(), "/tmp/azurite".into(), "/tmp/azurite/debug.log".into()));
 

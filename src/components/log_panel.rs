@@ -336,26 +336,38 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     });
 
     // tail -f azurite debug.log  (polls every 500 ms)
+    // Never read the file whole: azurite doesn't rotate debug.log, so it can
+    // reach tens of GB, and this coroutine is polled on the GUI thread — an
+    // unbounded read freezes the app until macOS kills it out of memory.
+    // Tail from the end on first sight and cap every read at TAIL_CAP.
     use_coroutine(move |_rx: UnboundedReceiver<()>| async move {
+        const TAIL_CAP: u64 = 1024 * 1024;
         let path = crate::utils::azurite_log();
-        let mut offset: u64 = 0;
+        let mut offset: Option<u64> = None; // None → jump to EOF on next read
         loop {
             match tokio::fs::metadata(&path).await {
                 Ok(meta) => {
                     let len = meta.len();
-                    if len < offset {
-                        offset = 0;
+                    if matches!(offset, Some(o) if len < o) {
+                        // Truncated/rotated — start over from the top.
+                        offset = Some(0);
                         az_lines.write().clear();
                     }
-                    if len > offset {
+                    // Jump to the last TAIL_CAP bytes on first sight of the
+                    // file, or when it grew faster than we can catch up.
+                    let jumped = len.saturating_sub(offset.unwrap_or(0)) > TAIL_CAP;
+                    let start = if jumped { len - TAIL_CAP } else { offset.unwrap_or(0) };
+                    if len > start {
                         if let Ok(mut f) = tokio::fs::File::open(&path).await {
                             use tokio::io::{AsyncReadExt, AsyncSeekExt};
-                            if f.seek(std::io::SeekFrom::Start(offset)).await.is_ok() {
+                            if f.seek(std::io::SeekFrom::Start(start)).await.is_ok() {
                                 let mut buf = String::new();
-                                if f.read_to_string(&mut buf).await.is_ok() {
-                                    offset = len;
+                                if f.take(len - start).read_to_string(&mut buf).await.is_ok() {
+                                    offset = Some(len);
                                     let new: Vec<String> = buf
                                         .lines()
+                                        // A jump lands mid-line — drop the partial first line.
+                                        .skip(if jumped && start > 0 { 1 } else { 0 })
                                         .filter(|l| !l.is_empty())
                                         .map(|l| l.to_string())
                                         .collect();
@@ -371,13 +383,16 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                                 }
                             }
                         }
+                    } else {
+                        offset = Some(len);
                     }
                 }
                 Err(_) => {
-                    if offset > 0 {
-                        offset = 0;
+                    if offset.is_some_and(|o| o > 0) {
                         az_lines.write().clear();
                     }
+                    // Re-arm the EOF jump for when the file reappears.
+                    offset = None;
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
