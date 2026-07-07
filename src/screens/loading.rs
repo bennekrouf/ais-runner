@@ -15,13 +15,13 @@ pub struct LoadingScreenProps {
 pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
     let dir = props.logic_apps_dir.clone();
     let log_lines: Signal<Vec<(String, LogLevel)>> = use_signal(Vec::new);
-    let mut checks_done: Signal<bool> = use_signal(|| false);
+    let checks_done: Signal<bool> = use_signal(|| false);
 
     // Run all startup checks on mount
     use_effect({
         let dir = dir.clone();
         let log_lines = log_lines;
-        let mut checks_done_inner = checks_done;
+        let checks_done_inner = checks_done;
         move || {
             let dir = dir.clone();
             let mut log_lines = log_lines;

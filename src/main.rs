@@ -271,7 +271,7 @@ fn App() -> Element {
     // Apply system theme once at startup, then keep in sync — but stop
     // syncing once the user has manually toggled the theme button.
     let system_light = dark_light::detect() != dark_light::Mode::Dark;
-    let mut is_light          = use_signal(|| system_light);
+    let is_light          = use_signal(|| system_light);
     let theme_overridden = use_signal(|| false);
 
     use_effect(move || {
@@ -396,7 +396,7 @@ fn App() -> Element {
                 LoadingScreen { logic_apps_dir: dir, is_light, theme_overridden, on_done: on_done_loading, on_back }
             },
             Screen::Main(dir) => rsx! {
-                MainScreenWithContext { logic_apps_dir: dir, on_back }
+                MainScreenWithContext { logic_apps_dir: dir, on_back, is_light, theme_overridden }
             },
         }
     }

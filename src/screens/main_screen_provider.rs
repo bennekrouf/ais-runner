@@ -5,6 +5,10 @@ use crate::screens::MainContext;
 pub struct MainScreenWithContextProps {
     pub logic_apps_dir: String,
     pub on_back: EventHandler<()>,
+    /// App-level theme handles — stored in the context so MainScreen's toggle
+    /// drives the same signal as the body-class effect in main.rs.
+    pub is_light: Signal<bool>,
+    pub theme_overridden: Signal<bool>,
 }
 
 /// Wrapper that provides MainContext to MainScreen
@@ -12,7 +16,7 @@ pub struct MainScreenWithContextProps {
 #[component]
 pub fn MainScreenWithContext(props: MainScreenWithContextProps) -> Element {
     // Create context once and provide it to descendants
-    let ctx = use_hook(|| MainContext::new());
+    let ctx = use_hook(|| MainContext::new(props.is_light, props.theme_overridden));
     provide_context(ctx.clone());
 
     rsx! {
