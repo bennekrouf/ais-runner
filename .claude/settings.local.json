@@ -58,7 +58,9 @@
       "Bash(cp -R '/Applications/AIS Runner.app' '/private/tmp/claude-501/-Users-mb-code-ais-runner/f1a85768-cc2e-48ee-b83c-6fafe6c729c6/scratchpad/AIS Runner.app')",
       "Bash(codesign -f -s - '/private/tmp/claude-501/-Users-mb-code-ais-runner/f1a85768-cc2e-48ee-b83c-6fafe6c729c6/scratchpad/AIS Runner.app')",
       "Bash(kill 41368)",
-      "Bash(python3 -c \"import json; json.load\\(open\\('/Users/mb/code/ais-runner/.claude/settings.local.json'\\)\\)\")"
+      "Bash(python3 -c \"import json; json.load\\(open\\('/Users/mb/code/ais-runner/.claude/settings.local.json'\\)\\)\")",
+      "Bash(git -C /Users/mb/code/ais-runner checkout -- src/components/log_panel.rs src/handlers/azurite.rs)",
+      "Bash(git -C /Users/mb/code/ais-runner merge master -m \"Merge master: azurite log tail fix, debug.log truncation, DISABLE_UPDATE_CHECK\")"
     ]
   }
 }

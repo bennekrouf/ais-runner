@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use chrono::Utc;
 use dioxus::prelude::*;
 
@@ -34,11 +34,8 @@ pub struct MainScreenProps {
 }
 
 #[component]
-pub fn MainScreen(mut props: MainScreenProps) -> Element {
+pub fn MainScreen(props: MainScreenProps) -> Element {
     let dir            = props.logic_apps_dir.clone();
-    let instance_id = std::time::Instant::now().elapsed().as_micros();
-    eprintln!("[MainScreen#{}] Component mounted", instance_id);
-    let _ = std::io::Write::flush(&mut std::io::stderr());
 
     // Get context - signals are now managed at App level to prevent re-mounts
     let mut ctx = use_context::<MainContext>();
@@ -58,7 +55,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
         ));
     }
 
-    let cfg            = use_signal(config::load);
+    let cfg            = ctx.cfg;
     // Derive workspace_link directly rather than via cfg.read() — in Dioxus 0.6
     // the signal holds an internal write lock during hook initialisation, so
     // reading the same signal on the very next line causes AlreadyBorrowedMut
@@ -103,25 +100,21 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
         workflow_analysis::analyse(&source_text.read())
     });
     let mut runs        = ctx.runs;
-    let mut actions     = use_signal(|| Vec::<workflows::ActionItem>::new());
-    let mut running_wfs = use_signal(|| HashSet::<String>::new());
-    let mut current_view = use_signal(|| "Workflows".to_string());
+    let mut actions     = ctx.actions;
+    let mut running_wfs = ctx.running_wfs;
+    let mut current_view = ctx.current_view;
     let mut is_light     = ctx.is_light;
-    let active_tab  = use_signal(|| "Source".to_string());
-    let mut run_dialog  = use_signal(|| Option::<(String, String, String, String, Option<String>, Option<String>)>::None);
-    let mut traced_wfs  = use_signal(|| HashSet::<String>::new());
-    let mut cleared_wfs = use_signal(|| HashMap::<String, String>::new());
-    let mut last_ran: Signal<HashMap<String, u64>> = use_signal(HashMap::new);
-    let mut debug_mode_on = use_signal(|| false);
-    let mut debug_mode_count = use_signal(|| 0usize);
-    let mut auto_watch  = use_signal(|| true);
+    let active_tab  = ctx.active_tab;
+    let mut run_dialog  = ctx.run_dialog;
+    let mut traced_wfs  = ctx.traced_wfs;
+    let mut cleared_wfs = ctx.cleared_wfs;
+    let mut last_ran    = ctx.last_ran;
+    let mut debug_mode_on = ctx.debug_mode_on;
+    let mut debug_mode_count = ctx.debug_mode_count;
+    let mut auto_watch  = ctx.auto_watch;
     // Track which views have been opened — panels are lazy-mounted on first visit
     // but stay in the DOM afterwards so their state (caches, signals) survives tab switches.
-    let mut visited_views: Signal<HashSet<String>> = use_signal(|| {
-        let mut s = HashSet::new();
-        s.insert("Workflows".to_string());
-        s
-    });
+    let mut visited_views = ctx.visited_views;
 
     // ── Log (from context) ─────────────────────────────────────────────────────
     let mut log_lines = ctx.log_lines;
@@ -288,8 +281,8 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     // ── Setup ──────────────────────────────────────────────────────────────
     // Start with a neutral default; check_setup reads local.settings.json which
     // must not block the GUI thread.
-    let mut setup_status  = use_signal(|| setup_manager::SetupStatus::MissingSettings);
-    let setup_updates: Signal<HashMap<String, String>> = use_signal(HashMap::new);
+    let mut setup_status  = ctx.setup_status;
+    let setup_updates     = ctx.setup_updates;
 
     // Load setup status off the GUI thread on first mount.
     use_effect({
@@ -327,7 +320,7 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
 
     // ── Env mode ───────────────────────────────────────────────────────────
     // detect_mode reads local.settings.json — must not block the GUI thread.
-    let mut current_env = use_signal(|| env_mode::EnvMode::Local);
+    let mut current_env = ctx.current_env;
     use_effect({
         let d = dir.clone();
         move || {
@@ -343,14 +336,14 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     // ── Connection / SQL / SB signals ─────────────────────────────────────
     let mut sql_wfs          = ctx.sql_wfs;
     let mut msi_wfs          = ctx.msi_wfs;
-    let mut wf_connectors    = use_signal(|| std::collections::HashMap::<String, Vec<workflows::ConnectorKind>>::new());
+    let mut wf_connectors    = ctx.wf_connectors;
     let mut sql_conns        = ctx.sql_conns;
     // sproc qualified name → Some(exists) once checked, None while loading.
-    let mut sproc_status     = use_signal(|| std::collections::HashMap::<String, Option<bool>>::new());
-    let mut db_panel_open    = use_signal(|| false);
-    let mut azure_panel_open = use_signal(|| false);
-    let az_diff_cache = use_signal(|| std::collections::HashMap::<String, crate::components::azure_panel::DiffStatus>::new());
-    let mut sftp_conns       = use_signal(|| Vec::<sftp_check::SftpConnection>::new());
+    let mut sproc_status     = ctx.sproc_status;
+    let mut db_panel_open    = ctx.db_panel_open;
+    let mut azure_panel_open = ctx.azure_panel_open;
+    let az_diff_cache        = ctx.az_diff_cache;
+    let mut sftp_conns       = ctx.sftp_conns;
     let mut blob_conns       = ctx.blob_conns;
     let mut cosmos_conns     = ctx.cosmos_conns;
     let mut webjobs_storage  = ctx.webjobs_storage;
@@ -360,10 +353,10 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     let mut sb_queues        = ctx.sb_queues;
 
     // ── Tool check / Azure login ───────────────────────────────────────────
-    let mut tool_statuses    = use_signal(|| Vec::<system_check::ToolStatus>::new());
-    let mut tools_dismissed  = use_signal(|| false);
-    let az_status:     Signal<Option<Result<String, azure_cli::AzError>>> = use_signal(|| None);
-    let active_tenant: Signal<Option<String>>                             = use_signal(|| None);
+    let mut tool_statuses    = ctx.tool_statuses;
+    let mut tools_dismissed  = ctx.tools_dismissed;
+    let az_status            = ctx.az_status;
+    let active_tenant        = ctx.active_tenant;
 
     // ══ Effects ════════════════════════════════════════════════════════════
 
@@ -429,29 +422,17 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
         move || {
             let d = d.clone();
             spawn(async move {
-                eprintln!("[MainScreen] Starting project scan...");
-                let start = std::time::Instant::now();
                 let (wfs, msi, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, blobs, cosmos, wjs) =
                     tokio::task::spawn_blocking(move || {
-                        eprintln!("[MainScreen] Scanning SQL workflows...");
                         let wfs       = sql_check::detect_sql_workflows(&d);
-                        eprintln!("[MainScreen] Scanning MSI workflows...");
                         let msi       = connection_diag::scan_msi_local_trigger_workflows(&d);
-                        eprintln!("[MainScreen] Loading SQL connections...");
                         let conns     = sql_check::load_sql_connections(&d);
-                        eprintln!("[MainScreen] Detecting Service Bus queues...");
                         let sb        = sb_check::detect_sb_queues(&d);
-                        eprintln!("[MainScreen] Detecting Service Bus namespace key...");
                         let sb_key    = sb_check::detect_sb_namespace_key(&d);
-                        eprintln!("[MainScreen] Detecting Service Bus connection key...");
                         let sb_cs_key = sb_check::detect_sb_conn_str_key(&d);
-                        eprintln!("[MainScreen] Detecting blob connections...");
                         let blobs     = blob_check::detect_blob_connections(&d);
-                        eprintln!("[MainScreen] Detecting cosmos connections...");
                         let cosmos    = cosmos_check::detect_cosmos_connections(&d);
-                        eprintln!("[MainScreen] Reading WebJobs storage...");
                         let wjs       = blob_check::read_webjobs_storage(&d);
-                        eprintln!("[MainScreen] Project scan complete ({}ms)", start.elapsed().as_millis());
                         (wfs, msi, conns, sb, sb_key, sb_cs_key, blobs, cosmos, wjs)
                     }).await.unwrap_or_default();
                 sql_wfs.set(wfs); msi_wfs.set(msi); sql_conns.set(conns); sb_namespace.set(sb_ns);
@@ -487,7 +468,6 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
     // Skips when poll_for_run is already active for this workflow.
     use_effect(move || {
         spawn(async move {
-            eprintln!("[MainScreen] Starting run-detail poll loop");
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
                 let wf = match selected_wf.read().clone() {
@@ -497,7 +477,6 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                 // Skip if the poll_for_run loop is already driving updates
                 if running_wfs.read().contains(&wf) { continue; }
                 // Fetch fresh data
-                eprintln!("[MainScreen] Polling runs for workflow (with 5s timeout)");
                 match tokio::time::timeout(std::time::Duration::from_secs(5), workflows::list_runs(&wf)).await {
                     Ok(Ok(r)) => {
                         let cleared_at = cleared_wfs.read().get(&wf).cloned();
@@ -509,12 +488,8 @@ pub fn MainScreen(mut props: MainScreenProps) -> Element {
                         }
                         runs.set(r);
                     }
-                    Ok(Err(e)) => {
-                        eprintln!("[MainScreen] Error fetching runs: {:?}", e);
-                    }
-                    Err(_) => {
-                        eprintln!("[MainScreen] TIMEOUT fetching runs (5s) - network issue?");
-                    }
+                    Ok(Err(_e)) => {}
+                    Err(_) => {}
                 }
             }
         });
