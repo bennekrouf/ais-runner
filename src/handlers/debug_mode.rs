@@ -209,6 +209,7 @@ pub fn cleanup_orphans(base_dir: &str) -> RevertOutcome {
 }
 
 /// Returns the set of workflow names currently in debug-mode (sidecar present).
+#[allow(dead_code)]
 pub fn active(base_dir: &str) -> HashSet<String> {
     let mut out = HashSet::new();
     for wf_json in list_workflow_jsons(base_dir) {
