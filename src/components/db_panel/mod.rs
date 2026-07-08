@@ -261,7 +261,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                 // SB tab
                 div {
                     class: if *active_tab.read() == "sb" { "tab-pane" } else { "tab-pane hidden" },
-                    SbTab { sb_queues: props.sb_queues.clone(), sb_namespace: props.sb_namespace.clone(), subscription, is_open: props.is_open, active_tab, status }
+                    SbTab { sb_queues: props.sb_queues.clone(), sb_namespace: props.sb_namespace.clone(), logic_apps_dir: props.logic_apps_dir.clone(), subscription, is_open: props.is_open, active_tab, status }
                 }
                 // Blob tab
                 div {

@@ -17,12 +17,13 @@ enum PeekRow {
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SbTabProps {
-    pub sb_queues:    Vec<SbQueueInfo>,
-    pub sb_namespace: String,
-    pub subscription: Signal<Option<String>>,
-    pub is_open:      Signal<bool>,
-    pub active_tab:   Signal<&'static str>,
-    pub status:       Signal<Option<(String, bool)>>,
+    pub sb_queues:      Vec<SbQueueInfo>,
+    pub sb_namespace:   String,
+    pub logic_apps_dir: String,
+    pub subscription:   Signal<Option<String>>,
+    pub is_open:        Signal<bool>,
+    pub active_tab:     Signal<&'static str>,
+    pub status:         Signal<Option<(String, bool)>>,
 }
 
 #[component]
@@ -43,6 +44,22 @@ pub fn SbTab(props: SbTabProps) -> Element {
     let mut new_queue_name:     Signal<String> = use_signal(String::new);
     let mut new_queue_creating: Signal<bool>   = use_signal(|| false);
     let mut queue_filter:       Signal<String> = use_signal(String::new);
+
+    // Send variants: burst count and null-field path, per queue.
+    let mut sb_send_counts: Signal<HashMap<String, String>> = use_signal(HashMap::new);
+    let mut sb_null_fields: Signal<HashMap<String, String>> = use_signal(HashMap::new);
+
+    // Correlation trace across all queues.
+    let mut trace_input:   Signal<String> = use_signal(String::new);
+    let mut trace_running: Signal<bool>   = use_signal(|| false);
+    let mut trace_hits:    Signal<Option<Vec<crate::services::sb_testing::TraceHit>>> =
+        use_signal(|| None);
+
+    // Per-queue expectation inputs (path, value, min count) and last result.
+    let mut sb_assert_inputs:  Signal<HashMap<String, (String, String, String)>> =
+        use_signal(HashMap::new);
+    let mut sb_assert_results: Signal<HashMap<String, (bool, String)>> =
+        use_signal(HashMap::new);
 
     let mut status     = props.status;
     let subscription   = props.subscription;
@@ -151,6 +168,57 @@ pub fn SbTab(props: SbTabProps) -> Element {
             }
         }
 
+        // ── Correlation trace: peek every queue, report where a given id sits ─
+        div { class: "db-create-row", style: "margin: 4px 0;",
+            input {
+                class: "db-field-input",
+                style: "flex: 1",
+                placeholder: "Trace correlation id across all queues…",
+                value: "{trace_input}",
+                oninput: move |e| trace_input.set(e.value()),
+            }
+            button {
+                class: "btn btn-small",
+                disabled: *trace_running.read() || trace_input.read().trim().is_empty(),
+                title: "Peek every queue and count messages containing this id (read-only)",
+                onclick: {
+                    let all_queues: Vec<String> = props.sb_queues.iter()
+                        .map(|q| q.queue.clone())
+                        .chain(crate::services::sb_check::emulator_only_queues(&props.sb_queues))
+                        .collect();
+                    move |_| {
+                        let needle = trace_input.read().trim().to_string();
+                        let queues = all_queues.clone();
+                        trace_running.set(true);
+                        spawn(async move {
+                            let hits = crate::services::sb_testing::trace_correlation(
+                                "localhost", &queues, &needle,
+                            ).await;
+                            trace_hits.set(Some(hits));
+                            trace_running.set(false);
+                        });
+                    }
+                },
+                if *trace_running.read() { "…" } else { "🔍 Trace" }
+            }
+        }
+        if let Some(ref hits) = *trace_hits.read() {
+            div { class: "db-peek-panel", style: "margin: 2px 0 8px;",
+                if hits.is_empty() {
+                    div { class: "db-peek-empty",
+                        "No messages found — already consumed, dead-lettered, or the id is wrong."
+                    }
+                } else {
+                    for hit in hits.iter() {
+                        div { class: "db-peek-msg",
+                            span { class: "db-peek-idx", "📬" }
+                            "{hit.queue}: {hit.count} message(s)"
+                        }
+                    }
+                }
+            }
+        }
+
         // Queue cards (local workflows)
         for q in props.sb_queues.clone().into_iter().filter(|q| {
             let f = queue_filter.read().to_lowercase();
@@ -174,6 +242,12 @@ pub fn SbTab(props: SbTabProps) -> Element {
                 let is_peeking     = sb_peeking.read().contains(&queue_name);
                 let queue_name5    = queue_name.clone();
                 let queue_name6    = queue_name.clone();
+                let la_dir         = props.logic_apps_dir.clone();
+                let send_count     = sb_send_counts.read().get(&queue_name).cloned().unwrap_or_default();
+                let null_path      = sb_null_fields.read().get(&queue_name).cloned().unwrap_or_default();
+                let assert_inputs  = sb_assert_inputs.read().get(&queue_name).cloned()
+                                        .unwrap_or_default();
+                let assert_result  = sb_assert_results.read().get(&queue_name).cloned();
 
                 rsx! {
                     div { class: "db-card",
@@ -319,6 +393,9 @@ pub fn SbTab(props: SbTabProps) -> Element {
                             {
                                 let qn  = queue_name4.clone();
                                 let qn2 = queue_name4.clone();
+                                let qn_count = queue_name4.clone();
+                                let qn_null  = queue_name4.clone();
+                                let dir  = la_dir.clone();
                                 rsx! {
                                     div { class: "db-send-form",
                                         textarea {
@@ -329,35 +406,104 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                                 sb_send_bodies.write().insert(qn.clone(), e.value());
                                             },
                                         }
+                                        // Test variants: null a field to hit validation branches,
+                                        // burst-send N copies to test alert consolidation.
+                                        div { style: "display:flex;gap:8px;margin-top:6px;align-items:center",
+                                            input {
+                                                class: "db-field-input",
+                                                style: "flex:1",
+                                                placeholder: "Null out field (dot path, e.g. data.msg.content.CompanyId)…",
+                                                title: "Before sending, set this field to null — tests missing-field validation branches",
+                                                value: "{null_path}",
+                                                oninput: move |e| {
+                                                    sb_null_fields.write().insert(qn_null.clone(), e.value());
+                                                },
+                                            }
+                                            input {
+                                                class: "db-field-input",
+                                                style: "width:70px",
+                                                r#type: "number",
+                                                min: "1",
+                                                max: "500",
+                                                placeholder: "×1",
+                                                title: "Send this many copies — tests alert consolidation / burst behavior",
+                                                value: "{send_count}",
+                                                oninput: move |e| {
+                                                    sb_send_counts.write().insert(qn_count.clone(), e.value());
+                                                },
+                                            }
+                                        }
                                         div { style: "display:flex;gap:8px;margin-top:6px",
                                             button {
                                                 class: "btn btn-run btn-small",
                                                 onclick: move |_| {
                                                     let qn4  = qn2.clone();
+                                                    let dir2 = dir.clone();
                                                     let raw  = sb_send_bodies.read()
+                                                        .get(&qn2).cloned().unwrap_or_default();
+                                                    let count: usize = sb_send_counts.read()
+                                                        .get(&qn2).and_then(|c| c.trim().parse().ok())
+                                                        .unwrap_or(1).clamp(1, 500);
+                                                    let null_path = sb_null_fields.read()
                                                         .get(&qn2).cloned().unwrap_or_default();
                                                     // Strip a top-level `contentData` envelope if the user
                                                     // pasted a captured-message body — see
                                                     // payload::normalise_send_body for the why.
                                                     let normalised = crate::services::payload::normalise_send_body(&raw);
+                                                    // Apply the null-field variant, if requested.
+                                                    let body = if null_path.trim().is_empty() {
+                                                        Ok(normalised.body.clone())
+                                                    } else {
+                                                        crate::services::sb_testing::null_field(
+                                                            &normalised.body, null_path.trim())
+                                                    };
+                                                    let body = match body {
+                                                        Ok(b) => b,
+                                                        Err(e) => { status.set(Some((format!("Null-field: {e}"), true))); return; }
+                                                    };
                                                     spawn(async move {
                                                         let emulator_up = tokio::net::TcpStream::connect("127.0.0.1:5672").await.is_ok();
-                                                        let result = if emulator_up {
-                                                            crate::services::sb_amqp::send_amqp_message(
-                                                                "localhost", &qn4, &normalised.body,
-                                                            ).await
-                                                        } else {
-                                                            Err("SB Emulator is not running — start it from the toolbar first.".into())
-                                                        };
-                                                        match result {
-                                                            Ok(()) => status.set(Some((
-                                                                if normalised.stripped_envelope {
-                                                                    format!("✅ Sent to {} — auto-unwrapped contentData envelope (the SB trigger adds one)", qn4)
+                                                        if !emulator_up {
+                                                            status.set(Some(("SB Emulator is not running — start it from the toolbar first.".into(), true)));
+                                                            return;
+                                                        }
+                                                        // Pick the content-type the CONSUMING workflow expects:
+                                                        // decodeBase64($content) consumers need a non-JSON type
+                                                        // (connector base64-wraps), json(contentData) consumers
+                                                        // need application/json. Wrong pick = "decodeBase64
+                                                        // expects string, got Null" in the consumer.
+                                                        let dir3 = dir2.clone();
+                                                        let qn5  = qn4.clone();
+                                                        let encoding = tokio::task::spawn_blocking(move || {
+                                                            crate::services::sb_testing::queue_encoding(&dir3, &qn5)
+                                                        }).await.unwrap_or(
+                                                            crate::services::sb_testing::QueueEncoding::RawJson { consumer: None }
+                                                        );
+                                                        let mut sent = 0usize;
+                                                        let mut err: Option<String> = None;
+                                                        for _ in 0..count {
+                                                            match crate::services::sb_amqp::send_amqp_message_with_type(
+                                                                "localhost", &qn4, &body, encoding.content_type(),
+                                                            ).await {
+                                                                Ok(()) => sent += 1,
+                                                                Err(e) => { err = Some(e); break; }
+                                                            }
+                                                        }
+                                                        match err {
+                                                            None => {
+                                                                let mut msg = if sent == 1 {
+                                                                    format!("✅ Sent to {} as {}", qn4, encoding.describe())
                                                                 } else {
-                                                                    format!("✅ Sent to {}", qn4)
-                                                                }, false,
+                                                                    format!("✅ Sent {}× to {} as {}", sent, qn4, encoding.describe())
+                                                                };
+                                                                if normalised.stripped_envelope {
+                                                                    msg.push_str(" — auto-unwrapped contentData envelope");
+                                                                }
+                                                                status.set(Some((msg, false)));
+                                                            }
+                                                            Some(e) => status.set(Some((
+                                                                format!("Sent {sent}/{count} then failed: {e}"), true,
                                                             ))),
-                                                            Err(e) => status.set(Some((e, true))),
                                                         }
                                                     });
                                                 },
@@ -409,10 +555,51 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                                             "First delivery attempt."
                                                         };
                                                         let body = &m.body;
+                                                        // If the message carries an Adaptive Card (Teams
+                                                        // notifications), render a readable preview so the
+                                                        // user doesn't have to mentally render card JSON.
+                                                        let card = crate::services::sb_testing::adaptive_card_preview(body);
                                                         rsx! {
                                                             div { class: "db-peek-msg",
                                                                 span { class: "db-peek-idx", "#{i}" }
                                                                 span { class: "{chip_cls}", title: "{title}", "delivery {label}" }
+                                                                if let Some(ref c) = card {
+                                                                    {
+                                                                        let accent_color = match c.accent.as_str() {
+                                                                            "Attention" => "#d13438", // red — critical
+                                                                            "Warning"   => "#c19c00", // yellow — validation
+                                                                            "Good"      => "#107c10", // green — success
+                                                                            _            => "#8a8886",
+                                                                        };
+                                                                        let border = format!("border-left:4px solid {accent_color};padding:6px 10px;margin:4px 0;background:rgba(128,128,128,0.08);border-radius:3px;");
+                                                                        rsx! {
+                                                                            div { style: "{border}",
+                                                                                div { style: "font-size:10px;opacity:0.7;margin-bottom:2px",
+                                                                                    "🃏 Adaptive Card · {c.accent}"
+                                                                                }
+                                                                                for (li, line) in c.lines.iter().enumerate() {
+                                                                                    div {
+                                                                                        style: if li == 0 { "font-weight:600" } else { "" },
+                                                                                        "{line}"
+                                                                                    }
+                                                                                }
+                                                                                for fact in c.facts.iter() {
+                                                                                    div { style: "font-size:11px;opacity:0.85", "• {fact}" }
+                                                                                }
+                                                                                if !c.actions.is_empty() {
+                                                                                    div { style: "margin-top:4px;display:flex;gap:6px",
+                                                                                        for a in c.actions.iter() {
+                                                                                            span {
+                                                                                                style: "border:1px solid {accent_color};border-radius:3px;padding:1px 8px;font-size:11px",
+                                                                                                "{a}"
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
                                                                 pre { class: "db-peek-body", "{body}" }
                                                             }
                                                         }
@@ -444,6 +631,87 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                         },
                                         "🔄 Refresh"
                                     }
+
+                                    // ── Expectation check: assert queue contents without
+                                    //    manually eyeballing peeked JSON. Empty path = count all.
+                                    {
+                                        let qn_a  = queue_name6.clone();
+                                        let qn_b  = queue_name6.clone();
+                                        let qn_c  = queue_name6.clone();
+                                        let qn_d  = queue_name6.clone();
+                                        let (a_path, a_value, a_count) = assert_inputs.clone();
+                                        rsx! {
+                                            div { style: "display:flex;gap:6px;margin-top:8px;align-items:center",
+                                                input {
+                                                    class: "db-field-input",
+                                                    style: "flex:2",
+                                                    placeholder: "JSON path (e.g. ais.workflow.error.cp) — empty = any",
+                                                    value: "{a_path}",
+                                                    oninput: move |e| {
+                                                        let mut w = sb_assert_inputs.write();
+                                                        let entry = w.entry(qn_a.clone()).or_default();
+                                                        entry.0 = e.value();
+                                                    },
+                                                }
+                                                input {
+                                                    class: "db-field-input",
+                                                    style: "flex:1",
+                                                    placeholder: "= value",
+                                                    value: "{a_value}",
+                                                    oninput: move |e| {
+                                                        let mut w = sb_assert_inputs.write();
+                                                        let entry = w.entry(qn_b.clone()).or_default();
+                                                        entry.1 = e.value();
+                                                    },
+                                                }
+                                                input {
+                                                    class: "db-field-input",
+                                                    style: "width:60px",
+                                                    r#type: "number",
+                                                    min: "1",
+                                                    placeholder: ">=1",
+                                                    title: "Minimum number of matching messages expected",
+                                                    value: "{a_count}",
+                                                    oninput: move |e| {
+                                                        let mut w = sb_assert_inputs.write();
+                                                        let entry = w.entry(qn_c.clone()).or_default();
+                                                        entry.2 = e.value();
+                                                    },
+                                                }
+                                                button {
+                                                    class: "btn btn-small",
+                                                    title: "Peek the queue and check the expectation (read-only)",
+                                                    onclick: move |_| {
+                                                        let qn = qn_d.clone();
+                                                        let (path, value, count) = sb_assert_inputs.read()
+                                                            .get(&qn).cloned().unwrap_or_default();
+                                                        let min: usize = count.trim().parse().unwrap_or(1).max(1);
+                                                        spawn(async move {
+                                                            let result = crate::services::sb_testing::check_expectation(
+                                                                "localhost", &qn, path.trim(), value.trim(), min,
+                                                            ).await;
+                                                            let entry = match result {
+                                                                Ok(r)  => (r.passed, r.detail),
+                                                                Err(e) => (false, format!("check failed: {e}")),
+                                                            };
+                                                            sb_assert_results.write().insert(qn, entry);
+                                                        });
+                                                    },
+                                                    "✓ Check"
+                                                }
+                                            }
+                                            if let Some((passed, detail)) = assert_result.clone() {
+                                                div {
+                                                    style: if passed {
+                                                        "color:#107c10;font-size:12px;margin-top:4px"
+                                                    } else {
+                                                        "color:#d13438;font-size:12px;margin-top:4px"
+                                                    },
+                                                    if passed { "✅ PASS — {detail}" } else { "❌ FAIL — {detail}" }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -463,6 +731,7 @@ pub fn SbTab(props: SbTabProps) -> Element {
                     for qname in extra {
                         { let qn = qname.clone();
                           let qn2 = qname.clone();
+                          let la_dir2 = props.logic_apps_dir.clone();
                           let is_open = sb_send_open.read().contains(&qname);
                           let send_body = sb_send_bodies.read().get(&qname).cloned().unwrap_or_default();
                           rsx! {
@@ -493,12 +762,23 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                             class: "btn btn-run btn-small",
                                             onclick: move |_| {
                                                 let qn3 = qname.clone();
+                                                let dir = la_dir2.clone();
                                                 let raw = sb_send_bodies.read().get(&qname).cloned().unwrap_or_default();
                                                 let normalised = crate::services::payload::normalise_send_body(&raw);
                                                 spawn(async move {
                                                     let emulator_up = tokio::net::TcpStream::connect("127.0.0.1:5672").await.is_ok();
                                                     let result = if emulator_up {
-                                                        crate::services::sb_amqp::send_amqp_message("localhost", &qn3, &normalised.body).await
+                                                        // Even emulator-only queues may have a consumer whose
+                                                        // workflow was added after the queue — detect encoding.
+                                                        let qn4 = qn3.clone();
+                                                        let encoding = tokio::task::spawn_blocking(move || {
+                                                            crate::services::sb_testing::queue_encoding(&dir, &qn4)
+                                                        }).await.unwrap_or(
+                                                            crate::services::sb_testing::QueueEncoding::RawJson { consumer: None }
+                                                        );
+                                                        crate::services::sb_amqp::send_amqp_message_with_type(
+                                                            "localhost", &qn3, &normalised.body, encoding.content_type(),
+                                                        ).await
                                                     } else {
                                                         Err("SB Emulator is not running — start it from the toolbar first.".into())
                                                     };

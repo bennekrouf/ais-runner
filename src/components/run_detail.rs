@@ -62,6 +62,13 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
 
     // Tracks which run blocks are currently collapsed (by run id).
     let mut collapsed_runs = use_signal(HashSet::<String>::new);
+    // Per-run snapshot of the storage-events strip. The live az_lines buffer
+    // is a rolling 500-line tail that clears on log rotation, and a finished
+    // run's end-time window can exclude late-flushed lines — both make the
+    // strip vanish after the run. Once a run has shown events, keep them here
+    // (keyed by run id) so the user can still see them when investigating.
+    let storage_events_cache: Signal<HashMap<String, Vec<String>>> =
+        use_signal(HashMap::new);
     // "Failures only" toggle on the Run tab. When on, each run block hides
     // every action except the first one with a failed/timedout/cancelled
     // status — which is the action that actually caused the run to fail.
@@ -603,6 +610,7 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
                                     on_select_run: props.on_select_run.clone(),
                                     collapsed_runs: collapsed_runs,
                                     az_lines:      props.az_lines,
+                                    events_cache:  storage_events_cache,
                                     failures_only: *failures_only.read(),
                                     action_log_errors: action_log_errors.clone(),
                                 }
@@ -844,6 +852,10 @@ struct RunBlockProps {
     /// Live Azurite debug.log buffer. Filtered per-run by time window to
     /// surface storage events (4xx/5xx, table conflicts) inside this block.
     az_lines:       Signal<Vec<String>>,
+    /// Session cache of each run's storage events, owned by RunDetail. The
+    /// live buffer rotates/evicts — this keeps a finished run's events
+    /// visible while the user is still investigating it.
+    events_cache:   Signal<HashMap<String, Vec<String>>>,
     /// When true, the action list is filtered to just the first action whose
     /// status indicates failure (failed / timedout / cancelled). Lets the
     /// user pin down the culprit in a long action list without skipping past
@@ -869,6 +881,58 @@ fn RunBlock(props: RunBlockProps) -> Element {
     // actions appear. Once it finishes, honor the user's collapse choice.
     let is_running = status_lower == "running";
     let is_collapsed = !is_running && collapsed_runs.read().contains(&run_id);
+
+    // ── Storage events (computed unconditionally: hooks below) ────────────
+    // Live view: Azurite debug.log lines within this run's time window.
+    let live_events = match props.run.properties.start_time.as_deref() {
+        Some(start) => storage_events_for_run(
+            &props.az_lines.read(),
+            start,
+            props.run.properties.end_time.as_deref(),
+        ),
+        None => Vec::new(),
+    };
+    // Persist the last non-empty view per run: the live buffer is a rolling
+    // tail (rotation clears it, 500-line cap evicts) and a completed run's
+    // end-time window can drop late-flushed lines — without this cache the
+    // strip disappears right when the user wants to read it.
+    let mut events_cache = props.events_cache;
+    {
+        let run_key = run_id.clone();
+        let live = live_events.clone();
+        use_effect(use_reactive!(|live| {
+            // Keep the FULLEST view seen: when the run completes, the
+            // end-time window can drop late-flushed lines from the live
+            // computation — don't let that shrink an earlier, richer capture.
+            if !live.is_empty() {
+                let mut cache = events_cache.write();
+                let keep = cache.get(&run_key).map_or(true, |old| live.len() >= old.len());
+                if keep {
+                    cache.insert(run_key.clone(), live.clone());
+                }
+            }
+        }));
+    }
+    let from_cache = live_events.is_empty();
+    let events = if from_cache {
+        events_cache.read().get(&run_id).cloned().unwrap_or_default()
+    } else {
+        live_events
+    };
+    // Condense ~20 middleware log lines per request into one summary row.
+    // Raw lines stay in the cache; summarizing at render time keeps the
+    // cache format stable and the work is trivial (<500 lines).
+    let ev_summaries = summarize_storage_events(&events);
+    let ev_count  = ev_summaries.len();
+    // Only REAL errors flip the strip to error state — 404 TableNotFound is
+    // routine Logic Apps↔Azurite chatter (run/history tables created lazily).
+    let ev_has_err = ev_summaries.iter().any(|s| s.is_real_error());
+    let mut ev_open = use_signal(|| false);
+    // Auto-expand when any request is a real 4xx/5xx so storage failures
+    // surface without the user having to flip to the Azurite log tab.
+    use_effect(use_reactive!(|ev_has_err| {
+        if ev_has_err { ev_open.set(true); }
+    }));
 
     rsx! {
         div { class: "run-block",
@@ -950,55 +1014,56 @@ fn RunBlock(props: RunBlockProps) -> Element {
             if !is_collapsed {
                 {
                     // Storage-events strip: Azurite debug.log lines that fell
-                    // within this run's time window, minus poll heartbeats.
-                    // Auto-expanded when any line is a 4xx/5xx so storage
-                    // failures (e.g. 409 Conflict on a table entity) surface
-                    // without the user having to flip to the Azurite log tab.
-                    let events = match props.run.properties.start_time.as_deref() {
-                        Some(start) => storage_events_for_run(
-                            &props.az_lines.read(),
-                            start,
-                            props.run.properties.end_time.as_deref(),
-                        ),
-                        None => Vec::new(),
-                    };
-                    let count    = events.len();
-                    let has_err  = has_storage_error(&events);
-                    let mut open = use_signal(|| false);
-                    // Re-evaluate auto-expand whenever the error state flips.
-                    use_effect(use_reactive!(|has_err| {
-                        if has_err { open.set(true); }
-                    }));
-                    if count == 0 {
+                    // within this run's time window, minus poll heartbeats
+                    // (computed above so the per-run cache hook is
+                    // unconditional). "kept" = the live buffer has moved on;
+                    // we're showing the snapshot captured while it was there.
+                    if ev_count == 0 {
                         rsx! {}
                     } else {
-                        let badge = if has_err { "az-events-strip error" } else { "az-events-strip" };
-                        let label = if has_err {
-                            format!("📦 Storage events ({count}) — ⚠ errors")
+                        let badge = if ev_has_err { "az-events-strip error" } else { "az-events-strip" };
+                        let kept  = if from_cache { " · kept" } else { "" };
+                        let label = if ev_has_err {
+                            format!("📦 Storage events ({ev_count}){kept} — ⚠ errors")
                         } else {
-                            format!("📦 Storage events ({count})")
+                            format!("📦 Storage events ({ev_count}){kept}")
+                        };
+                        let title = if from_cache {
+                            "Snapshot kept from this run — the live Azurite log buffer has rotated past these lines."
+                        } else {
+                            "Azurite storage activity within this run's time window."
                         };
                         rsx! {
                             div { class: "{badge}",
                                 div {
                                     class: "az-events-header",
                                     style: "cursor:pointer;padding:2px 8px;font-size:11px;opacity:0.8",
-                                    onclick: move |_| { let v = !open(); open.set(v); },
+                                    title: "{title}",
+                                    onclick: move |_| { let v = !ev_open(); ev_open.set(v); },
                                     span { style: "display:inline-block;width:12px;",
-                                        if open() { "▼" } else { "▶" }
+                                        if ev_open() { "▼" } else { "▶" }
                                     }
                                     "{label}"
                                 }
-                                if open() {
+                                if ev_open() {
                                     div { class: "az-events-body",
                                         style: "padding:4px 8px 4px 22px;font-family:monospace;font-size:11px;max-height:200px;overflow:auto;",
-                                        for line in events.iter() {
+                                        for s in ev_summaries.iter() {
                                             {
-                                                let is_err = matches!(az_status_code(line), Some(s) if s >= 400);
-                                                let cls = if is_err { "az-event-line error" } else { "az-event-line" };
-                                                let style = if is_err { "color:#f85149" } else { "opacity:0.75" };
+                                                let real_err = s.is_real_error();
+                                                let benign   = s.is_benign_error();
+                                                let cls = if real_err { "az-event-line error" } else { "az-event-line" };
+                                                let style = if real_err { "color:#f85149" }
+                                                            else if benign { "color:#c19c00;opacity:0.8" }
+                                                            else { "opacity:0.75" };
+                                                let status = s.status.map(|c| c.to_string())
+                                                    .unwrap_or_else(|| "…".into());
+                                                let code = s.error_code.as_deref().unwrap_or("");
+                                                let benign_note = if benign { " (expected — table created lazily)" } else { "" };
                                                 rsx! {
-                                                    div { class: "{cls}", style: "{style}", "{line}" }
+                                                    div { class: "{cls}", style: "{style}",
+                                                        "{s.time} {s.method} {s.path} → {status} {code}{benign_note}"
+                                                    }
                                                 }
                                             }
                                         }
@@ -1255,6 +1320,215 @@ pub fn storage_events_for_run(
 /// True if any line in `events` carries an HTTP 4xx or 5xx response.
 pub fn has_storage_error(events: &[String]) -> bool {
     events.iter().any(|l| matches!(az_status_code(l), Some(s) if s >= 400))
+}
+
+// ── Storage-request summaries ───────────────────────────────────────────────
+//
+// Azurite's debug.log logs ~20 verbose middleware lines per HTTP request
+// (auth validation, deserialization, dispatch…). Rendering them raw floods
+// the strip with noise. Group lines by the request id (2nd token) and emit
+// one summary per request: time, method, path, status, storage error code.
+
+/// One storage request, condensed from its middleware log lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageRequestSummary {
+    pub time:       String,
+    pub method:     String,
+    pub path:       String,
+    pub status:     Option<u16>,
+    pub error_code: Option<String>,
+}
+
+impl StorageRequestSummary {
+    /// A 4xx/5xx that is routine Logic Apps ↔ Azurite background chatter,
+    /// not a real failure: the runtime probes run/history tables before
+    /// they've been lazily created and gets 404 TableNotFound until then.
+    pub fn is_benign_error(&self) -> bool {
+        self.status == Some(404) && self.error_code.as_deref() == Some("TableNotFound")
+    }
+
+    /// A 4xx/5xx worth alerting on.
+    pub fn is_real_error(&self) -> bool {
+        matches!(self.status, Some(s) if s >= 400) && !self.is_benign_error()
+    }
+}
+
+/// Condense raw Azurite debug.log lines into per-request summaries,
+/// preserving first-seen request order. Handles both log shapes:
+/// the verbose middleware format (`<ts> <request-id> <level>: Component: …`)
+/// and the legacy access-log format (`… "GET /path HTTP/1.1" 409 -`).
+pub fn summarize_storage_events(lines: &[String]) -> Vec<StorageRequestSummary> {
+    let mut order: Vec<String> = Vec::new();
+    let mut by_id: HashMap<String, StorageRequestSummary> = HashMap::new();
+
+    for line in lines {
+        // Legacy access-log shape: keep as a standalone summary.
+        if line.contains("HTTP/1.1") {
+            if let Some(s) = summarize_access_log_line(line) {
+                let key = format!("access-{}", order.len());
+                order.push(key.clone());
+                by_id.insert(key, s);
+            }
+            continue;
+        }
+        // Middleware shape: `<ts> <request-id> <level>: …`
+        let mut parts = line.splitn(3, ' ');
+        let (Some(ts), Some(rid), Some(rest)) = (parts.next(), parts.next(), parts.next())
+        else { continue };
+        if !ts.ends_with('Z') || rid.len() < 8 { continue; }
+
+        if let Some(pos) = rest.find("RequestMethod=") {
+            let method = rest[pos + "RequestMethod=".len()..]
+                .split_whitespace().next().unwrap_or("?").to_string();
+            let path = rest.find("RequestURL=")
+                .map(|p| shorten_storage_url(
+                    rest[p + "RequestURL=".len()..].split_whitespace().next().unwrap_or("")))
+                .unwrap_or_default();
+            let entry = by_id.entry(rid.to_string()).or_insert_with(|| {
+                order.push(rid.to_string());
+                StorageRequestSummary {
+                    time: short_time(ts), method: String::new(), path: String::new(),
+                    status: None, error_code: None,
+                }
+            });
+            entry.method = method;
+            entry.path = path;
+        } else if let Some(pos) = rest.find("StatusCode=") {
+            if rest.contains("End response") || rest.contains("ErrorHTTPStatusCode") {
+                if let Ok(code) = rest[pos + "StatusCode=".len()..]
+                    .split_whitespace().next().unwrap_or("").parse::<u16>()
+                {
+                    if let Some(entry) = by_id.get_mut(rid) {
+                        entry.status.get_or_insert(code);
+                    }
+                }
+            }
+        } else if let Some(pos) = rest.find("x-ms-error-code=") {
+            let code = rest[pos + "x-ms-error-code=".len()..]
+                .split(|c: char| c.is_whitespace() || c == '"' || c == ',')
+                .next().unwrap_or("").to_string();
+            if !code.is_empty() {
+                if let Some(entry) = by_id.get_mut(rid) {
+                    entry.error_code.get_or_insert(code);
+                }
+            }
+        }
+    }
+
+    order.into_iter()
+        .filter_map(|id| by_id.remove(&id))
+        // A request we only saw fragments of (no method AND no status) is noise.
+        .filter(|s| !s.method.is_empty() || s.status.is_some())
+        .collect()
+}
+
+/// Legacy Apache-style access-log line → summary (best effort).
+fn summarize_access_log_line(line: &str) -> Option<StorageRequestSummary> {
+    let status = az_status_code(line)?;
+    // `… "GET /devstoreaccount1/… HTTP/1.1" 409 -`
+    let q1 = line.find('"')?;
+    let req = &line[q1 + 1..];
+    let mut it = req.split_whitespace();
+    let method = it.next()?.to_string();
+    let path = shorten_storage_url(it.next().unwrap_or(""));
+    let time = parse_az_timestamp(line).map(short_time).unwrap_or_default();
+    Some(StorageRequestSummary { time, method, path, status: Some(status), error_code: None })
+}
+
+/// `http://127.0.0.1:10002/devstoreaccount1/flowXXXruns?$filter=…`
+/// → `flowXXXruns` — the table/container is what the user cares about.
+fn shorten_storage_url(url: &str) -> String {
+    let no_query = url.split('?').next().unwrap_or(url);
+    let path = no_query.find("://")
+        .and_then(|i| no_query[i + 3..].find('/').map(|j| &no_query[i + 3 + j..]))
+        .unwrap_or(no_query);
+    path.trim_start_matches('/')
+        .trim_start_matches("devstoreaccount1")
+        .trim_start_matches('/')
+        .to_string()
+}
+
+/// `2026-07-08T14:45:49.683Z` → `14:45:49`
+fn short_time(ts: &str) -> String {
+    ts.get(11..19).unwrap_or(ts).to_string()
+}
+
+#[cfg(test)]
+mod storage_summary_tests {
+    use super::*;
+
+    fn middleware_request_lines() -> Vec<String> {
+        vec![
+            "2026-07-08T14:45:49.683Z 6e523f6e-4797-4931-acff-a659cee5d354 info: TableStorageContextMiddleware: RequestMethod=GET RequestURL=http://127.0.0.1/devstoreaccount1/flow8261runs?$filter=x RequestHeaders:{} ClientIP=127.0.0.1".into(),
+            "2026-07-08T14:45:49.683Z 6e523f6e-4797-4931-acff-a659cee5d354 verbose: DispatchMiddleware: Dispatching request...".into(),
+            "2026-07-08T14:45:49.683Z 6e523f6e-4797-4931-acff-a659cee5d354 error: ErrorMiddleware: Set HTTP Header: x-ms-error-code=TableNotFound".into(),
+            "2026-07-08T14:45:49.683Z 6e523f6e-4797-4931-acff-a659cee5d354 info: EndMiddleware: End response. TotalTimeInMS=0 StatusCode=404 StatusMessage=Not Found Headers={}".into(),
+        ]
+    }
+
+    #[test]
+    fn condenses_middleware_lines_into_one_request() {
+        let s = summarize_storage_events(&middleware_request_lines());
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].method, "GET");
+        assert_eq!(s[0].path, "flow8261runs");
+        assert_eq!(s[0].status, Some(404));
+        assert_eq!(s[0].error_code.as_deref(), Some("TableNotFound"));
+        assert_eq!(s[0].time, "14:45:49");
+    }
+
+    #[test]
+    fn tablenotfound_404_is_benign_not_real_error() {
+        let s = summarize_storage_events(&middleware_request_lines());
+        assert!(s[0].is_benign_error());
+        assert!(!s[0].is_real_error());
+    }
+
+    #[test]
+    fn conflict_409_is_a_real_error() {
+        let lines = vec![
+            "2026-07-08T14:45:49.100Z aaaa0000-dd89-4535-a5d0-4365ab3ec38d info: TableStorageContextMiddleware: RequestMethod=POST RequestURL=http://127.0.0.1/devstoreaccount1/mytable".into(),
+            "2026-07-08T14:45:49.101Z aaaa0000-dd89-4535-a5d0-4365ab3ec38d info: EndMiddleware: End response. TotalTimeInMS=1 StatusCode=409 StatusMessage=Conflict".into(),
+        ];
+        let s = summarize_storage_events(&lines);
+        assert_eq!(s.len(), 1);
+        assert!(s[0].is_real_error());
+    }
+
+    #[test]
+    fn success_requests_summarized_without_error() {
+        let lines = vec![
+            "2026-07-08T14:45:49.100Z bbbb0000-dd89-4535-a5d0-4365ab3ec38d info: TableStorageContextMiddleware: RequestMethod=GET RequestURL=http://127.0.0.1/devstoreaccount1/flows".into(),
+            "2026-07-08T14:45:49.101Z bbbb0000-dd89-4535-a5d0-4365ab3ec38d info: EndMiddleware: End response. TotalTimeInMS=1 StatusCode=200 StatusMessage=OK Headers={}".into(),
+        ];
+        let s = summarize_storage_events(&lines);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].status, Some(200));
+        assert!(!s[0].is_real_error() && !s[0].is_benign_error());
+    }
+
+    #[test]
+    fn legacy_access_log_lines_still_summarized() {
+        let lines = vec![
+            r#"2026-07-08T14:45:49.100Z 127.0.0.1 - - [08/Jul/2026] "PUT /devstoreaccount1/table1 HTTP/1.1" 409 -"#.into(),
+        ];
+        let s = summarize_storage_events(&lines);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].method, "PUT");
+        assert_eq!(s[0].path, "table1");
+        assert_eq!(s[0].status, Some(409));
+        assert!(s[0].is_real_error());
+    }
+
+    #[test]
+    fn fragment_only_requests_are_dropped() {
+        // Lines whose request never shows a method or status (mid-request
+        // fragments caught at the buffer edge) are noise.
+        let lines = vec![
+            "2026-07-08T14:45:49.683Z cccc0000-4797-4931-acff-a659cee5d354 verbose: SerializerMiddleware: Start serializing...".into(),
+        ];
+        assert!(summarize_storage_events(&lines).is_empty());
+    }
 }
 
 // ── Log-derived action error extraction ───────────────────────────────────

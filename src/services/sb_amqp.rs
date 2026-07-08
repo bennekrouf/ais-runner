@@ -22,6 +22,23 @@ pub async fn probe_amqp(host: &str) -> bool {
 /// depends on SQL Edge and can take several seconds after the port opens before
 /// the AMQP broker is ready to negotiate ("Waiting for header exchange" error).
 pub async fn send_amqp_message(host: &str, queue: &str, body: &str) -> Result<(), String> {
+    send_amqp_message_with_type(host, queue, body, "application/json").await
+}
+
+/// Like [`send_amqp_message`] but with an explicit AMQP content-type.
+///
+/// The content-type decides how the Logic Apps SB trigger delivers the body:
+/// `application/json` arrives as a raw string in `contentData`; any non-JSON
+/// type (e.g. `application/octet-stream`) arrives base64-wrapped as
+/// `contentData.$content` — which is what workflows using
+/// `decodeBase64(…$content)` require. See `sb_testing::queue_encoding` for
+/// picking the right one automatically.
+pub async fn send_amqp_message_with_type(
+    host: &str,
+    queue: &str,
+    body: &str,
+    content_type: &str,
+) -> Result<(), String> {
     const MAX_ATTEMPTS: u32 = 5;
     const BASE_DELAY_MS: u64 = 800;
 
@@ -29,7 +46,7 @@ pub async fn send_amqp_message(host: &str, queue: &str, body: &str) -> Result<()
     let mut last_err = String::new();
 
     for attempt in 1..=MAX_ATTEMPTS {
-        match try_send(&url, queue, body).await {
+        match try_send(&url, queue, body, content_type).await {
             Ok(()) => return Ok(()),
             Err(e) => {
                 last_err = e.clone();
@@ -152,7 +169,7 @@ fn body_to_string(body: &Body<String>) -> String {
     }
 }
 
-async fn try_send(url: &str, queue: &str, body: &str) -> Result<(), String> {
+async fn try_send(url: &str, queue: &str, body: &str, content_type: &str) -> Result<(), String> {
     let mut connection = Connection::open("ais-runner", url)
         .await
         .map_err(|e| format!("AMQP connect to {}: {}", url, e))?;
@@ -165,11 +182,11 @@ async fn try_send(url: &str, queue: &str, body: &str) -> Result<(), String> {
         .await
         .map_err(|e| format!("AMQP attach to queue '{}': {}", queue, e))?;
 
-    // Build a proper AMQP message with content_type = application/json.
-    // Without this, the SB trigger base64-encodes the body in contentData
-    // instead of delivering it as a parsed JSON object.
+    // The content-type decides the trigger-side envelope: application/json is
+    // delivered as a raw string in contentData; non-JSON types arrive
+    // base64-wrapped in contentData.$content (what decodeBase64 consumers need).
     let props = Properties::builder()
-        .content_type("application/json")
+        .content_type(content_type)
         .build();
     let msg = Message::builder()
         .properties(props)

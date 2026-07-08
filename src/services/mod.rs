@@ -25,6 +25,7 @@ pub mod missing_settings;
 pub mod app_config;
 pub mod security_compare;
 pub mod sb_amqp;
+pub mod sb_testing;
 pub mod devops_cli;
 pub mod workflow_analysis;
 pub mod action_io;

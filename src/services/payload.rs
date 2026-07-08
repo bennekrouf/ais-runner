@@ -36,7 +36,16 @@ pub fn suggest_payload(logic_apps_dir: &str, workflow_name: &str) -> String {
     //    validation failures happen against this schema, not the trigger schema.
     if let Some(actions) = defn["actions"].as_object() {
         if let Some(schema) = find_trigger_body_schema(actions) {
-            let sample = schema_to_sample("", &schema);
+            let mut sample = schema_to_sample("", &schema);
+            // Overlay the literal values the workflow's own If/Switch branches
+            // require (e.g. content.event.module == "Companies"). The schema
+            // alone can't tell us these — without them the suggested payload is
+            // structurally valid but routes to no branch and does nothing.
+            apply_branch_literals(actions, &mut sample);
+            // Then fix up well-known platform fields (numeric entity IDs, real
+            // resource paths, UUID-shaped correlation ids) that name-based
+            // heuristics get wrong in ways downstream systems reject.
+            apply_domain_overrides(&mut sample);
             // For SB triggers: if the sample has a top-level "contentData" key,
             // unwrap it — the user posts the inner content; the SB trigger adds the
             // envelope automatically.
@@ -74,6 +83,200 @@ pub fn suggest_payload(logic_apps_dir: &str, workflow_name: &str) -> String {
 
 fn pretty(v: Value) -> String {
     serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Walk every action and overlay onto `sample` the literal values that the
+/// workflow's branch conditions gate on, so the suggested payload actually
+/// routes through a branch instead of falling through.
+///
+/// Handles:
+///  - `If.expression` → `equals` comparisons (nested through and/or/not),
+///    where one side is a `@body(…)?['a']?['b']` reference and the other a
+///    string literal. The literal is written at path `a/b/…` in the sample.
+///  - `Switch` → its `expression` path is set to the first case's key.
+///
+/// When several branches gate the same field (e.g. one workflow with
+/// Companies / Strategies / SupplyChainTanks branches) the last one wins —
+/// any of them is a valid, routable value, which is all we need.
+fn apply_branch_literals(actions: &serde_json::Map<String, Value>, sample: &mut Value) {
+    for (_name, action) in actions {
+        match action["type"].as_str() {
+            Some("If") => collect_equals(&action["expression"], sample),
+            Some("Switch") => {
+                if let (Some(expr), Some(cases)) =
+                    (action["expression"].as_str(), action["cases"].as_object())
+                {
+                    if let (Some(path), Some((case_key, _))) =
+                        (parse_ref_path(expr), cases.iter().next())
+                    {
+                        set_path(sample, &path, Value::String(case_key.clone()));
+                    }
+                }
+            }
+            _ => {}
+        }
+        // Recurse into nested scopes / branches / switch cases.
+        for sub_key in &["actions", "else", "cases", "default"] {
+            if let Some(nested) = action[sub_key].as_object() {
+                apply_branch_literals(nested, sample);
+            }
+        }
+    }
+}
+
+/// Walk a boolean condition tree collecting `equals(<ref path>, <literal>)`
+/// pairs and writing each literal into `sample` at the referenced path.
+fn collect_equals(expr: &Value, sample: &mut Value) {
+    let Some(obj) = expr.as_object() else { return };
+    for (op, val) in obj {
+        match op.as_str() {
+            "and" | "or" | "not" => match val {
+                Value::Array(items) => {
+                    for item in items {
+                        collect_equals(item, sample);
+                    }
+                }
+                other => collect_equals(other, sample),
+            },
+            "equals" => {
+                if let Some(arr) = val.as_array() {
+                    if arr.len() == 2 {
+                        // Exactly one side should be a reference path; the other
+                        // the literal we want to inject.
+                        let (a, b) = (&arr[0], &arr[1]);
+                        if let (Some(path), Some(lit)) =
+                            (a.as_str().and_then(parse_ref_path), b.as_str())
+                        {
+                            set_path(sample, &path, Value::String(lit.to_string()));
+                        } else if let (Some(path), Some(lit)) =
+                            (b.as_str().and_then(parse_ref_path), a.as_str())
+                        {
+                            set_path(sample, &path, Value::String(lit.to_string()));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Extract the `['key']` access chain from a Logic Apps reference expression
+/// such as `@body('Parse_JSON_x')?['data']?['msg']?['module']`. The function
+/// argument lives in `('…')` (parens) so it is never captured — only the
+/// `['…']` bracket segments are. Returns `None` for non-reference strings
+/// (plain literals like `"Companies"`).
+fn parse_ref_path(expr: &str) -> Option<Vec<String>> {
+    let looks_like_ref = expr.contains("triggerBody(")
+        || expr.contains("triggerOutputs(")
+        || expr.contains("body(")
+        || expr.contains("outputs(")
+        || expr.contains("item(");
+    if !looks_like_ref {
+        return None;
+    }
+    let seg_re = Regex::new(r"\['([^']+)'\]").ok()?;
+    let segs: Vec<String> = seg_re
+        .captures_iter(expr)
+        .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+        .collect();
+    if segs.is_empty() {
+        None
+    } else {
+        Some(segs)
+    }
+}
+
+/// Overlay domain-correct values for well-known platform fields, wherever they
+/// appear in the sample. Schema-shape + name heuristics produce values that are
+/// structurally fine but rejected downstream — e.g. `"CompanyId": "TEST-001"`
+/// where JDE's `where ABALP1 = <id>` lookup needs a number, or
+/// `"resourceURI": "text"` which gets concatenated onto the Ignite base URL.
+///
+/// Only exact field-name matches are touched, and only when the current value
+/// is a placeholder string — a value injected by `apply_branch_literals` or
+/// declared non-string by the schema is left alone.
+fn apply_domain_overrides(sample: &mut Value) {
+    // If a branch literal set a module (Companies / Strategies / …), use it to
+    // build a matching resourceURI; default to Companies otherwise.
+    let module = find_string_field(sample, "module").unwrap_or_else(|| "Companies".into());
+
+    fn override_for(key: &str, module: &str) -> Option<Value> {
+        Some(match key {
+            // Numeric entity keys — JDE/Ignite reject string IDs
+            "CompanyId" => json!(90001),
+            "StrategyId" => json!(50000001),
+            "TankId" => json!(70001),
+            "CounterpartyId" => json!(90001),
+            // Ignite HTTP call building blocks
+            "resourceURI" => json!(format!("/api/{module}/search")),
+            "endpoint" => json!("https://ignite.example.test"),
+            "protocol" => json!("HTTP"),
+            "method" => json!("POST"),
+            // Correlation fields — UUID-shaped so runs are traceable
+            "correlationId" => json!("00000000-0000-0000-0000-000000000001"),
+            "identifier" => json!("00000000-0000-0000-0000-0000000a0001"),
+            "parentId" => json!("00000000-0000-0000-0000-00000000000a"),
+            _ => return None,
+        })
+    }
+
+    fn is_placeholder(v: &Value) -> bool {
+        matches!(v.as_str(), Some("TEST-001") | Some("text") | Some(""))
+    }
+
+    fn walk(v: &mut Value, module: &str) {
+        match v {
+            Value::Object(map) => {
+                for (k, child) in map.iter_mut() {
+                    if is_placeholder(child) {
+                        if let Some(better) = override_for(k, module) {
+                            *child = better;
+                            continue;
+                        }
+                    }
+                    walk(child, module);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, module);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    walk(sample, &module);
+}
+
+/// Depth-first search for the first string value under a key named `field`.
+fn find_string_field(v: &Value, field: &str) -> Option<String> {
+    match v {
+        Value::Object(map) => {
+            if let Some(s) = map.get(field).and_then(|x| x.as_str()) {
+                return Some(s.to_string());
+            }
+            map.values().find_map(|c| find_string_field(c, field))
+        }
+        Value::Array(items) => items.iter().find_map(|c| find_string_field(c, field)),
+        _ => None,
+    }
+}
+
+/// Set `value` at `path` in `root`, creating intermediate objects as needed.
+/// No-op if `root` (or an intermediate we need to descend into) isn't an object.
+fn set_path(root: &mut Value, path: &[String], value: Value) {
+    let Some(obj) = root.as_object_mut() else { return };
+    let Some((first, rest)) = path.split_first() else { return };
+    if rest.is_empty() {
+        obj.insert(first.clone(), value);
+    } else {
+        let child = obj
+            .entry(first.clone())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        set_path(child, rest, value);
+    }
 }
 
 fn find_trigger_body_schema(actions: &serde_json::Map<String, Value>) -> Option<Value> {
@@ -371,6 +574,152 @@ pub fn normalise_send_body(raw: &str) -> NormalisedSendBody {
     let body = serde_json::to_string_pretty(&inner)
         .unwrap_or_else(|_| raw.to_string());
     NormalisedSendBody { body, stripped_envelope: true }
+}
+
+#[cfg(test)]
+mod branch_literal_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_ref_path_extracts_bracket_segments_only() {
+        let expr = "@body('Parse_JSON_ais.event.ignite')?['data']?['msg']?['content']?['event']?['module']";
+        assert_eq!(
+            parse_ref_path(expr),
+            Some(vec![
+                "data".into(),
+                "msg".into(),
+                "content".into(),
+                "event".into(),
+                "module".into()
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_ref_path_ignores_plain_literals() {
+        assert_eq!(parse_ref_path("Companies"), None);
+    }
+
+    #[test]
+    fn if_equals_overwrites_placeholder_module() {
+        // Mirrors Send-Http-Get-Ignite-AddressBook's Companies branch.
+        let actions = json!({
+            "Module_=_Companies": {
+                "type": "If",
+                "expression": { "and": [ { "equals": [
+                    "@body('Parse_JSON_ais.event.ignite')?['data']?['msg']?['content']?['event']?['module']",
+                    "Companies"
+                ] } ] },
+                "actions": {}
+            }
+        });
+        let mut sample = json!({
+            "data": { "msg": { "content": { "event": { "module": "SageX3" } } } }
+        });
+        apply_branch_literals(actions.as_object().unwrap(), &mut sample);
+        assert_eq!(sample["data"]["msg"]["content"]["event"]["module"], "Companies");
+    }
+
+    #[test]
+    fn equals_literal_first_operand_order_is_handled() {
+        let actions = json!({
+            "Cond": {
+                "type": "If",
+                "expression": { "equals": [
+                    "COMPANY",
+                    "@body('P')?['data']?['msg']?['content']?['PartyType']"
+                ] },
+                "actions": {}
+            }
+        });
+        let mut sample = json!({ "data": { "msg": { "content": {} } } });
+        apply_branch_literals(actions.as_object().unwrap(), &mut sample);
+        assert_eq!(sample["data"]["msg"]["content"]["PartyType"], "COMPANY");
+    }
+
+    #[test]
+    fn nested_branch_conditions_are_applied() {
+        let actions = json!({
+            "Outer": {
+                "type": "If",
+                "expression": { "equals": [
+                    "@body('P')?['content']?['module']", "Companies"
+                ] },
+                "actions": {
+                    "Inner": {
+                        "type": "If",
+                        "expression": { "equals": [
+                            "@body('P')?['content']?['sub']", "Strategies"
+                        ] },
+                        "actions": {}
+                    }
+                }
+            }
+        });
+        let mut sample = json!({ "content": {} });
+        apply_branch_literals(actions.as_object().unwrap(), &mut sample);
+        assert_eq!(sample["content"]["module"], "Companies");
+        assert_eq!(sample["content"]["sub"], "Strategies");
+    }
+
+    #[test]
+    fn domain_overrides_fix_ids_and_uri_using_branch_module() {
+        let mut sample = json!({
+            "data": { "msg": { "content": {
+                "event":  { "module": "Companies" },
+                "object": {
+                    "resourceURI": "text",
+                    "endpoint": "text",
+                    "method": "text",
+                    "CompanyId": "TEST-001",
+                    "StrategyId": "TEST-001"
+                }
+            },
+            "correlationId": "TEST-001"
+            } }
+        });
+        apply_domain_overrides(&mut sample);
+        let obj = &sample["data"]["msg"]["content"]["object"];
+        assert_eq!(obj["resourceURI"], "/api/Companies/search");
+        assert_eq!(obj["endpoint"], "https://ignite.example.test");
+        assert_eq!(obj["CompanyId"], 90001);
+        assert_eq!(obj["StrategyId"], 50000001);
+        assert_eq!(
+            sample["data"]["msg"]["correlationId"],
+            "00000000-0000-0000-0000-000000000001"
+        );
+        // module itself is untouched — it came from a branch literal
+        assert_eq!(sample["data"]["msg"]["content"]["event"]["module"], "Companies");
+    }
+
+    #[test]
+    fn domain_overrides_leave_non_placeholder_values_alone() {
+        let mut sample = json!({
+            "object": { "CompanyId": 12345, "resourceURI": "/api/custom/path" }
+        });
+        apply_domain_overrides(&mut sample);
+        assert_eq!(sample["object"]["CompanyId"], 12345);
+        assert_eq!(sample["object"]["resourceURI"], "/api/custom/path");
+    }
+
+    #[test]
+    fn switch_sets_first_case_key() {
+        let actions = json!({
+            "Route": {
+                "type": "Switch",
+                "expression": "@body('P')?['content']?['kind']",
+                "cases": {
+                    "First":  { "case": "ORDER",  "actions": {} },
+                    "Second": { "case": "INVOICE", "actions": {} }
+                },
+                "default": { "actions": {} }
+            }
+        });
+        let mut sample = json!({ "content": {} });
+        apply_branch_literals(actions.as_object().unwrap(), &mut sample);
+        assert!(sample["content"]["kind"].is_string());
+    }
 }
 
 #[cfg(test)]
