@@ -102,12 +102,28 @@ enum FilterMode {
     Unhealthy,
 }
 
+/// Does `name` match the filter box? `terms` are the already-lowercased,
+/// whitespace-split search words, OR'd together — typing "check kyriba" lists
+/// workflows matching either word. An empty term list matches everything, so a
+/// blank or whitespace-only box never blanks the list.
+fn matches_filter(name: &str, terms: &[&str]) -> bool {
+    if terms.is_empty() {
+        return true;
+    }
+    let name = name.to_lowercase();
+    terms.iter().any(|t| name.contains(t))
+}
+
 #[component]
 pub fn WorkflowList(props: WorkflowListProps) -> Element {
     let mut filter      = use_signal(|| String::new());
     let mut filter_mode = use_signal(|| FilterMode::All);
 
     let query = filter.read().to_lowercase();
+    // Space-separated terms are OR'd, so "check kyriba" lists every workflow
+    // matching *either* word. Collected once rather than per-row, and via
+    // split_whitespace so a stray/trailing space never blanks the list.
+    let terms: Vec<&str> = query.split_whitespace().collect();
     let total = props.workflows.len();
 
     // Pre-compute category for each workflow once (now uses trigger_provider).
@@ -133,7 +149,7 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
 
     let mut visible: Vec<_> = with_cat.iter()
         .filter(|(wf, cat)| {
-            if !query.is_empty() && !wf.name.to_lowercase().contains(&query) {
+            if !matches_filter(&wf.name, &terms) {
                 return false;
             }
             match mode {
@@ -254,7 +270,7 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
                 }
                 input {
                     id: "wf-filter",
-                    placeholder: "Filter…",
+                    placeholder: "Filter… (space = or, e.g. check kyriba)",
                     value: "{filter}",
                     oninput: move |e| filter.set(e.value()),
                 }
@@ -348,5 +364,47 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::matches_filter;
+
+    fn terms(q: &str) -> Vec<&str> {
+        q.split_whitespace().collect()
+    }
+
+    #[test]
+    fn multi_word_query_ors_the_terms() {
+        let t = terms("check kyriba");
+        assert!(matches_filter("Check-Ignite-Payment-File", &t));
+        assert!(matches_filter("Rcv-Kyriba-files-broadcast", &t));
+        assert!(!matches_filter("Verify-Ignite-Voucher", &t));
+    }
+
+    #[test]
+    fn single_word_still_works() {
+        assert!(matches_filter("Rcv-Kyriba-files-broadcast", &terms("kyriba")));
+        assert!(!matches_filter("Verify-Ignite-Voucher", &terms("kyriba")));
+    }
+
+    #[test]
+    fn matching_is_case_insensitive() {
+        // terms arrive already lowercased from the caller
+        assert!(matches_filter("Rcv-KYRIBA-files", &terms("kyriba")));
+    }
+
+    #[test]
+    fn blank_or_whitespace_query_matches_everything() {
+        assert!(matches_filter("Anything", &terms("")));
+        assert!(matches_filter("Anything", &terms("   ")));
+        // trailing/duplicate spaces must not blank the list
+        assert!(matches_filter("Check-Ignite-Payment-File", &terms("  check   ")));
+    }
+
+    #[test]
+    fn non_matching_query_hides_everything() {
+        assert!(!matches_filter("Check-Ignite-Payment-File", &terms("zzz qqq")));
     }
 }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use dioxus::prelude::*;
 
-use crate::components::log_panel::{LogLevel, LogLine};
+use crate::components::log_panel::{is_azurite_poll_noise, LogLevel, LogLine};
 use crate::services::{process::{ManagedProcess, ServiceState}, runtime_manager};
 use crate::utils::{azurite_dir, azurite_log};
 use crate::utils::make_push;
@@ -91,9 +91,15 @@ pub fn handle_start(
                 let mut push2 = make_push(log_lines);
                 spawn(async move {
                     while let Some((line, _)) = az_rx.recv().await {
-                        if !line.trim().is_empty() {
-                            push2(line, LogLevel::Info);
-                        }
+                        if line.trim().is_empty() { continue; }
+                        // Azurite prints one Apache-format HTTP access line per
+                        // request to stdout. The flow-lookup / job-scheduler
+                        // heartbeats (every ~3 s per workflow) are pure noise
+                        // and already available in the Azurite tab's debug.log.
+                        // Drop them here so the main log stays readable; genuine
+                        // errors (non-2xx) and lifecycle lines still pass.
+                        if is_azurite_poll_noise(&line) { continue; }
+                        push2(line, LogLevel::Info);
                     }
                 });
 

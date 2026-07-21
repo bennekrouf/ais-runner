@@ -60,7 +60,23 @@
       "Bash(kill 41368)",
       "Bash(python3 -c \"import json; json.load\\(open\\('/Users/mb/code/ais-runner/.claude/settings.local.json'\\)\\)\")",
       "Bash(git -C /Users/mb/code/ais-runner checkout -- src/components/log_panel.rs src/handlers/azurite.rs)",
-      "Bash(git -C /Users/mb/code/ais-runner merge master -m \"Merge master: azurite log tail fix, debug.log truncation, DISABLE_UPDATE_CHECK\")"
+      "Bash(git -C /Users/mb/code/ais-runner merge master -m \"Merge master: azurite log tail fix, debug.log truncation, DISABLE_UPDATE_CHECK\")",
+      "Bash(cargo run *)",
+      "Bash(python3 -c \"import json,sys; json.load\\(sys.stdin\\); print\\('HEAD version: valid JSON'\\)\")",
+      "Bash(python3 -c \"import json; json.load\\(open\\('/Users/mb/code/oryx/ais_tom_platform/logic_apps/Verify-Ignite-Voucher/workflow.json'\\)\\); print\\('valid JSON now'\\)\")",
+      "Bash(xargs -n1 dirname)",
+      "Bash(xargs -n1 basename)",
+      "Bash(cargo update *)",
+      "Bash(mv /Users/mb/code/.claude/projects/-Users-mb-code-ais-runner/memory/ais-runner-local-only-objective.md /Users/mb/code/.claude/projects/-Users-mb-code-ais-runner/memory/ais-runner-run-readiness-gate.md /Users/mb/.claude/projects/-Users-mb-code-ais-runner/memory/)",
+      "Bash(rmdir -p /Users/mb/code/.claude/projects/-Users-mb-code-ais-runner/memory)",
+      "Bash(python3 -)",
+      "Bash(awk '{print $6, $7, $8, $NF}')",
+      "Bash(python3 -c 'import json;o=open\\('\\\\''__TRACKED_VAR__'\\\\''\\).read\\(\\);print\\('\\\\''identical:'\\\\'', json.dumps\\(json.loads\\(o\\),indent=2,ensure_ascii=False\\)==o.rstrip\\(chr\\(10\\)\\)\\)')",
+      "Bash(python3 -c 'import json;print\\(json.load\\(open\\('\\\\''__TRACKED_VAR__'\\\\''\\)\\)['\\\\''definition'\\\\'']['\\\\''actions'\\\\'']['\\\\''Scope_Processing'\\\\'']['\\\\''actions'\\\\'']['\\\\''Verify_file_found'\\\\'']['\\\\''runAfter'\\\\'']\\)')",
+      "Bash(git --no-pager diff logic_apps/Check-Ignite-Payment-File/workflow.json)",
+      "Bash(git -C . status --short \"logic_apps/**/workflow.json\")",
+      "Bash(git --no-pager diff --stat)",
+      "Bash(git --no-pager diff logic_apps/Rcv-Ventriks-files-broadcast/workflow.json)"
     ]
   }
 }

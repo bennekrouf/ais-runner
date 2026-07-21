@@ -4,6 +4,7 @@ pub mod run_detail;
 pub mod log_panel;
 pub mod settings_editor;
 pub mod run_dialog;
+pub mod run_gate_dialog;
 pub mod db_panel;
 pub mod azure_panel;
 pub mod devops_panel;

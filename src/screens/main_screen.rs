@@ -6,6 +6,7 @@ use crate::components::{
     log_panel::{LogLevel, LogLine, LogPanel},
     run_detail::RunDetail,
     run_dialog::RunDialog,
+    run_gate_dialog::RunGateDialog,
     toolbar::ServiceBlock,
     workflow_list::WorkflowList,
     settings_editor::SettingsEditor,
@@ -24,7 +25,7 @@ use crate::services::{
     workflows,
 };
 use crate::utils::make_push;
-use crate::handlers::{azurite, cosmos_emulator, debug_mode, func_start, sb_emulator, sql_emulator, setup, workflow_select, workflow_run};
+use crate::handlers::{azurite, cosmos_emulator, func_start, sb_emulator, sql_emulator, setup, workflow_select, workflow_run};
 use crate::screens::MainContext;
 
 #[derive(Props, Clone, PartialEq)]
@@ -106,11 +107,10 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut is_light     = ctx.is_light;
     let active_tab  = ctx.active_tab;
     let mut run_dialog  = ctx.run_dialog;
+    let mut run_gate    = ctx.run_gate;
     let mut traced_wfs  = ctx.traced_wfs;
     let mut cleared_wfs = ctx.cleared_wfs;
     let mut last_ran    = ctx.last_ran;
-    let mut debug_mode_on = ctx.debug_mode_on;
-    let mut debug_mode_count = ctx.debug_mode_count;
     let mut auto_watch  = ctx.auto_watch;
     // Track which views have been opened — panels are lazy-mounted on first visit
     // but stay in the DOM afterwards so their state (caches, signals) survives tab switches.
@@ -118,29 +118,6 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
     // ── Log (from context) ─────────────────────────────────────────────────────
     let mut log_lines = ctx.log_lines;
-
-    // Debug-mode startup: revert any patches left from a previous crashed
-    // session before the user does anything else.
-    use_effect({
-        let dir = dir.clone();
-        move || {
-            let d = dir.clone();
-            spawn(async move {
-                let mut push = crate::utils::make_push(log_lines);
-                let out = tokio::task::spawn_blocking(move || debug_mode::cleanup_orphans(&d))
-                    .await.unwrap_or_else(|_| debug_mode::RevertOutcome { reverted: vec![], skipped: vec![] });
-                if !out.reverted.is_empty() {
-                    push(format!("🐞 Debug mode: cleaned up {} orphan patch(es) from a previous session: {}",
-                        out.reverted.len(), out.reverted.join(", ")),
-                        crate::components::log_panel::LogLevel::Warn);
-                }
-                for (name, why) in out.skipped {
-                    push(format!("🐞 Debug mode: orphan for '{name}' left in place — {why}"),
-                        crate::components::log_panel::LogLevel::Warn);
-                }
-            });
-        }
-    });
 
     // ── SQL Dev log channel ────────────────────────────────────────────────
     use_hook(|| {
@@ -582,66 +559,6 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         azurite_state, azurite_proc, func_state, func_proc, log_lines,
                     ),
                     "⟳ Reset"
-                }
-                button {
-                    class: if *debug_mode_on.read() { "btn btn-warn btn-svc" } else { "btn btn-svc" },
-                    title: if *debug_mode_on.read() {
-                        "Debug mode ON — Stateless workflows are temporarily Stateful. Click to revert. Restart func after."
-                    } else {
-                        "Flip all Stateless workflows to Stateful so their run history persists. Restart func after. Safe: edits are reverted on Off or next startup."
-                    },
-                    onclick: {
-                        let dir = dir.clone();
-                        move |_| {
-                            let dir = dir.clone();
-                            let currently_on = *debug_mode_on.read();
-                            spawn(async move {
-                                let mut push = crate::utils::make_push(log_lines);
-                                if !currently_on {
-                                    let d = dir.clone();
-                                    let out = tokio::task::spawn_blocking(move || debug_mode::enable(&d))
-                                        .await.unwrap_or_else(|_| debug_mode::PatchOutcome { patched: vec![], skipped: vec![] });
-                                    let n = out.patched.len();
-                                    debug_mode_count.set(n);
-                                    if n > 0 {
-                                        push(format!("🐞 Debug mode ON — patched {n} stateless workflow(s): {}",
-                                            out.patched.join(", ")),
-                                            crate::components::log_panel::LogLevel::Warn);
-                                    } else {
-                                        push("🐞 Debug mode ON — no stateless workflows found to patch.".into(),
-                                            crate::components::log_panel::LogLevel::Info);
-                                    }
-                                    for (name, why) in out.skipped {
-                                        push(format!("🐞 Skipped '{name}' — {why}"),
-                                            crate::components::log_panel::LogLevel::Warn);
-                                    }
-                                    debug_mode_on.set(true);
-                                    push("🐞 Next steps: ⏹ Stop func → ⟳ Reset Azurite → ▶ Start func. \
-                                          The runtime caches workflow 'kind' in Azurite tables and refuses to change it on a live registration.".into(),
-                                        crate::components::log_panel::LogLevel::Warn);
-                                } else {
-                                    let d = dir.clone();
-                                    let out = tokio::task::spawn_blocking(move || debug_mode::disable(&d))
-                                        .await.unwrap_or_else(|_| debug_mode::RevertOutcome { reverted: vec![], skipped: vec![] });
-                                    push(format!("🐞 Debug mode OFF — reverted {} workflow(s).", out.reverted.len()),
-                                        crate::components::log_panel::LogLevel::Ok);
-                                    for (name, why) in out.skipped {
-                                        push(format!("🐞 Could not revert '{name}' — {why}"),
-                                            crate::components::log_panel::LogLevel::Warn);
-                                    }
-                                    debug_mode_count.set(0);
-                                    debug_mode_on.set(false);
-                                    push("🐞 Restart func so the runtime re-reads the restored workflow.json files.".into(),
-                                        crate::components::log_panel::LogLevel::Info);
-                                }
-                            });
-                        }
-                    },
-                    if *debug_mode_on.read() {
-                        "🐞 Debug ON ({debug_mode_count})"
-                    } else {
-                        "🐞 Debug runs"
-                    }
                 }
                 ServiceBlock {
                     label: "SB Emulator".to_string(),
@@ -1203,8 +1120,47 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                             wf_name.clone(), trigger_name.clone(), trigger_type.clone(),
                             queue_or_blob, body, &dir,
                             runs, actions, log_lines, running_wfs, active_tab,
-                            traced_wfs, cleared_wfs, run_dialog, last_ran,
+                            traced_wfs, cleared_wfs, run_dialog, last_ran, run_gate,
                         )
+                    },
+                }
+            }
+
+            // ── Local-readiness consent gate ──────────────────────────────
+            if let Some(readiness) = run_gate.read().clone() {
+                RunGateDialog {
+                    readiness: readiness.clone(),
+                    on_cancel: move |_| run_gate.set(None),
+                    on_fix: {
+                        let dir = dir.clone();
+                        move |_| {
+                            let mut push = make_push(log_lines);
+                            let report = workflow_run::apply_readiness_fixes(&dir, &readiness);
+                            if !report.auto_filled.is_empty() {
+                                push(format!("🔧 Filled local defaults in local.settings.json: {}",
+                                    report.auto_filled.join(", ")), LogLevel::Ok);
+                            }
+                            if !report.redirected.is_empty() {
+                                push(format!("🔧 Redirected cloud endpoints → local: {}",
+                                    report.redirected.join(", ")), LogLevel::Ok);
+                            }
+                            if let Some(path) = &report.scaffolded {
+                                push(format!("🔧 Ensured connections.local.json exists: {path}"), LogLevel::Ok);
+                            }
+                            if readiness.needs_manual() {
+                                push("⚠ Some settings need real values only you can provide — see the list, edit \
+                                      local.settings.json / connections.local.json, then restart func.".into(),
+                                    LogLevel::Warn);
+                            } else {
+                                push("✅ Local files updated. Restart func (⏹ then ▶) so it reloads the new \
+                                      connection config, then run the workflow again.".into(),
+                                    LogLevel::Ok);
+                            }
+                            for e in &report.errors {
+                                push(format!("❌ {e}"), LogLevel::Error);
+                            }
+                            run_gate.set(None);
+                        }
                     },
                 }
             }

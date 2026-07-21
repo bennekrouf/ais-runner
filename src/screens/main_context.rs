@@ -54,6 +54,10 @@ pub struct MainContext {
     // Run dialog: (wf, method, url, body, callback_url, relative_path)
     pub run_dialog: Signal<Option<(String, String, String, String, Option<String>, Option<String>)>>,
 
+    // Blocking local-readiness gate shown when a workflow's connections aren't
+    // set up for the local emulators. Some(readiness) → the consent modal is open.
+    pub run_gate: Signal<Option<crate::services::run_readiness::RunReadiness>>,
+
     // View / tab state — lives here so panel caches survive re-renders.
     pub current_view: Signal<String>,
     pub active_tab: Signal<String>,
@@ -61,10 +65,6 @@ pub struct MainContext {
     pub db_panel_open: Signal<bool>,
     pub azure_panel_open: Signal<bool>,
     pub auto_watch: Signal<bool>,
-
-    // Debug mode
-    pub debug_mode_on: Signal<bool>,
-    pub debug_mode_count: Signal<usize>,
 
     // Setup / environment
     pub setup_status: Signal<setup_manager::SetupStatus>,
@@ -137,6 +137,7 @@ impl MainContext {
             sproc_status: Signal::new(HashMap::new()),
 
             run_dialog: Signal::new(None),
+            run_gate: Signal::new(None),
 
             current_view: Signal::new("Workflows".to_string()),
             active_tab: Signal::new("Source".to_string()),
@@ -148,9 +149,6 @@ impl MainContext {
             db_panel_open: Signal::new(false),
             azure_panel_open: Signal::new(false),
             auto_watch: Signal::new(true),
-
-            debug_mode_on: Signal::new(false),
-            debug_mode_count: Signal::new(0usize),
 
             setup_status: Signal::new(setup_manager::SetupStatus::MissingSettings),
             setup_updates: Signal::new(HashMap::new()),

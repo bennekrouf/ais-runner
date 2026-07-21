@@ -1,6 +1,5 @@
 use dioxus::prelude::*;
 use crate::services::{setup_manager, system_check, env_mode};
-use crate::handlers::debug_mode;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct LoadingScreenProps {
@@ -36,36 +35,7 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
 
                 push_log("Starting initialization...".to_string(), LogLevel::Info);
 
-                // 1. Check and cleanup debug mode
-                push_log("Checking debug mode...".to_string(), LogLevel::Info);
-                let d = dir.clone();
-                let cleanup_result = tokio::task::spawn_blocking(move || {
-                    debug_mode::cleanup_orphans(&d)
-                })
-                .await
-                .unwrap_or_else(|_| debug_mode::RevertOutcome {
-                    reverted: vec![],
-                    skipped: vec![],
-                });
-
-                if !cleanup_result.reverted.is_empty() {
-                    push_log(
-                        format!(
-                            "🐞 Cleaned up {} orphan patch(es): {}",
-                            cleanup_result.reverted.len(),
-                            cleanup_result.reverted.join(", ")
-                        ),
-                        LogLevel::Warn,
-                    );
-                }
-                for (name, why) in cleanup_result.skipped {
-                    push_log(
-                        format!("🐞 Orphan patch '{}' skipped: {}", name, why),
-                        LogLevel::Warn,
-                    );
-                }
-
-                // 2. Check tools
+                // 1. Check tools
                 push_log("Checking system tools...".to_string(), LogLevel::Info);
                 push_log("  → Probing func...".to_string(), LogLevel::Info);
                 let tool_results = tokio::task::spawn_blocking(system_check::check_tools)
@@ -88,7 +58,7 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                     }
                 }
 
-                // 3. Check setup status
+                // 2. Check setup status
                 push_log("Checking project setup...".to_string(), LogLevel::Info);
                 push_log("  → Reading local.settings.json...".to_string(), LogLevel::Info);
                 let d = dir.clone();
@@ -118,7 +88,7 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                     }
                 }
 
-                // 4. Detect environment mode
+                // 3. Detect environment mode
                 push_log("Detecting environment...".to_string(), LogLevel::Info);
                 push_log("  → Scanning storage configuration...".to_string(), LogLevel::Info);
                 let d = dir.clone();

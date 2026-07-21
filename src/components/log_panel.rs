@@ -47,6 +47,54 @@ pub fn is_azurite_poll_noise(line: &str) -> bool {
     line.contains("jobdefinitions") || line.contains("histories") || line.contains("flows(")
 }
 
+/// The GUID request-id prefixing every per-request Azurite debug line
+/// (`<guid> <level>: <component>: …`). Returns None for startup/global lines.
+fn azurite_request_id(line: &str) -> Option<&str> {
+    let first = line.split_whitespace().next()?;
+    // GUID-ish: hyphenated and long enough. Guards against matching a
+    // timestamp or a plain word.
+    if first.len() >= 32 && first.contains('-') { Some(first) } else { None }
+}
+
+/// Parses a `--debug` trace line of the form `<guid> <level>: <component>: …`
+/// into its request-id and log level. Returns None for anything that isn't a
+/// per-request pipeline trace (startup banners, HTTP access lines, freeform
+/// output). This is how we recognize the endless variety of Azurite pipeline
+/// components (SAS/SharedKey authenticators, (de)serializers, context
+/// middleware, table/blob/queue handlers, …) *without* enumerating them.
+fn azurite_trace(line: &str) -> Option<(&str, &str)> {
+    let mut it = line.split_whitespace();
+    let id = it.next()?;
+    if id.len() < 32 || !id.contains('-') { return None; }
+    let level = it.next()?.trim_end_matches(':');
+    matches!(level, "debug" | "verbose" | "info" | "warn" | "error")
+        .then_some((id, level))
+}
+
+/// Extracts the terminal HTTP status code Azurite reported for a request,
+/// from whichever pipeline line carries it.
+fn azurite_status_code(line: &str) -> Option<u16> {
+    for tag in ["ErrorHTTPStatusCode=", "StatusCode=", "Set HTTP code: "] {
+        if let Some(pos) = line.find(tag) {
+            let digits: String = line[pos + tag.len()..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if let Ok(code) = digits.parse::<u16>() {
+                return Some(code);
+            }
+        }
+    }
+    None
+}
+
+/// True for a status code the Logic Apps runtime provokes on purpose as normal
+/// control flow: 404 ("does this entity exist yet?") and 409 (create-if-absent
+/// race). Everything else (403 auth, 5xx) is a real error worth showing.
+fn is_benign_azurite_status(code: u16) -> bool {
+    code == 404 || code == 409
+}
+
 /// Percent-decodes a URL-encoded string (handles `%XX`).
 fn pct_decode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -131,20 +179,48 @@ pub fn process_azurite_lines(
     let mut queue_span: HashMap<String, (usize, usize)> = HashMap::new();
     let mut poll_count = 0usize;
 
+    // Pass 1: classify each request-id by its terminal HTTP status so a benign
+    // 404/409 error cascade (SAS validate → deserialize → ErrorMiddleware →
+    // EndMiddleware) can be suppressed wholesale, without leaving orphan
+    // "Set HTTP Header: x-ms-request-id" fragments behind. A real 5xx keeps
+    // its cascade visible.
+    let mut req_status: HashMap<&str, u16> = HashMap::new();
     for line in lines {
-        let is_noise = is_azurite_poll_noise(line);
-        // Always show errors even if they look like poll lines
-        let is_error = {
-            let s = line.trim_end();
-            // HTTP status ≥ 400
-            let status_4xx = s.ends_with(" 400 -") || s.ends_with(" 401 -") ||
-                             s.ends_with(" 403 -") || s.ends_with(" 404 -") ||
-                             s.ends_with(" 409 -") || s.ends_with(" 500 -") ||
-                             s.ends_with(" 503 -");
-            status_4xx || (!s.contains("HTTP/1.1") && (s.contains("error") || s.contains("Error")))
-        };
+        if let (Some(id), Some(code)) = (azurite_request_id(line), azurite_status_code(line)) {
+            // Keep the worst (highest) code seen for the request.
+            let e = req_status.entry(id).or_insert(code);
+            if code > *e { *e = code; }
+        }
+    }
 
-        if is_noise && !is_error {
+    for line in lines {
+        // ── GUID-prefixed --debug pipeline trace lines ───────────────────
+        // These dominate debug.log. Rather than allowlist component names,
+        // classify by level and request outcome:
+        //   • debug / verbose / info  → pipeline plumbing, always noise.
+        //   • warn / error            → keep only when the request ended in a
+        //                               real (non-benign) error; a benign
+        //                               404/409 cascade is expected control flow.
+        if let Some((id, level)) = azurite_trace(line) {
+            let real_error = req_status
+                .get(id)
+                .is_some_and(|&code| !is_benign_azurite_status(code));
+            let keep = matches!(level, "warn" | "error") && real_error;
+            if keep {
+                display.push(line.clone());
+            } else {
+                poll_hidden += 1;
+            }
+            continue;
+        }
+
+        // ── Apache-format HTTP access lines + everything else ────────────
+        let is_poll = is_azurite_poll_noise(line);
+        // Genuine, non-request error lines (crashes, stack traces) — always keep.
+        let is_freeform_error = !line.contains("HTTP/1.1")
+            && (line.contains("error") || line.contains("Error"));
+
+        if is_poll && !is_freeform_error {
             poll_hidden += 1;
             if let Some(q) = extract_azurite_poll_queue(line) {
                 let e = queue_span.entry(q).or_insert((poll_count, poll_count));
@@ -759,7 +835,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                         let (shown, polling, stale, hidden) = process_azurite_lines(&az_display);
                         rsx! {
                             // ── Poll summary banner ────────────────────────
-                            if !polling.is_empty() || !stale.is_empty() {
+                            if !polling.is_empty() || !stale.is_empty() || hidden > 0 {
                                 div { class: "log-line az-poll-summary",
                                     if !polling.is_empty() {
                                         span { class: "az-poll-icon", "📡" }
@@ -778,7 +854,7 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                                         }
                                     }
                                     if hidden > 0 {
-                                        span { class: "az-poll-hidden", "({hidden} poll cycles hidden)" }
+                                        span { class: "az-poll-hidden", "({hidden} noise lines hidden)" }
                                     }
                                 }
                             }
@@ -1024,3 +1100,107 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
 fn now_hms() -> String {
     chrono::Local::now().format("%H:%M:%S").to_string()
 }
+
+#[cfg(test)]
+mod azurite_filter_tests {
+    use super::*;
+
+    // A real benign-404 cascade as emitted by Azurite --debug for a Logic Apps
+    // "does this entity exist yet?" table lookup.
+    fn benign_404_cascade() -> Vec<String> {
+        let id = "050504e4-1f94-4e7e-97de-9e96907bd9f3";
+        [
+            format!("{id} info: AccountSASAuthenticator:validate() Validate start and expiry time."),
+            format!("{id} debug: AccountSASAuthenticator:validate() Got permission requirements for operation Table_QueryEntitiesWithPartitionAndRowKey"),
+            format!("{id} verbose: DeserializerMiddleware: Start deserializing..."),
+            format!("{id} info: HandlerMiddleware: DeserializedParameters={{...}}"),
+            format!("{id} error: ErrorMiddleware: Received a MiddlewareError, fill error information to HTTP response"),
+            format!("{id} error: ErrorMiddleware: ErrorName=StorageError ErrorMessage=\"The specified resource does not exist.\"  ErrorHTTPStatusCode=404"),
+            format!("{id} error: ErrorMiddleware: Set HTTP code: 404"),
+            format!("{id} error: ErrorMiddleware: Set HTTP Header: x-ms-request-id={id}"),
+            format!("{id} info: EndMiddleware: End response. TotalTimeInMS=1 StatusCode=404 StatusMessage=Not Found"),
+        ].to_vec()
+    }
+
+    #[test]
+    fn benign_404_cascade_is_fully_suppressed() {
+        let lines = benign_404_cascade();
+        let (shown, _polling, _stale, hidden) = process_azurite_lines(&lines);
+        assert!(shown.is_empty(), "benign 404 cascade should be hidden, got: {shown:?}");
+        assert_eq!(hidden, lines.len());
+    }
+
+    #[test]
+    fn real_500_error_is_kept() {
+        let id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let lines = vec![
+            format!("{id} verbose: DeserializerMiddleware: Start deserializing..."),
+            format!("{id} error: ErrorMiddleware: ErrorName=InternalError ErrorHTTPStatusCode=500"),
+            format!("{id} error: ErrorMiddleware: Set HTTP code: 500"),
+            format!("{id} info: EndMiddleware: End response. StatusCode=500 StatusMessage=Internal Server Error"),
+        ];
+        let (shown, _p, _s, _h) = process_azurite_lines(&lines);
+        // The ErrorMiddleware cascade for a real 500 stays visible; only the
+        // pure DeserializerMiddleware plumbing line is dropped.
+        assert!(shown.iter().any(|l| l.contains("ErrorHTTPStatusCode=500")));
+        assert!(shown.iter().any(|l| l.contains("Set HTTP code: 500")));
+        assert!(!shown.iter().any(|l| l.contains("DeserializerMiddleware")));
+    }
+
+    #[test]
+    fn freeform_error_without_request_id_is_kept() {
+        let lines = vec![
+            "error: Azurite failed to bind port 10000".to_string(),
+        ];
+        let (shown, _p, _s, _h) = process_azurite_lines(&lines);
+        assert_eq!(shown.len(), 1);
+    }
+
+    #[test]
+    fn benign_200_flow_lookup_trace_is_suppressed() {
+        // A successful (200) flow-lookup / runs-query in debug.log: a wide
+        // variety of component tags, none of which we enumerate. All are
+        // info/debug level and the request never errors → all hidden.
+        let id = "d5967a9a-6a29-4377-8694-52f414c53222";
+        let lines = vec![
+            format!("{id} info: BlobSharedKeyAuthenticator:validate() Signature 1 matched."),
+            format!("{id} debug: Serializer: Raw response body string is <?xml ...>"),
+            format!("{id} info: Serializer: Start returning stream body."),
+            format!("{id} info: TableStorageContextMiddleware: RequestMethod=GET RequestURL=..."),
+            format!("{id} debug: tableStorageContextMiddleware: Dispatch pattern string: /...flows()"),
+            format!("{id} info: TableSharedKeyAuthenticator:validate() Start validation..."),
+            format!("{id} debug: TableHandler:queryEntities() Raw response string is \"{{...}}\""),
+        ];
+        let (shown, _p, _s, hidden) = process_azurite_lines(&lines);
+        assert!(shown.is_empty(), "benign 200 trace should be hidden, got: {shown:?}");
+        assert_eq!(hidden, lines.len());
+    }
+
+    #[test]
+    fn azurite_startup_lines_are_kept() {
+        // Global (no request-id) lifecycle lines must survive.
+        let lines = vec![
+            "info: Azurite Blob service is starting at http://127.0.0.1:10000".to_string(),
+            "info: Azurite Table service successfully listens on http://127.0.0.1:10002".to_string(),
+        ];
+        let (shown, _p, _s, _h) = process_azurite_lines(&lines);
+        assert_eq!(shown.len(), 2);
+    }
+
+    #[test]
+    fn flow_lookup_access_line_is_poll_noise() {
+        // The Apache-format access line Azurite prints to stdout for the
+        // runtime's every-few-seconds flow-lookup table poll.
+        let line = "127.0.0.1 - - [21/Jul/2026:07:03:17 +0000] \"GET /devstoreaccount1/flow8e478029a1a5452flows(PartitionKey='D5F93',RowKey='MYEDGEENVIRONMENT_FLOWLOOKUP-X')?&timeout=16 HTTP/1.1\" 200 -";
+        assert!(is_azurite_poll_noise(line));
+    }
+
+    #[test]
+    fn status_code_parsing() {
+        assert_eq!(azurite_status_code("x ErrorHTTPStatusCode=404 y"), Some(404));
+        assert_eq!(azurite_status_code("x Set HTTP code: 500"), Some(500));
+        assert_eq!(azurite_status_code("x StatusCode=201 y"), Some(201));
+        assert_eq!(azurite_status_code("no code here"), None);
+    }
+}
+

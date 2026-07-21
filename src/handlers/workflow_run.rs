@@ -11,10 +11,17 @@ fn epoch_now() -> u64 {
 
 use crate::components::log_panel::{LogLevel, LogLine};
 use crate::services::{
-    connection_diag, payload, sb_check,
+    connection_diag, payload, run_readiness, sb_check,
     workflows::{self, ActionItem, RunItem, WorkflowItem},
 };
 use crate::utils::{filter_cleared, make_push, sweep_run_history};
+
+/// Apply the fixes ais-runner can make on the user's behalf after they consent
+/// in the readiness gate. Thin wrapper so the UI depends on the handler layer
+/// rather than reaching into services directly.
+pub fn apply_readiness_fixes(dir: &str, readiness: &run_readiness::RunReadiness) -> run_readiness::FixReport {
+    run_readiness::apply_fixes(dir, readiness)
+}
 
 fn blob_container_for(dir: &str, name: &str, trigger_type: &str) -> Option<String> {
     if trigger_type.to_lowercase() != "serviceprovider" { return None; }
@@ -88,7 +95,20 @@ pub fn handle_run(
     mut cleared_wfs: Signal<HashMap<String, String>>,
     mut run_dialog: Signal<Option<(String, String, String, String, Option<String>, Option<String>)>>,
     mut last_ran: Signal<HashMap<String, u64>>,
+    mut run_gate: Signal<Option<run_readiness::RunReadiness>>,
 ) {
+    // ── Local-readiness gate ──────────────────────────────────────────────
+    // Logic Apps consumes connection config at func start, so a workflow whose
+    // connections aren't set up for the emulators cannot run in the current
+    // session no matter what we do here. Block the run and open the consent
+    // modal rather than wasting a trigger on a doomed run.
+    let readiness = run_readiness::check(dir, &name);
+    if !readiness.is_ready() {
+        run_dialog.set(None);
+        run_gate.set(Some(readiness));
+        return;
+    }
+
     run_dialog.set(None);
     active_tab.set("Run".into());
     traced_wfs.write().insert(name.clone());
@@ -365,7 +385,7 @@ pub async fn poll_for_run(
                                     let icon = match status.as_str() {
                                         "succeeded" => "✅", "failed" => "❌", "skipped" => "⏭", _ => "⏳",
                                     };
-                                    push(format!("  {} {}  {}ms", icon, act.name, ms), LogLevel::Info);
+                                    push(format!("  [{}] {} {}  {}ms", wf, icon, act.name, ms), LogLevel::Info);
                                     if status == "failed" {
                                         // Try inline error first, fall back to get_action_detail
                                         // (the list endpoint omits error body in some runtime versions)
@@ -390,16 +410,19 @@ pub async fn poll_for_run(
                                                 }
                                             }
                                         };
-                                        push(format!("     ↳ {}", err_msg), LogLevel::Error);
+                                        // Keep the workflow tag on the error line too, so
+                                        // filtering the log by workflow name never orphans
+                                        // an action from its failure reason.
+                                        push(format!("  [{}]    ↳ {}", wf, err_msg), LogLevel::Error);
                                     }
                                 }
                                 if err > 0 {
-                                    push(format!("Run complete — {} ok, {} failed", ok, err), LogLevel::Error);
+                                    push(format!("Run complete — {}: {} ok, {} failed", wf, ok, err), LogLevel::Error);
                                 } else if a.is_empty() {
-                                    push(format!("Run complete — {}", run_status), LogLevel::Ok);
+                                    push(format!("Run complete — {}: {}", wf, run_status), LogLevel::Ok);
                                 } else {
                                     push(
-                                        format!("Run complete — {} actions in {:.1}s", ok,
+                                        format!("Run complete — {}: {} actions in {:.1}s", wf, ok,
                                             workflows::duration_ms(
                                                 &a.first().and_then(|x| x.properties.start_time.clone()),
                                                 &a.last().and_then(|x| x.properties.end_time.clone()),

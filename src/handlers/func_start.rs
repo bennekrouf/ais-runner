@@ -282,6 +282,18 @@ pub fn handle_start(
                         if line.contains("Workflow processing failed") && line.contains("functionConnections") {
                             continue;
                         }
+                        // Host-readiness probe failures spam the log many times a
+                        // second while the func host is still booting — pure noise.
+                        if line.contains("Host unavailable after check") {
+                            continue;
+                        }
+                        // Leftover from workflows still patched to Stateful on disk
+                        // (the old debug-mode feature, now removed). The runtime
+                        // refuses to flip kind on a live registration and logs this
+                        // every start until the file is reverted — drop the noise.
+                        if line.contains("cannot be changed from 'Stateless' to 'Stateful'") {
+                            continue;
+                        }
                         push3(line, if is_err { LogLevel::Error } else { LogLevel::Info });
                     }
                 });

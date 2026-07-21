@@ -188,6 +188,8 @@ pub fn initialize_default(dir: &str) -> Result<(), String> {
 /// - AzureBlob MSI → connectionString pointing at AzureWebJobsStorage (Azurite)
 /// - ServiceBus MSI → connectionString pointing at `serviceBus_connectionString`
 ///   (populated with the emulator connection string by the SB emulator start handler)
+/// - SQL MSI → connectionString pointing at `<name>_connectionString`
+///   (MSI yields `Login failed for user ''` locally — no IMDS to get a token from)
 ///
 /// MSI (`parameterSetName: "ManagedServiceIdentity"`) requires the Azure IMDS
 /// endpoint which does not exist on a developer machine.
@@ -227,6 +229,22 @@ pub fn patch_connections_for_local(raw: &str) -> String {
                 },
                 "serviceProvider": {
                     "id": "/serviceProviders/AzureBlob"
+                }
+            });
+        } else if is_msi && provider_id == "/serviceProviders/sql" {
+            // MSI against SQL cannot work locally: there is no Azure IMDS
+            // endpoint, so the driver authenticates with no credentials and the
+            // server rejects it with `Login failed for user ''`. Switch to
+            // connection-string auth against the local SQL emulator.
+            let entry = svc.get_mut(&name).unwrap();
+            *entry = serde_json::json!({
+                "displayName": entry["displayName"].clone(),
+                "parameterSetName": "connectionString",
+                "parameterValues": {
+                    "connectionString": format!("@appsetting('{name}_connectionString')")
+                },
+                "serviceProvider": {
+                    "id": "/serviceProviders/sql"
                 }
             });
         } else if is_msi && provider_id == "/serviceProviders/serviceBus" {
@@ -445,13 +463,27 @@ pub fn smart_default(key: &str) -> String {
         }
 
         // ── SQL Server ────────────────────────────────────────────────────────
-        // Same rule: empty connection string crashes table init.
-        // A syntactically-valid unreachable string lets the workflow load as
-        // unhealthy without corrupting Azurite state.
+        // Local-only: point at the bundled SQL Edge emulator (reachable), NOT a
+        // cloud-shaped placeholder. Database=master always exists so the
+        // connection opens even before the workflow's own DB is created.
         k if k.to_uppercase().contains("SQL") && k.to_uppercase().contains("CONNECTION") => {
-            "Server=tcp:placeholder.database.windows.net,1433;\
-             Initial Catalog=placeholder;User ID=placeholder;Password=placeholder;\
-             Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;".into()
+            format!(
+                "Server=localhost,{};Database=master;User Id=sa;Password={};\
+                 Encrypt=false;TrustServerCertificate=true;",
+                crate::handlers::sql_emulator::SQL_PORT,
+                crate::handlers::sql_emulator::SA_PASSWORD,
+            )
+        }
+
+        // ── Cosmos DB ───────────────────────────────────────────────────────────
+        // Local-only: point at the bundled Cosmos emulator (reachable).
+        k if k.to_uppercase().contains("COSMOS") && k.to_uppercase().contains("CONNECTION") => {
+            crate::handlers::cosmos_emulator::local_connection_string()
+        }
+        k if k.to_uppercase().contains("COSMOS")
+            && (k.to_uppercase().contains("ENDPOINT") || k.to_uppercase().contains("URL")) =>
+        {
+            format!("http://localhost:{}", crate::handlers::cosmos_emulator::COSMOS_API_PORT)
         }
 
         // ── Java function connections ─────────────────────────────────────────
@@ -618,5 +650,59 @@ mod tests {
         let patched = patch_connections_for_local(already_cs);
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
         assert_eq!(v["serviceProviderConnections"]["IgniteBlob"]["parameterSetName"], "connectionString");
+    }
+}
+
+#[cfg(test)]
+mod sql_msi_local_tests {
+    use super::*;
+
+    #[test]
+    fn msi_sql_is_switched_to_connection_string() {
+        // MSI against SQL yields `Login failed for user ''` locally (no IMDS).
+        let raw = r#"{
+            "serviceProviderConnections": {
+                "sql-server-ais": {
+                    "displayName": "ais",
+                    "parameterSetName": "ManagedServiceIdentity",
+                    "parameterValues": {
+                        "authProvider": { "Type": "ManagedServiceIdentity" },
+                        "serverName": "@appsetting('sqlServerAIS_serverName')",
+                        "databaseName": "@appsetting('sqlServerAIS_databaseName')"
+                    },
+                    "serviceProvider": { "id": "/serviceProviders/sql" }
+                }
+            }
+        }"#;
+        let out: serde_json::Value =
+            serde_json::from_str(&patch_connections_for_local(raw)).unwrap();
+        let c = &out["serviceProviderConnections"]["sql-server-ais"];
+        assert_eq!(c["parameterSetName"], "connectionString");
+        assert_eq!(
+            c["parameterValues"]["connectionString"],
+            "@appsetting('sql-server-ais_connectionString')"
+        );
+        // MSI-only fields are gone, so the driver can't fall back to identity auth.
+        assert!(c["parameterValues"]["authProvider"].is_null());
+        assert_eq!(c["displayName"], "ais");
+    }
+
+    #[test]
+    fn non_msi_sql_is_left_alone() {
+        let raw = r#"{
+            "serviceProviderConnections": {
+                "sql": {
+                    "parameterSetName": "connectionString",
+                    "parameterValues": { "connectionString": "@appsetting('sql_connectionString')" },
+                    "serviceProvider": { "id": "/serviceProviders/sql" }
+                }
+            }
+        }"#;
+        let out: serde_json::Value =
+            serde_json::from_str(&patch_connections_for_local(raw)).unwrap();
+        assert_eq!(
+            out["serviceProviderConnections"]["sql"]["parameterValues"]["connectionString"],
+            "@appsetting('sql_connectionString')"
+        );
     }
 }

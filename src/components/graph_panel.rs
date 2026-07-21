@@ -522,17 +522,30 @@ fn build_graph_data(logic_apps_dir: &str) -> Option<GraphData> {
     let workflows = ais_chain::parser::parse_all(&path);
     if workflows.is_empty() { return None; }
 
-    let mut manual_links = Vec::new();
-    let auto_links_path = path.join(".ais-chain");
-    if auto_links_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&auto_links_path) {
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                    manual_links.push(trimmed.to_string());
-                }
-            }
-        }
+    // Workflows whose workflow.json exists on disk but failed to parse —
+    // parse_all drops them silently, which fragments chains with no visible
+    // cause. Surface them as red "broken" nodes instead.
+    let parsed_names: HashSet<&str> = workflows.iter().map(|w| w.name.as_str()).collect();
+    let broken: Vec<String> = std::fs::read_dir(&path).ok()
+        .map(|entries| entries.flatten()
+            .filter(|e| e.path().is_dir() && e.path().join("workflow.json").is_file())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|name| !parsed_names.contains(name.as_str()))
+            .collect())
+        .unwrap_or_default();
+
+    // Manual links live in the tool home (~/.ais/chains/<key>.txt), never in
+    // the customer repo. A repo .ais-chain is still honored read-only and
+    // migrated to the tool home on first load.
+    let loaded = ais_chain::links::load(&path);
+    let manual_links = loaded.links;
+    let mut link_warnings = loaded.warnings;
+    link_warnings.extend(ais_chain::links::validate(
+        &manual_links,
+        &workflows.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
+    ));
+    for w in &link_warnings {
+        eprintln!("[ais-chain links] {w}");
     }
 
     let graph = ais_chain::graph::build(&workflows, &manual_links);
@@ -575,6 +588,11 @@ fn build_graph_data(logic_apps_dir: &str) -> Option<GraphData> {
 
         let json = format!(r#"{{ "id": "{name}", "trigger": "{trigger}", "group": "{group}" }}"#);
         node_objects.push((name.to_string(), json));
+    }
+
+    for name in &broken {
+        let json = format!(r#"{{ "id": "{name}", "trigger": "⚠ workflow.json is invalid JSON — fix it to restore this node's chain links", "group": "broken" }}"#);
+        node_objects.push((name.clone(), json));
     }
 
     let mut edge_objects: Vec<(String, String, String)> = Vec::new();
@@ -666,7 +684,8 @@ fn build_d3_script(nodes_json: &str, edges_json: &str, theme: &Theme) -> String 
             queue:      ['{node_fill_queue}',      '{node_queue}'],
             blob:       ['{node_fill_blob}',       '{node_blob}'],
             recurrence: ['{node_fill_recurrence}', '{node_recurrence}'],
-            generic:    ['{node_fill_generic}',    '{node_generic}']
+            generic:    ['{node_fill_generic}',    '{node_generic}'],
+            broken:     ['rgba(248,81,73,0.25)',   '#f85149']
         }};
 
         var node = g.append('g').selectAll('g').data(nodes).join('g')
