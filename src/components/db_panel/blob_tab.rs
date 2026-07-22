@@ -6,30 +6,30 @@ use crate::services::{
     azurite_client,
 };
 
-async fn do_create_container_or_folder(input: String) -> Result<(), String> {
-    let (container, folder) = match input.find('/') {
-        None => (input.clone(), None),
-        Some(pos) => {
-            let c = input[..pos].trim().to_string();
-            let f = input[pos + 1..].trim().trim_end_matches('/').to_string();
-            (c, if f.is_empty() { None } else { Some(f) })
-        }
-    };
-    let c2 = container.clone();
-    tokio::task::spawn_blocking(move || azurite_client::create_container(&c2))
+/// Create a container. Folders are deliberately NOT created here: an empty
+/// folder is just a `prefix/.keep` marker blob, and a container-watching
+/// workflow fires on that marker before the user can add the real file. Folders
+/// instead come into existence atomically when a file is imported into them
+/// (see `join_blob_path` / the per-container Import form).
+async fn do_create_container(name: String) -> Result<(), String> {
+    let container = name.trim().to_string();
+    tokio::task::spawn_blocking(move || azurite_client::create_container(&container))
         .await
         .map_err(|e| format!("Task panicked: {}", e))?
-        .map_err(|e| format!("Create container failed: {}", e))?;
-    if let Some(prefix) = folder {
-        let c3 = container.clone();
-        tokio::task::spawn_blocking(move || {
-            azurite_client::create_virtual_folder(&c3, &prefix)
-        })
-        .await
-        .map_err(|e| format!("Task panicked: {}", e))?
-        .map_err(|e| format!("Create folder failed: {}", e))?;
-    }
-    Ok(())
+        .map_err(|e| format!("Create container failed: {}", e))
+}
+
+/// Normalise a user-typed blob path. The user types the full name including any
+/// (possibly nested) folder, e.g. `payments/PAYMENT_TEST.csv`. Leading/trailing
+/// slashes and blank segments are stripped: `/ payments / 2026 / f.csv ` →
+/// `payments/2026/f.csv`. A bare name → container root.
+fn clean_blob_path(input: &str) -> String {
+    input
+        .split('/')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn blob_fetch_all() -> Result<Vec<(String, Vec<BlobInfo>)>, String> {
@@ -53,6 +53,17 @@ pub struct BlobTabProps {
     pub status:          Signal<Option<(String, bool)>>,
 }
 
+/// New full prefix when renaming only the last segment of a folder path.
+/// Renaming keeps the folder where it is: `archive/payments` + `pay` →
+/// `archive/pay`, not `pay`.
+fn rename_last_segment(path: &str, new_name: &str) -> String {
+    let new_name = new_name.trim().trim_matches('/');
+    match path.trim_end_matches('/').rsplit_once('/') {
+        Some((parent, _)) => format!("{parent}/{new_name}"),
+        None => new_name.to_string(),
+    }
+}
+
 #[component]
 pub fn BlobTab(props: BlobTabProps) -> Element {
     let mut blob_containers:  Signal<Option<Vec<(String, Vec<BlobInfo>)>>> = use_signal(|| None);
@@ -64,6 +75,19 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
     let mut blob_expanded:    Signal<HashSet<String>> = use_signal(HashSet::new);
     let mut new_container_name: Signal<String>        = use_signal(String::new);
     let mut blob_clear_confirm: Signal<Option<String>> = use_signal(|| None);
+    // Folder rename: which (container, folder-path) is being edited, the in-flight
+    // set, and the text box contents.
+    let mut folder_rename:  Signal<Option<(String, String)>> = use_signal(|| None);
+    let mut rename_input:   Signal<String>                   = use_signal(String::new);
+    let mut blob_renaming:  Signal<HashSet<String>>          = use_signal(HashSet::new);
+    // Import file: which container's form is open, the chosen local file path,
+    // and the target folder / file name the user is editing. A blob is written
+    // atomically to `folder/filename` — no empty-folder marker, so a container
+    // watcher only ever sees a complete file.
+    let mut import_target: Signal<Option<String>> = use_signal(|| None);
+    let mut import_path:   Signal<Option<String>> = use_signal(|| None);
+    // Full target blob path the user is editing, e.g. "payments/PAYMENT_TEST.csv".
+    let mut import_name:   Signal<String>         = use_signal(String::new);
 
     let mut webjobs_edit = props.webjobs_edit;
     let mut status       = props.status;
@@ -191,7 +215,7 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                 div { class: "blob-new-row",
                     input {
                         r#type: "text",
-                        placeholder: "container  or  container/folder/subfolder",
+                        placeholder: "new container name",
                         value: "{new_container_name.read()}",
                         oninput: move |e| new_container_name.set(e.value()),
                         onkeydown: move |e| {
@@ -201,7 +225,7 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                     blob_creating.set(true);
                                     status.set(None);
                                     spawn(async move {
-                                        if let Err(msg) = do_create_container_or_folder(name).await {
+                                        if let Err(msg) = do_create_container(name).await {
                                             status.set(Some((msg, true)));
                                             blob_creating.set(false);
                                             return;
@@ -227,7 +251,7 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                 blob_creating.set(true);
                                 status.set(None);
                                 spawn(async move {
-                                    if let Err(msg) = do_create_container_or_folder(name).await {
+                                    if let Err(msg) = do_create_container(name).await {
                                         status.set(Some((msg, true)));
                                         blob_creating.set(false);
                                         return;
@@ -255,12 +279,14 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                         for (cname, blobs) in containers {
                             {
                                 let cname2    = cname.clone();
-                                let cname3    = cname.clone();
                                 let cname4    = cname.clone();
                                 let cname_exp = cname.clone();
                                 let is_expanded  = blob_expanded.read().contains(&cname);
                                 let is_clearing  = blob_clearing.read().contains(&cname);
                                 let is_uploading = blob_uploading.read().contains(&cname);
+                                let import_open  = import_target.read().as_deref() == Some(&cname);
+                                let cname_imp    = cname.clone();  // for the Import toggle button
+                                let cname_form   = cname.clone();  // for the inline import form
                                 let is_empty     = blobs.iter().all(|b| b.name.ends_with("/.keep"));
                                 let confirm_pending = blob_clear_confirm.read().as_deref() == Some(&cname);
                                 let blob_count_label = if blobs.is_empty() {
@@ -292,36 +318,20 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                         }
                                         div { class: "blob-container-actions",
                                             button {
-                                                class: "btn btn-small",
+                                                class: if import_open { "btn btn-small btn-run" } else { "btn btn-small" },
                                                 disabled: is_uploading || is_clearing,
-                                                title: "Upload a file into this container",
+                                                title: "Import a file into this container (choose the folder + name)",
                                                 onclick: move |_| {
-                                                    let c = cname3.clone();
-                                                    blob_uploading.write().insert(c.clone());
-                                                    spawn(async move {
-                                                        if let Some(file) = rfd::AsyncFileDialog::new().pick_file().await {
-                                                            let path = file.path().to_string_lossy().to_string();
-                                                            let name = file.file_name();
-                                                            let c2   = c.clone();
-                                                            let _ = tokio::task::spawn_blocking(move || {
-                                                                azurite_client::upload_blob(&c2, &path, &name)
-                                                            }).await;
-                                                            blob_expanded.write().insert(c.clone());
-                                                            let c3 = c.clone();
-                                                            if let Ok(Ok(updated)) = tokio::task::spawn_blocking(move || {
-                                                                azurite_client::list_blobs(&c3)
-                                                            }).await {
-                                                                if let Some(ref mut list) = *blob_containers.write() {
-                                                                    if let Some(entry) = list.iter_mut().find(|(n, _)| n == &c) {
-                                                                        entry.1 = updated;
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        blob_uploading.write().remove(&c);
-                                                    });
+                                                    if import_target.read().as_deref() == Some(&cname_imp) {
+                                                        import_target.set(None);
+                                                    } else {
+                                                        // Open a fresh form for this container.
+                                                        import_target.set(Some(cname_imp.clone()));
+                                                        import_path.set(None);
+                                                        import_name.set(String::new());
+                                                    }
                                                 },
-                                                if is_uploading { "↑ …" } else { "↑ Upload" }
+                                                if is_uploading { "↑ …" } else { "↑ Import" }
                                             }
                                             if confirm_pending {
                                                 button {
@@ -334,13 +344,23 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                                         blob_clearing.write().insert(c.clone());
                                                         spawn(async move {
                                                             let c2 = c.clone();
-                                                            let _ = tokio::task::spawn_blocking(move || {
+                                                            let res = tokio::task::spawn_blocking(move || {
                                                                 azurite_client::clear_container(&c2)
                                                             }).await;
-                                                            if let Some(ref mut list) = *blob_containers.write() {
-                                                                if let Some(entry) = list.iter_mut().find(|(n, _)| n == &c) {
-                                                                    entry.1.clear();
+                                                            // Only empty the displayed list when the delete
+                                                            // actually succeeded — blindly clearing it used to
+                                                            // make a failed clear look like it had worked.
+                                                            match res {
+                                                                Ok(Ok(n)) => {
+                                                                    if let Some(ref mut list) = *blob_containers.write() {
+                                                                        if let Some(entry) = list.iter_mut().find(|(n, _)| n == &c) {
+                                                                            entry.1.clear();
+                                                                        }
+                                                                    }
+                                                                    status.set(Some((format!("🗑 {c}: {n} blob(s) deleted"), false)));
                                                                 }
+                                                                Ok(Err(e)) => status.set(Some((format!("❌ {c}: {e}"), true))),
+                                                                Err(e)     => status.set(Some((format!("❌ {c}: clear task failed: {e}"), true))),
                                                             }
                                                             blob_clearing.write().remove(&c);
                                                         });
@@ -361,6 +381,99 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                                         blob_clear_confirm.set(Some(cname4.clone()));
                                                     },
                                                     if is_clearing { "🗑 …" } else { "🗑 Clear" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if import_open {
+                                        {
+                                            let picked = import_path.read().clone();
+                                            let has_file = picked.is_some();
+                                            let file_label = picked.as_deref()
+                                                .and_then(|p| p.rsplit('/').next())
+                                                .unwrap_or("Choose file…")
+                                                .to_string();
+                                            let preview = clean_blob_path(&import_name.read());
+                                            let ready = has_file && !preview.is_empty();
+                                            let c_up = cname_form.clone();
+                                            rsx! {
+                                                div { class: "blob-import-form",
+                                                    div { class: "blob-import-row",
+                                                        button {
+                                                            class: "btn btn-small",
+                                                            title: "Pick a local file to import",
+                                                            onclick: move |_| {
+                                                                spawn(async move {
+                                                                    if let Some(f) = rfd::AsyncFileDialog::new().pick_file().await {
+                                                                        let p = f.path().to_string_lossy().to_string();
+                                                                        // Prefill the target with the picked file name; the user
+                                                                        // prepends a folder (e.g. "payments/") if they want one.
+                                                                        if import_name.read().trim().is_empty() {
+                                                                            import_name.set(f.file_name());
+                                                                        }
+                                                                        import_path.set(Some(p));
+                                                                    }
+                                                                });
+                                                            },
+                                                            "📄 {file_label}"
+                                                        }
+                                                    }
+                                                    div { class: "blob-import-row",
+                                                        input {
+                                                            class: "blob-import-input",
+                                                            placeholder: "path/name  e.g.  payments/PAYMENT_TEST.csv",
+                                                            value: "{import_name}",
+                                                            oninput: move |e| import_name.set(e.value()),
+                                                        }
+                                                    }
+                                                    div { class: "blob-import-row",
+                                                        span { class: "blob-import-preview",
+                                                            if ready { "→ {c_up}/{preview}" } else { "" }
+                                                        }
+                                                        button {
+                                                            class: "btn btn-small btn-run",
+                                                            disabled: !ready || is_uploading,
+                                                            title: "Upload the file to this path in one operation",
+                                                            onclick: move |_| {
+                                                                let Some(src) = import_path.read().clone() else { return };
+                                                                let blob_name = clean_blob_path(&import_name.read());
+                                                                if blob_name.is_empty() { return; }
+                                                                let c = cname_form.clone();
+                                                                blob_uploading.write().insert(c.clone());
+                                                                import_target.set(None);
+                                                                spawn(async move {
+                                                                    let (c2, bn) = (c.clone(), blob_name.clone());
+                                                                    let res = tokio::task::spawn_blocking(move || {
+                                                                        azurite_client::upload_blob(&c2, &src, &bn)
+                                                                    }).await;
+                                                                    match res {
+                                                                        Ok(Ok(())) => status.set(Some((format!("↑ {c}/{blob_name} imported"), false))),
+                                                                        Ok(Err(e)) => status.set(Some((format!("❌ import: {e}"), true))),
+                                                                        Err(e)     => status.set(Some((format!("❌ import task failed: {e}"), true))),
+                                                                    }
+                                                                    blob_expanded.write().insert(c.clone());
+                                                                    let c3 = c.clone();
+                                                                    if let Ok(Ok(updated)) = tokio::task::spawn_blocking(move || {
+                                                                        azurite_client::list_blobs(&c3)
+                                                                    }).await {
+                                                                        if let Some(ref mut list) = *blob_containers.write() {
+                                                                            if let Some(entry) = list.iter_mut().find(|(n, _)| n == &c) {
+                                                                                entry.1 = updated;
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    blob_uploading.write().remove(&c);
+                                                                });
+                                                            },
+                                                            "↑ Upload"
+                                                        }
+                                                        button {
+                                                            class: "btn btn-small",
+                                                            title: "Cancel",
+                                                            onclick: move |_| import_target.set(None),
+                                                            "✗"
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -418,6 +531,14 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                                         let is_folder_uploading = blob_uploading.read().contains(&upload_key);
                                                         let download_key = format!("{}/{}", cname, full);
                                                         let is_downloading = blob_downloading.read().contains(&download_key);
+                                                        let rename_key    = format!("{}/{}", cname, full);
+                                                        let is_renaming   = blob_renaming.read().contains(&rename_key);
+                                                        let editing_name  = folder_rename.read().as_ref()
+                                                            .map(|(c, p)| c == &cname && p == &full)
+                                                            .unwrap_or(false);
+                                                        let ct_for_rn     = cname.clone();
+                                                        let path_for_rn   = full.clone();
+                                                        let display_for_rn = display.clone();
                                                         let folder_prefix = full.clone();
                                                         let ct_for_folder = cname.clone();
                                                         let ct_for_dl = cname.clone();
@@ -490,6 +611,68 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                                                         },
                                                                         if is_folder_uploading { "↑ …" } else { "↑ Upload" }
                                                                     }
+                                                                    if editing_name {
+                                                                        input {
+                                                                            class: "blob-rename-input",
+                                                                            value: "{rename_input}",
+                                                                            oninput: move |e| rename_input.set(e.value()),
+                                                                        }
+                                                                        button {
+                                                                            class: "btn btn-small",
+                                                                            disabled: is_renaming,
+                                                                            title: "Apply rename",
+                                                                            onclick: move |_| {
+                                                                                let ct   = ct_for_rn.clone();
+                                                                                let old  = path_for_rn.clone();
+                                                                                let key  = rename_key.clone();
+                                                                                let newp = rename_last_segment(&old, &rename_input.read());
+                                                                                folder_rename.set(None);
+                                                                                blob_renaming.write().insert(key.clone());
+                                                                                spawn(async move {
+                                                                                    let (c2, o2, n2) = (ct.clone(), old.clone(), newp.clone());
+                                                                                    let res = tokio::task::spawn_blocking(move || {
+                                                                                        azurite_client::rename_virtual_folder(&c2, &o2, &n2)
+                                                                                    }).await;
+                                                                                    match res {
+                                                                                        Ok(Ok(n)) => status.set(Some((
+                                                                                            format!("✏️ {old} → {newp} ({n} blob(s) moved)"), false))),
+                                                                                        Ok(Err(e)) => status.set(Some((format!("❌ rename: {e}"), true))),
+                                                                                        Err(e)     => status.set(Some((format!("❌ rename task failed: {e}"), true))),
+                                                                                    }
+                                                                                    // Re-list so the tree reflects reality either way.
+                                                                                    let c3 = ct.clone();
+                                                                                    if let Ok(Ok(updated)) = tokio::task::spawn_blocking(move || {
+                                                                                        azurite_client::list_blobs(&c3)
+                                                                                    }).await {
+                                                                                        if let Some(ref mut list) = *blob_containers.write() {
+                                                                                            if let Some(entry) = list.iter_mut().find(|(n, _)| n == &ct) {
+                                                                                                entry.1 = updated;
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                    blob_renaming.write().remove(&key);
+                                                                                });
+                                                                            },
+                                                                            if is_renaming { "…" } else { "✓" }
+                                                                        }
+                                                                        button {
+                                                                            class: "btn btn-small",
+                                                                            title: "Cancel rename",
+                                                                            onclick: move |_| folder_rename.set(None),
+                                                                            "✗"
+                                                                        }
+                                                                    } else {
+                                                                        button {
+                                                                            class: "btn btn-small blob-rename-btn",
+                                                                            disabled: is_renaming,
+                                                                            title: "Rename this folder (copies then deletes — blob storage has no real folders)",
+                                                                            onclick: move |_| {
+                                                                                rename_input.set(display_for_rn.clone());
+                                                                                folder_rename.set(Some((ct_for_rn.clone(), path_for_rn.clone())));
+                                                                            },
+                                                                            if is_renaming { "✏️ …" } else { "✏️" }
+                                                                        }
+                                                                    }
                                                                 }
                                                             }
                                                         }
@@ -508,5 +691,58 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod rename_segment_tests {
+    use super::rename_last_segment;
+
+    #[test]
+    fn renames_only_the_last_segment_keeping_the_parent() {
+        assert_eq!(rename_last_segment("archive/payments", "pay"), "archive/pay");
+        assert_eq!(rename_last_segment("a/b/c", "z"), "a/b/z");
+    }
+
+    #[test]
+    fn top_level_folder_has_no_parent_to_keep() {
+        assert_eq!(rename_last_segment("payments", "pay"), "pay");
+    }
+
+    #[test]
+    fn trims_whitespace_and_stray_slashes_from_input() {
+        assert_eq!(rename_last_segment("archive/payments", "  pay  "), "archive/pay");
+        assert_eq!(rename_last_segment("archive/payments", "/pay/"), "archive/pay");
+        assert_eq!(rename_last_segment("payments/", "pay"), "pay");
+    }
+}
+
+#[cfg(test)]
+mod import_path_tests {
+    use super::clean_blob_path;
+
+    #[test]
+    fn bare_name_lands_at_container_root() {
+        assert_eq!(clean_blob_path("file.csv"), "file.csv");
+        assert_eq!(clean_blob_path("  file.csv  "), "file.csv");
+    }
+
+    #[test]
+    fn single_and_nested_folders_are_preserved() {
+        assert_eq!(clean_blob_path("payments/f.csv"), "payments/f.csv");
+        assert_eq!(clean_blob_path("a/b/c/f.csv"), "a/b/c/f.csv");
+    }
+
+    #[test]
+    fn strips_stray_slashes_and_blank_segments() {
+        assert_eq!(clean_blob_path("/payments/f.csv"), "payments/f.csv");
+        assert_eq!(clean_blob_path("payments//f.csv"), "payments/f.csv");
+        assert_eq!(clean_blob_path(" payments / f.csv "), "payments/f.csv");
+    }
+
+    #[test]
+    fn empty_or_slashes_only_is_empty() {
+        assert_eq!(clean_blob_path(""), "");
+        assert_eq!(clean_blob_path("///"), "");
     }
 }

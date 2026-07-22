@@ -198,55 +198,140 @@ pub fn create_container(name: &str) -> Result<(), String> {
     Err(format!("HTTP {}: {}", status, extract_error_message(&body)))
 }
 
-/// Create a virtual folder inside a container by uploading a zero-byte `.keep` blob.
+/// Destination name when moving `name` from under `old_prefix/` to `new_prefix/`.
+/// Returns `None` when `name` is not inside `old_prefix/`.
 ///
-/// Azure Blob Storage has no real directories; a folder is just a naming convention.
-/// This creates `{prefix}/.keep` so the path appears in listings immediately.
-pub fn create_virtual_folder(container: &str, prefix: &str) -> Result<(), String> {
-    // Normalise: strip trailing slash, add /.keep
-    let trimmed = prefix.trim_end_matches('/');
-    let blob_name = format!("{}/.keep", trimmed);
-    let date         = make_date();
-    let path         = format!("/{}/{}", container, blob_name);
-    let content_type = "application/octet-stream";
-    let extras       = &[("x-ms-blob-type", "BlockBlob")];
-    let auth = auth_header("PUT", content_type, Some(0), &date, &path, &[], extras);
-    let url  = format!("{}/{}/{}", BLOB_ENDPOINT, container, percent_encode(&blob_name));
+/// Prefixes are compared with a trailing slash so renaming `pay` never captures
+/// a sibling folder like `payments`.
+fn rewrite_prefix(name: &str, old_prefix: &str, new_prefix: &str) -> Option<String> {
+    let old = format!("{}/", old_prefix.trim_end_matches('/'));
+    let new = format!("{}/", new_prefix.trim_end_matches('/'));
+    name.strip_prefix(old.as_str()).map(|rest| format!("{new}{rest}"))
+}
+
+/// Server-side `Copy Blob` within the same account — the payload never passes
+/// through this process. Azurite completes same-account copies synchronously.
+fn copy_blob(container: &str, src: &str, dst: &str) -> Result<(), String> {
+    let date = make_date();
+    // Sign the same encoded paths we send (see delete_blob).
+    let src_enc = percent_encode(src);
+    let dst_enc = percent_encode(dst);
+    let source  = format!("{}/{}/{}", BLOB_ENDPOINT, container, src_enc);
+    let path    = format!("/{}/{}", container, dst_enc);
+    let extras: &[(&str, &str)] = &[("x-ms-copy-source", source.as_str())];
+    let auth    = auth_header("PUT", "", None, &date, &path, &[], extras);
+    let url     = format!("{}/{}/{}", BLOB_ENDPOINT, container, dst_enc);
 
     let resp = client()
         .put(&url)
-        .header("x-ms-date",      &date)
-        .header("x-ms-version",   API_VERSION)
-        .header("x-ms-blob-type", "BlockBlob")
-        .header("Authorization",  auth)
-        .header("Content-Type",   content_type)
-        .header("Content-Length", "0")
-        .body(vec![])
+        .header("x-ms-date",        &date)
+        .header("x-ms-version",     API_VERSION)
+        .header("x-ms-copy-source", &source)
+        .header("Authorization",    auth)
+        .header("Content-Length",   "0")
         .send()
         .map_err(|e| e.to_string())?;
 
+    if resp.status().is_success() {
+        return Ok(());
+    }
     let status = resp.status();
-    if status.is_success() { return Ok(()); }
     let body = resp.text().unwrap_or_default();
-    Err(format!("HTTP {}: {}", status, extract_error_message(&body)))
+    Err(format!("Copy '{src}' → '{dst}': HTTP {status}: {}", extract_error_message(&body)))
 }
 
-/// Delete all blobs in a container. Returns number of blobs deleted.
+/// Rename a virtual folder by moving every blob under `old_prefix/` to
+/// `new_prefix/`. Returns the number of blobs moved.
+///
+/// Blob storage has no real folders — a "folder" is just a shared name prefix —
+/// so this is a copy-then-delete per blob and is **not atomic**. Each original
+/// is deleted only after its copy succeeded, so a failure mid-way leaves data
+/// duplicated, never lost.
+///
+/// Refuses to overwrite: if any destination name already exists the whole
+/// rename is rejected before anything is written.
+pub fn rename_virtual_folder(
+    container: &str,
+    old_prefix: &str,
+    new_prefix: &str,
+) -> Result<u64, String> {
+    let old = old_prefix.trim().trim_end_matches('/');
+    let new = new_prefix.trim().trim_end_matches('/');
+    if new.is_empty() {
+        return Err("New folder name is empty".into());
+    }
+    if old == new {
+        return Ok(0);
+    }
+    if new.contains("//") {
+        return Err(format!("Invalid folder name '{new}'"));
+    }
+    // Renaming a folder into its own subtree would recurse into what we create.
+    if new.starts_with(&format!("{old}/")) {
+        return Err(format!("Cannot move '{old}' inside itself ('{new}')"));
+    }
+
+    let all = list_blobs(container)?;
+    let existing: std::collections::HashSet<&str> =
+        all.iter().map(|b| b.name.as_str()).collect();
+
+    let moves: Vec<(String, String)> = all
+        .iter()
+        .filter_map(|b| rewrite_prefix(&b.name, old, new).map(|dst| (b.name.clone(), dst)))
+        .collect();
+
+    if moves.is_empty() {
+        return Err(format!("No folder '{old}/' in container '{container}'"));
+    }
+    if let Some((_, dst)) = moves.iter().find(|(_, d)| existing.contains(d.as_str())) {
+        return Err(format!("Destination '{dst}' already exists — rename aborted"));
+    }
+
+    let mut moved = 0u64;
+    for (src, dst) in &moves {
+        // Copy first; only drop the original once the copy is safely in place.
+        copy_blob(container, src, dst)?;
+        delete_blob(container, src)?;
+        moved += 1;
+    }
+    Ok(moved)
+}
+
+/// Delete all blobs in a container. Returns the number deleted.
+///
+/// Deliberately does NOT abort on the first failure: one undeletable blob used
+/// to leave every remaining blob in place. We delete everything we can and
+/// report a partial failure so the caller can surface it.
 pub fn clear_container(container: &str) -> Result<u64, String> {
     let blobs = list_blobs(container)?;
-    let n     = blobs.len() as u64;
+    let total = blobs.len() as u64;
+    let mut deleted = 0u64;
+    let mut first_err: Option<String> = None;
+
     for blob in blobs {
-        delete_blob(container, &blob.name)?;
+        match delete_blob(container, &blob.name) {
+            Ok(()) => deleted += 1,
+            Err(e) => if first_err.is_none() { first_err = Some(e) },
+        }
     }
-    Ok(n)
+
+    match first_err {
+        None => Ok(deleted),
+        Some(e) => Err(format!(
+            "Deleted {deleted}/{total} — {} failed. First error: {e}",
+            total - deleted
+        )),
+    }
 }
 
 /// Download a blob and save it to a local file path.
 pub fn download_blob(container: &str, blob_name: &str, dest_path: &str) -> Result<(), String> {
     let date = make_date();
-    let path = format!("/{}/{}", container, blob_name);
+    // Sign the encoded path — see delete_blob for why.
+    let enc  = percent_encode(blob_name);
+    let path = format!("/{}/{}", container, enc);
     let auth = auth_header("GET", "", None, &date, &path, &[], &[]);
-    let url  = format!("{}/{}/{}", BLOB_ENDPOINT, container, percent_encode(blob_name));
+    let url  = format!("{}/{}/{}", BLOB_ENDPOINT, container, enc);
 
     let resp = client()
         .get(&url)
@@ -276,12 +361,14 @@ pub fn upload_blob_bytes_sync(container: &str, blob_name: &str, data: Vec<u8>) -
     let content_length = data.len() as u64;
     let content_type   = "application/octet-stream";
     let date           = make_date();
-    let path           = format!("/{}/{}", container, blob_name);
+    // Sign the encoded path — see delete_blob for why.
+    let enc            = percent_encode(blob_name);
+    let path           = format!("/{}/{}", container, enc);
     let extras         = &[("x-ms-blob-type", "BlockBlob")];
     let auth = auth_header(
         "PUT", content_type, Some(content_length), &date, &path, &[], extras,
     );
-    let url = format!("{}/{}/{}", BLOB_ENDPOINT, container, percent_encode(blob_name));
+    let url = format!("{}/{}/{}", BLOB_ENDPOINT, container, enc);
 
     let resp = client()
         .put(&url)
@@ -305,9 +392,14 @@ pub fn upload_blob_bytes_sync(container: &str, blob_name: &str, data: Vec<u8>) -
 
 fn delete_blob(container: &str, blob_name: &str) -> Result<(), String> {
     let date = make_date();
-    let path = format!("/{}/{}", container, blob_name);
+    // Sign the SAME percent-encoded path we put in the URL. Azurite derives the
+    // canonicalized resource from the request path as received, so signing the
+    // raw name while sending an encoded one is a signature mismatch → HTTP 403.
+    // Bites any blob whose name contains ':' etc. (e.g. ISO-timestamp prefixes).
+    let enc  = percent_encode(blob_name);
+    let path = format!("/{}/{}", container, enc);
     let auth = auth_header("DELETE", "", None, &date, &path, &[], &[]);
-    let url  = format!("{}/{}/{}", BLOB_ENDPOINT, container, percent_encode(blob_name));
+    let url  = format!("{}/{}/{}", BLOB_ENDPOINT, container, enc);
 
     let resp = client()
         .delete(&url)
@@ -341,4 +433,109 @@ fn extract_error_message(body: &str) -> String {
     re.captures(body)
         .map(|c| c[1].trim().to_string())
         .unwrap_or_else(|| body.chars().take(200).collect())
+}
+
+#[cfg(test)]
+mod rename_folder_tests {
+    use super::rewrite_prefix;
+
+    #[test]
+    fn moves_blobs_under_the_prefix() {
+        assert_eq!(
+            rewrite_prefix("payments/a.csv", "payments", "pay").as_deref(),
+            Some("pay/a.csv")
+        );
+        // nested paths keep their sub-structure
+        assert_eq!(
+            rewrite_prefix("payments/2026/07/a.csv", "payments", "pay").as_deref(),
+            Some("pay/2026/07/a.csv")
+        );
+        // the .keep folder marker moves too, so the folder still shows up
+        assert_eq!(
+            rewrite_prefix("payments/.keep", "payments", "pay").as_deref(),
+            Some("pay/.keep")
+        );
+    }
+
+    #[test]
+    fn does_not_capture_sibling_folders_sharing_a_stem() {
+        // renaming "pay" must NOT sweep up "payments/…"
+        assert_eq!(rewrite_prefix("payments/a.csv", "pay", "x"), None);
+        assert_eq!(rewrite_prefix("pay/a.csv", "pay", "x").as_deref(), Some("x/a.csv"));
+    }
+
+    #[test]
+    fn ignores_blobs_outside_the_folder() {
+        assert_eq!(rewrite_prefix("root.csv", "payments", "pay"), None);
+        assert_eq!(rewrite_prefix("other/a.csv", "payments", "pay"), None);
+    }
+
+    #[test]
+    fn trailing_slashes_are_tolerated_on_both_sides() {
+        assert_eq!(
+            rewrite_prefix("payments/a.csv", "payments/", "pay/").as_deref(),
+            Some("pay/a.csv")
+        );
+    }
+
+    #[test]
+    fn renaming_into_a_deeper_path_works() {
+        assert_eq!(
+            rewrite_prefix("payments/a.csv", "payments", "archive/payments").as_deref(),
+            Some("archive/payments/a.csv")
+        );
+    }
+}
+
+#[cfg(test)]
+mod rename_folder_live_tests {
+    use super::*;
+
+    /// End-to-end against a running Azurite. Ignored by default so the normal
+    /// suite stays hermetic: run with
+    ///   cargo test rename_folder_live -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn rename_folder_round_trip() {
+        const C: &str = "ais-rename-selftest";
+        create_container(C).expect("create container");
+        let _ = clear_container(C); // start clean
+
+        upload_blob_bytes_sync(C, "oldfolder/.keep", vec![]).expect("keep");
+        upload_blob_bytes_sync(C, "oldfolder/a.txt", b"hello".to_vec()).expect("a");
+        upload_blob_bytes_sync(C, "oldfolder/sub/b.txt", b"world".to_vec()).expect("b");
+        // a sibling sharing the stem must NOT be swept up
+        upload_blob_bytes_sync(C, "oldfolderX/c.txt", b"keepme".to_vec()).expect("c");
+
+        let moved = rename_virtual_folder(C, "oldfolder", "newfolder").expect("rename");
+        assert_eq!(moved, 3, "should move exactly the 3 blobs under oldfolder/");
+
+        let names: Vec<String> = list_blobs(C).unwrap().into_iter().map(|b| b.name).collect();
+        assert!(names.contains(&"newfolder/.keep".to_string()));
+        assert!(names.contains(&"newfolder/a.txt".to_string()));
+        assert!(names.contains(&"newfolder/sub/b.txt".to_string()), "nested path preserved");
+        assert!(names.contains(&"oldfolderX/c.txt".to_string()), "sibling untouched");
+        assert!(!names.iter().any(|n| n.starts_with("oldfolder/")), "originals removed");
+
+        // content survived the server-side copy
+        let tmp = std::env::temp_dir().join("ais-rename-selftest-a.txt");
+        download_blob(C, "newfolder/a.txt", tmp.to_str().unwrap()).expect("download");
+        assert_eq!(std::fs::read_to_string(&tmp).unwrap(), "hello");
+        let _ = std::fs::remove_file(&tmp);
+
+        // refuses to clobber an existing destination
+        upload_blob_bytes_sync(C, "dest/x.txt", b"x".to_vec()).unwrap();
+        upload_blob_bytes_sync(C, "src/x.txt", b"y".to_vec()).unwrap();
+        let err = rename_virtual_folder(C, "src", "dest").unwrap_err();
+        assert!(err.contains("already exists"), "got: {err}");
+        // nothing was moved on rejection
+        let names2: Vec<String> = list_blobs(C).unwrap().into_iter().map(|b| b.name).collect();
+        assert!(names2.contains(&"src/x.txt".to_string()));
+
+        // refuses to move a folder into its own subtree
+        let err2 = rename_virtual_folder(C, "newfolder", "newfolder/inner").unwrap_err();
+        assert!(err2.contains("inside itself"), "got: {err2}");
+
+        let _ = clear_container(C);
+    }
 }
