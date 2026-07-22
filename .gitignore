@@ -20,3 +20,4 @@ local.settings.json
 
 # WebView2 bootstrapper (downloaded by CI, not committed)
 installer/MicrosoftEdgeWebview2Setup.exe
+.claude/settings.local.json
