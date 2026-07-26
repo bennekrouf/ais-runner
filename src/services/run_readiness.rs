@@ -63,7 +63,7 @@ impl RunReadiness {
 }
 
 /// True when `v` looks like a cloud endpoint that must be redirected locally.
-fn is_cloud_value(v: &str) -> bool {
+pub fn is_cloud_value(v: &str) -> bool {
     let l = v.to_lowercase();
     const MARKERS: &[&str] = &[
         ".database.windows.net",
@@ -84,7 +84,7 @@ fn is_cloud_value(v: &str) -> bool {
 }
 
 /// The local target a cloud value should be rewritten to.
-fn local_target(value: &str) -> String {
+pub fn local_target(value: &str) -> String {
     let l = value.to_lowercase();
     if l.contains(".database.windows.net") {
         format!(

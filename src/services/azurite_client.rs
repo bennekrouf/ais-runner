@@ -173,8 +173,68 @@ pub fn list_blobs(container: &str) -> Result<Vec<BlobInfo>, String> {
         .collect())
 }
 
+/// A blob-safe container name derived from `name`: lowercased, every run of
+/// invalid characters (dots, underscores, spaces, …) collapsed to a single
+/// hyphen, leading/trailing hyphens trimmed. `ais.ignite.kyriba.payment`
+/// → `ais-ignite-kyriba-payment`.
+pub fn suggest_container_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut prev_dash = false;
+    for c in name.to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            prev_dash = false;
+        } else if !prev_dash && !out.is_empty() {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    while out.ends_with('-') { out.pop(); }
+    out
+}
+
+/// Validate a container name against Azure's rules, returning a human-readable
+/// reason if invalid. Rules: 3–63 chars, lowercase letters/digits/hyphens only,
+/// must start and end with a letter or digit, no consecutive hyphens.
+/// (Names like `ais.ignite.kyriba.payment` fail on the dots — that's a Service
+/// Bus entity name, not a blob container.)
+pub fn validate_container_name(name: &str) -> Result<(), String> {
+    let hint = || {
+        let s = suggest_container_name(name);
+        if s.len() >= 3 { format!(" Try '{s}'.") } else { String::new() }
+    };
+    if name.len() < 3 || name.len() > 63 {
+        return Err(format!("Container name must be 3–63 characters.{}", hint()));
+    }
+    if name.contains('.') {
+        return Err(format!(
+            "Container names can't contain dots — only lowercase letters, digits, and hyphens.{}",
+            hint()
+        ));
+    }
+    if name.chars().any(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')) {
+        return Err(format!(
+            "Container names allow only lowercase letters, digits, and hyphens.{}",
+            hint()
+        ));
+    }
+    let first = name.chars().next().unwrap();
+    let last  = name.chars().last().unwrap();
+    if !first.is_ascii_alphanumeric() || !last.is_ascii_alphanumeric() {
+        return Err(format!("Container name must start and end with a letter or digit.{}", hint()));
+    }
+    if name.contains("--") {
+        return Err(format!("Container name can't contain consecutive hyphens.{}", hint()));
+    }
+    Ok(())
+}
+
 /// Create a container (idempotent — 409 Conflict is treated as success).
 pub fn create_container(name: &str) -> Result<(), String> {
+    // Validate locally first so the user gets an actionable message with a
+    // suggested name, not Azurite's opaque "invalid characters" 400.
+    validate_container_name(name)?;
+
     let date  = make_date();
     let path  = format!("/{}", name);
     let query = &[("restype", "container")];
@@ -537,5 +597,41 @@ mod rename_folder_live_tests {
         assert!(err2.contains("inside itself"), "got: {err2}");
 
         let _ = clear_container(C);
+    }
+}
+
+#[cfg(test)]
+mod container_name_tests {
+    use super::{suggest_container_name, validate_container_name};
+
+    #[test]
+    fn dotted_name_is_rejected_with_a_suggestion() {
+        let err = validate_container_name("ais.ignite.kyriba.payment").unwrap_err();
+        assert!(err.contains("dots"), "got: {err}");
+        assert!(err.contains("ais-ignite-kyriba-payment"), "got: {err}");
+    }
+
+    #[test]
+    fn suggestion_is_blob_safe() {
+        assert_eq!(suggest_container_name("ais.ignite.kyriba.payment"), "ais-ignite-kyriba-payment");
+        assert_eq!(suggest_container_name("My_Container.Name"), "my-container-name");
+        assert_eq!(suggest_container_name("a...b"), "a-b");
+        assert_eq!(suggest_container_name("--lead.trail--"), "lead-trail");
+    }
+
+    #[test]
+    fn valid_names_pass() {
+        assert!(validate_container_name("kyriba-input").is_ok());
+        assert!(validate_container_name("ais-ignite-kyriba-payment").is_ok());
+        assert!(validate_container_name("abc").is_ok());
+        assert!(validate_container_name("a1-b2-c3").is_ok());
+    }
+
+    #[test]
+    fn other_rule_violations_are_caught() {
+        assert!(validate_container_name("ab").is_err());                 // too short
+        assert!(validate_container_name("UPPER").unwrap_err().contains("lowercase"));
+        assert!(validate_container_name("-lead").unwrap_err().contains("start and end"));
+        assert!(validate_container_name("a--b").unwrap_err().contains("consecutive"));
     }
 }

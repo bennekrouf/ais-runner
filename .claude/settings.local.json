@@ -76,7 +76,11 @@
       "Bash(git --no-pager diff logic_apps/Check-Ignite-Payment-File/workflow.json)",
       "Bash(git -C . status --short \"logic_apps/**/workflow.json\")",
       "Bash(git --no-pager diff --stat)",
-      "Bash(git --no-pager diff logic_apps/Rcv-Ventriks-files-broadcast/workflow.json)"
+      "Bash(git --no-pager diff logic_apps/Rcv-Ventriks-files-broadcast/workflow.json)",
+      "Bash(nc -z -G1 localhost 5672)",
+      "Bash(python3 -c 'import json;json.load\\(open\\('\\\\''__TRACKED_VAR__'\\\\''\\)\\);print\\('\\\\''VALID'\\\\''\\)')",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('func API up —', len\\(d.get\\('value',d if isinstance\\(d,list\\) else []\\)\\), 'workflows'\\) \")",
+      "Bash(awk -F',' '{print NR\": \"NF\" fields\"}' tests/kyriba/PAYMENT_TEST.csv)"
     ]
   }
 }

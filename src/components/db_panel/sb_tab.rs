@@ -40,10 +40,18 @@ pub fn SbTab(props: SbTabProps) -> Element {
     // chip per row while still surfacing peek-level errors.
     let mut sb_peek_msgs:   Signal<HashMap<String, Vec<PeekRow>>> = use_signal(HashMap::new);
     let mut sb_peeking:     Signal<HashSet<String>>   = use_signal(HashSet::new);
+    // Flush (purge) is destructive, so it's two-step: the button arms a confirm,
+    // a second click drains. `sb_flushing` marks the in-flight drain.
+    let mut sb_flush_confirm: Signal<Option<String>> = use_signal(|| None);
+    let mut sb_flushing:      Signal<HashSet<String>> = use_signal(HashSet::new);
 
     let mut new_queue_name:     Signal<String> = use_signal(String::new);
     let mut new_queue_creating: Signal<bool>   = use_signal(|| false);
     let mut queue_filter:       Signal<String> = use_signal(String::new);
+    // Create and Trace are secondary actions collapsed behind icon buttons so
+    // the filter (the primary control) owns the toolbar.
+    let mut create_open: Signal<bool> = use_signal(|| false);
+    let mut trace_open:  Signal<bool> = use_signal(|| false);
 
     // Send variants: burst count and null-field path, per queue.
     let mut sb_send_counts: Signal<HashMap<String, String>> = use_signal(HashMap::new);
@@ -100,119 +108,144 @@ pub fn SbTab(props: SbTabProps) -> Element {
     });
 
     rsx! {
+        // ── Primary toolbar: filter owns the row; create (+) and trace (🔍)
+        //    are collapsed toggles to its right. ──────────────────────────
         div { class: "db-create-row",
-            input {
-                class: "db-field-input",
-                style: "flex: 1",
-                placeholder: "Create new queue (e.g. ais.workflow.error)...",
-                value: "{new_queue_name}",
-                oninput: move |e| new_queue_name.set(e.value()),
+            div { class: "log-filter-wrap", style: "flex:1;",
+                input {
+                    class: "log-filter-input",
+                    style: "width:100%;box-sizing:border-box;",
+                    r#type: "text",
+                    placeholder: "Filter queues…",
+                    value: "{queue_filter}",
+                    oninput: move |e| queue_filter.set(e.value()),
+                }
+                if !queue_filter.read().is_empty() {
+                    button {
+                        class: "log-filter-clear",
+                        title: "Clear filter",
+                        onclick: move |_| queue_filter.set(String::new()),
+                        "×"
+                    }
+                }
             }
             button {
-                class: "btn btn-run btn-small",
-                disabled: *new_queue_creating.read() || new_queue_name.read().is_empty(),
-                onclick: move |_| {
-                    let q = new_queue_name.read().clone();
-                    new_queue_creating.set(true);
-                    spawn(async move {
-                        let emulator_up = tokio::net::TcpStream::connect("127.0.0.1:5672").await.is_ok();
-                        if emulator_up {
-                            let q2 = q.clone();
-                            let result = tokio::task::spawn_blocking(move || {
-                                crate::handlers::sb_emulator::add_queue_to_emulator_config(&q2)
-                            }).await.unwrap_or(Err("task failed".into()));
-                            match result {
-                                Ok(true) => {
-                                    status.set(Some((
-                                        format!("✅ '{}' added — restart SB Emulator to apply.", q),
-                                        false,
-                                    )));
-                                    new_queue_name.set(String::new());
-                                }
-                                Ok(false) => {
-                                    status.set(Some((
-                                        format!("ℹ '{}' already exists.", q),
-                                        false,
-                                    )));
-                                    new_queue_name.set(String::new());
-                                }
-                                Err(e) => status.set(Some((format!("Config update failed: {}", e), true))),
-                            }
-                        } else {
-                            status.set(Some(("SB Emulator is not running — start it from the toolbar first.".into(), true)));
-                        }
-                        new_queue_creating.set(false);
-                    });
-                },
-                if *new_queue_creating.read() { "Creating..." } else { "➕ Create Queue" }
+                class: if *create_open.read() { "btn btn-small btn-run" } else { "btn btn-small" },
+                title: "Add a new queue to the emulator",
+                onclick: move |_| { let v = !*create_open.read(); create_open.set(v); },
+                "+"
+            }
+            button {
+                class: if *trace_open.read() { "btn btn-small btn-run" } else { "btn btn-small" },
+                title: "Trace a message: peeks every queue (read-only) and reports which ones hold a message containing a given id — for when a message vanished and you don't know where it landed",
+                onclick: move |_| { let v = !*trace_open.read(); trace_open.set(v); },
+                "🔍"
             }
         }
 
-        // Filter
-        div { class: "log-filter-wrap", style: "margin: 6px 0 4px;",
-            input {
-                class: "log-filter-input",
-                style: "width:100%;box-sizing:border-box;",
-                r#type: "text",
-                placeholder: "Filter queues…",
-                value: "{queue_filter}",
-                oninput: move |e| queue_filter.set(e.value()),
-            }
-            if !queue_filter.read().is_empty() {
+        // ── Create queue (revealed by +) ─────────────────────────────────
+        if *create_open.read() {
+            div { class: "db-create-row", style: "margin: 4px 0;",
+                input {
+                    class: "db-field-input",
+                    style: "flex: 1",
+                    placeholder: "New queue name (e.g. ais.workflow.error)",
+                    value: "{new_queue_name}",
+                    oninput: move |e| new_queue_name.set(e.value()),
+                }
                 button {
-                    class: "log-filter-clear",
-                    title: "Clear filter",
-                    onclick: move |_| queue_filter.set(String::new()),
-                    "×"
+                    class: "btn btn-run btn-small",
+                    disabled: *new_queue_creating.read() || new_queue_name.read().is_empty(),
+                    onclick: move |_| {
+                        let q = new_queue_name.read().clone();
+                        new_queue_creating.set(true);
+                        spawn(async move {
+                            let emulator_up = tokio::net::TcpStream::connect("127.0.0.1:5672").await.is_ok();
+                            if emulator_up {
+                                let q2 = q.clone();
+                                let result = tokio::task::spawn_blocking(move || {
+                                    crate::handlers::sb_emulator::add_queue_to_emulator_config(&q2)
+                                }).await.unwrap_or(Err("task failed".into()));
+                                match result {
+                                    Ok(true) => {
+                                        status.set(Some((
+                                            format!("✅ '{}' added — restart SB Emulator to apply.", q),
+                                            false,
+                                        )));
+                                        new_queue_name.set(String::new());
+                                    }
+                                    Ok(false) => {
+                                        status.set(Some((
+                                            format!("ℹ '{}' already exists.", q),
+                                            false,
+                                        )));
+                                        new_queue_name.set(String::new());
+                                    }
+                                    Err(e) => status.set(Some((format!("Config update failed: {}", e), true))),
+                                }
+                            } else {
+                                status.set(Some(("SB Emulator is not running — start it from the toolbar first.".into(), true)));
+                            }
+                            new_queue_creating.set(false);
+                        });
+                    },
+                    if *new_queue_creating.read() { "Creating..." } else { "Create" }
                 }
             }
         }
 
-        // ── Correlation trace: peek every queue, report where a given id sits ─
-        div { class: "db-create-row", style: "margin: 4px 0;",
-            input {
-                class: "db-field-input",
-                style: "flex: 1",
-                placeholder: "Trace correlation id across all queues…",
-                value: "{trace_input}",
-                oninput: move |e| trace_input.set(e.value()),
-            }
-            button {
-                class: "btn btn-small",
-                disabled: *trace_running.read() || trace_input.read().trim().is_empty(),
-                title: "Peek every queue and count messages containing this id (read-only)",
-                onclick: {
-                    let all_queues: Vec<String> = props.sb_queues.iter()
-                        .map(|q| q.queue.clone())
-                        .chain(crate::services::sb_check::emulator_only_queues(&props.sb_queues))
-                        .collect();
-                    move |_| {
-                        let needle = trace_input.read().trim().to_string();
-                        let queues = all_queues.clone();
-                        trace_running.set(true);
-                        spawn(async move {
-                            let hits = crate::services::sb_testing::trace_correlation(
-                                "localhost", &queues, &needle,
-                            ).await;
-                            trace_hits.set(Some(hits));
-                            trace_running.set(false);
-                        });
+        // ── Trace correlation id across all queues (revealed by 🔍) ───────
+        if *trace_open.read() {
+            div { style: "margin: 4px 0;",
+                div { class: "db-create-row",
+                    input {
+                        class: "db-field-input",
+                        style: "flex: 1",
+                        placeholder: "Correlation id to trace across all queues…",
+                        value: "{trace_input}",
+                        oninput: move |e| trace_input.set(e.value()),
                     }
-                },
-                if *trace_running.read() { "…" } else { "🔍 Trace" }
-            }
-        }
-        if let Some(ref hits) = *trace_hits.read() {
-            div { class: "db-peek-panel", style: "margin: 2px 0 8px;",
-                if hits.is_empty() {
-                    div { class: "db-peek-empty",
-                        "No messages found — already consumed, dead-lettered, or the id is wrong."
+                    button {
+                        class: "btn btn-small",
+                        disabled: *trace_running.read() || trace_input.read().trim().is_empty(),
+                        title: "Peek every queue and count messages containing this id (read-only)",
+                        onclick: {
+                            let all_queues: Vec<String> = props.sb_queues.iter()
+                                .map(|q| q.queue.clone())
+                                .chain(crate::services::sb_check::emulator_only_queues(&props.sb_queues))
+                                .collect();
+                            move |_| {
+                                let needle = trace_input.read().trim().to_string();
+                                let queues = all_queues.clone();
+                                trace_running.set(true);
+                                spawn(async move {
+                                    let hits = crate::services::sb_testing::trace_correlation(
+                                        "localhost", &queues, &needle,
+                                    ).await;
+                                    trace_hits.set(Some(hits));
+                                    trace_running.set(false);
+                                });
+                            }
+                        },
+                        if *trace_running.read() { "…" } else { "Trace" }
                     }
-                } else {
-                    for hit in hits.iter() {
-                        div { class: "db-peek-msg",
-                            span { class: "db-peek-idx", "📬" }
-                            "{hit.queue}: {hit.count} message(s)"
+                }
+                div { class: "dialog-hint", style: "margin-top:3px",
+                    "Read-only. Peeks every queue and reports which hold a message containing this id — handy when a message disappeared and you don't know where it went."
+                }
+            }
+            if let Some(ref hits) = *trace_hits.read() {
+                div { class: "db-peek-panel", style: "margin: 2px 0 8px;",
+                    if hits.is_empty() {
+                        div { class: "db-peek-empty",
+                            "No messages found — already consumed, dead-lettered, or the id is wrong."
+                        }
+                    } else {
+                        for hit in hits.iter() {
+                            div { class: "db-peek-msg",
+                                span { class: "db-peek-idx", "📬" }
+                                "{hit.queue}: {hit.count} message(s)"
+                            }
                         }
                     }
                 }
@@ -240,8 +273,12 @@ pub fn SbTab(props: SbTabProps) -> Element {
                 let is_peek_open   = sb_peek_open.read().contains(&queue_name);
                 let peek_msgs      = sb_peek_msgs.read().get(&queue_name).cloned();
                 let is_peeking     = sb_peeking.read().contains(&queue_name);
+                let is_flushing    = sb_flushing.read().contains(&queue_name);
+                let flush_pending  = sb_flush_confirm.read().as_deref() == Some(&queue_name);
                 let queue_name5    = queue_name.clone();
                 let queue_name6    = queue_name.clone();
+                let queue_name_fl  = queue_name.clone();
+                let queue_name_fl2 = queue_name.clone();
                 let la_dir         = props.logic_apps_dir.clone();
                 let send_count     = sb_send_counts.read().get(&queue_name).cloned().unwrap_or_default();
                 let null_path      = sb_null_fields.read().get(&queue_name).cloned().unwrap_or_default();
@@ -379,6 +416,43 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                         }
                                     },
                                     if is_peeking { "…" } else if is_peek_open { "▲ Hide" } else { "👁 Peek" }
+                                }
+                                if flush_pending {
+                                    button {
+                                        class: "btn btn-small btn-danger",
+                                        disabled: is_flushing,
+                                        title: "Confirm — permanently remove ALL messages from this queue",
+                                        onclick: move |_| {
+                                            let qn  = queue_name_fl.clone();
+                                            let qn2 = queue_name_fl.clone();
+                                            sb_flush_confirm.set(None);
+                                            sb_flushing.write().insert(qn.clone());
+                                            spawn(async move {
+                                                let res = crate::services::sb_amqp::drain_queue("localhost", &qn).await;
+                                                match res {
+                                                    Ok(n)  => status.set(Some((format!("🧹 {qn}: flushed {n} message(s)"), false))),
+                                                    Err(e) => status.set(Some((format!("❌ flush {qn}: {e}"), true))),
+                                                }
+                                                // Reflect the drain: clear any peeked rows and zero the local count.
+                                                sb_peek_msgs.write().remove(&qn2);
+                                                sb_flushing.write().remove(&qn2);
+                                            });
+                                        },
+                                        if is_flushing { "🧹 …" } else { "🧹 Confirm?" }
+                                    }
+                                    button {
+                                        class: "btn btn-small",
+                                        onclick: move |_| sb_flush_confirm.set(None),
+                                        "✗"
+                                    }
+                                } else {
+                                    button {
+                                        class: "btn btn-small",
+                                        disabled: is_flushing || is_peeking,
+                                        title: "Flush — permanently remove all messages from this queue",
+                                        onclick: move |_| sb_flush_confirm.set(Some(queue_name_fl2.clone())),
+                                        if is_flushing { "🧹 …" } else { "🧹 Flush" }
+                                    }
                                 }
                             }
                         }

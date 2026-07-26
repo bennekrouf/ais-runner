@@ -247,6 +247,20 @@ pub fn patch_connections_for_local(raw: &str) -> String {
                     "id": "/serviceProviders/sql"
                 }
             });
+        } else if is_msi && (provider_id.to_lowercase().contains("cosmos")
+            || provider_id.to_lowercase().contains("documentdb")) {
+            // MSI against Cosmos can't work locally (no IMDS). Point at the
+            // local Cosmos emulator via a per-connection connection-string key.
+            let entry = svc.get_mut(&name).unwrap();
+            let pid = entry["serviceProvider"]["id"].clone();
+            *entry = serde_json::json!({
+                "displayName": entry["displayName"].clone(),
+                "parameterSetName": "connectionString",
+                "parameterValues": {
+                    "connectionString": format!("@appsetting('{name}_connectionString')")
+                },
+                "serviceProvider": { "id": pid }
+            });
         } else if is_msi && provider_id == "/serviceProviders/serviceBus" {
             // Switch Service Bus from MSI (requires Azure IMDS) to connectionString
             // so the local emulator can be used.  The emulator start handler writes

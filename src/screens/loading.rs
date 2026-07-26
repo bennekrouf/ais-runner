@@ -35,7 +35,54 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
 
                 push_log("Starting initialization...".to_string(), LogLevel::Info);
 
-                // 1. Check tools
+                // 1. Localize connections — ais-runner runs local-only, so any
+                //    MSI or cloud-pointing connection is adapted to a local
+                //    emulator/mock now, before the user wastes time debugging a
+                //    run that fails purely on connection config.
+                push_log("Checking connections are local…".to_string(), LogLevel::Info);
+                let d = dir.clone();
+                let report = tokio::task::spawn_blocking(move || {
+                    crate::services::localize::localize(&d)
+                })
+                .await
+                .unwrap_or_default();
+
+                if report.all_local() {
+                    push_log("✓ All connections already point at local emulators".to_string(), LogLevel::Success);
+                } else {
+                    if !report.msi_localized.is_empty() {
+                        push_log(
+                            format!("🔧 Switched {} MSI connection(s) → local: {}",
+                                report.msi_localized.len(), report.msi_localized.join(", ")),
+                            LogLevel::Success,
+                        );
+                    }
+                    if !report.settings_localized.is_empty() {
+                        push_log(
+                            format!("🔧 Redirected {} cloud endpoint(s) → local: {}",
+                                report.settings_localized.len(), report.settings_localized.join(", ")),
+                            LogLevel::Success,
+                        );
+                    }
+                    if !report.keys_stubbed.is_empty() {
+                        push_log(
+                            format!("🔧 Filled {} local default(s): {}",
+                                report.keys_stubbed.len(), report.keys_stubbed.join(", ")),
+                            LogLevel::Info,
+                        );
+                    }
+                    for name in &report.msi_unresolved {
+                        push_log(
+                            format!("⚠ '{}' uses Managed Identity with no local emulator — it will fail locally; point it at a local target or the mock server.", name),
+                            LogLevel::Warn,
+                        );
+                    }
+                    for e in &report.errors {
+                        push_log(format!("⚠ localize: {}", e), LogLevel::Warn);
+                    }
+                }
+
+                // 3. Check tools
                 push_log("Checking system tools...".to_string(), LogLevel::Info);
                 push_log("  → Probing func...".to_string(), LogLevel::Info);
                 let tool_results = tokio::task::spawn_blocking(system_check::check_tools)
@@ -58,7 +105,7 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                     }
                 }
 
-                // 2. Check setup status
+                // 4. Check setup status
                 push_log("Checking project setup...".to_string(), LogLevel::Info);
                 push_log("  → Reading local.settings.json...".to_string(), LogLevel::Info);
                 let d = dir.clone();
@@ -88,7 +135,7 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                     }
                 }
 
-                // 3. Detect environment mode
+                // 5. Detect environment mode
                 push_log("Detecting environment...".to_string(), LogLevel::Info);
                 push_log("  → Scanning storage configuration...".to_string(), LogLevel::Info);
                 let d = dir.clone();

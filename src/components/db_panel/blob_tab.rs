@@ -32,6 +32,32 @@ fn clean_blob_path(input: &str) -> String {
         .join("/")
 }
 
+/// Blob storage has no real folders — they're just name prefixes. Now that we
+/// no longer create `.keep` markers, a nested blob like `payments/f.csv` would
+/// render with no visible folder header. This returns the blob list with a
+/// synthetic `<prefix>/.keep` row inserted for every ancestor folder that lacks
+/// a real marker, so the tree shows each folder even when it holds only real
+/// files. Sorted so a folder header sorts immediately before its contents.
+fn rows_with_folders(blobs: &[BlobInfo]) -> Vec<BlobInfo> {
+    use std::collections::BTreeSet;
+    let existing: BTreeSet<&str> = blobs.iter().map(|b| b.name.as_str()).collect();
+    let mut markers: BTreeSet<String> = BTreeSet::new();
+    for b in blobs {
+        let parts: Vec<&str> = b.name.split('/').collect();
+        // every ancestor prefix (exclude the file/leaf itself)
+        for i in 1..parts.len() {
+            let marker = format!("{}/.keep", parts[..i].join("/"));
+            if !existing.contains(marker.as_str()) {
+                markers.insert(marker);
+            }
+        }
+    }
+    let mut out: Vec<BlobInfo> = blobs.to_vec();
+    out.extend(markers.into_iter().map(|name| BlobInfo { name, size: 0 }));
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
 fn blob_fetch_all() -> Result<Vec<(String, Vec<BlobInfo>)>, String> {
     let names = azurite_client::list_containers()
         .map_err(|e| format!("list containers: {}", e))?;
@@ -487,7 +513,7 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                             }
                                         } else {
                                             div { class: "blob-list",
-                                                for b in &blobs {
+                                                for b in &rows_with_folders(&blobs) {
                                                     {
                                                         let is_folder = b.name.ends_with("/.keep");
                                                         let (icon, display, full) = if is_folder {
@@ -744,5 +770,51 @@ mod import_path_tests {
     fn empty_or_slashes_only_is_empty() {
         assert_eq!(clean_blob_path(""), "");
         assert_eq!(clean_blob_path("///"), "");
+    }
+}
+
+#[cfg(test)]
+mod folder_rows_tests {
+    use super::rows_with_folders;
+    use crate::services::azure_cli::BlobInfo;
+
+    fn b(name: &str) -> BlobInfo { BlobInfo { name: name.into(), size: 1 } }
+    fn names(v: Vec<BlobInfo>) -> Vec<String> { v.into_iter().map(|x| x.name).collect() }
+
+    #[test]
+    fn nested_file_gets_a_synthetic_folder_header() {
+        let out = names(rows_with_folders(&[b("payments/PAYMENT_TEST.csv")]));
+        assert_eq!(out, vec![
+            "payments/.keep".to_string(),          // synthetic folder header
+            "payments/PAYMENT_TEST.csv".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn deep_nesting_gets_a_header_per_ancestor() {
+        let out = names(rows_with_folders(&[b("a/b/c.csv")]));
+        assert_eq!(out, vec![
+            "a/.keep".to_string(),
+            "a/b/.keep".to_string(),
+            "a/b/c.csv".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn real_keep_marker_is_not_duplicated() {
+        let out = names(rows_with_folders(&[b("payments/.keep"), b("payments/f.csv")]));
+        assert_eq!(out, vec!["payments/.keep".to_string(), "payments/f.csv".to_string()]);
+    }
+
+    #[test]
+    fn root_files_are_untouched() {
+        let out = names(rows_with_folders(&[b("root.csv"), b("other.csv")]));
+        assert_eq!(out, vec!["other.csv".to_string(), "root.csv".to_string()]);
+    }
+
+    #[test]
+    fn shared_folder_yields_one_header() {
+        let out = names(rows_with_folders(&[b("p/a.csv"), b("p/b.csv")]));
+        assert_eq!(out, vec!["p/.keep".to_string(), "p/a.csv".to_string(), "p/b.csv".to_string()]);
     }
 }

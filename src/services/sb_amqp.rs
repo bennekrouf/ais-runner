@@ -128,6 +128,65 @@ pub async fn peek_amqp_messages(host: &str, queue: &str, max: usize) -> Result<V
     Ok(messages)
 }
 
+/// Purge every message from a queue by receiving and **accepting** (settling)
+/// each one — accepted messages are removed permanently, unlike peek which
+/// releases them back. Returns the number removed.
+///
+/// Drains in an auto-replenishing credit window and stops when a receive idles
+/// out (the queue is empty). Only for the local emulator (localhost:5672).
+///
+/// Note: this drains the main queue only. Dead-lettered messages live in a
+/// separate sub-queue (`<queue>/$deadletterqueue`) and are not touched.
+pub async fn drain_queue(host: &str, queue: &str) -> Result<u64, String> {
+    const BATCH: u32 = 50;
+    const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1200);
+    // Guard against a producer flooding the queue faster than we drain it.
+    const SAFETY_CAP: u64 = 1_000_000;
+
+    let url = format!("amqp://{}:5672", host);
+
+    let mut connection = Connection::open("ais-runner-drain", url.as_str())
+        .await
+        .map_err(|e| format!("AMQP connect: {e}"))?;
+
+    let mut session = Session::begin(&mut connection)
+        .await
+        .map_err(|e| format!("AMQP session: {e}"))?;
+
+    let mut receiver = Receiver::builder()
+        .name("ais-runner-drain")
+        .source(queue)
+        .auto_accept(false)
+        .credit_mode(CreditMode::Auto(BATCH))
+        .attach(&mut session)
+        .await
+        .map_err(|e| format!("AMQP attach receiver on '{}': {e}", queue))?;
+
+    let mut removed = 0u64;
+    loop {
+        match tokio::time::timeout(IDLE_TIMEOUT, receiver.recv::<Body<String>>()).await {
+            Ok(Ok(delivery)) => {
+                receiver
+                    .accept(&delivery)
+                    .await
+                    .map_err(|e| format!("AMQP accept: {e}"))?;
+                removed += 1;
+                if removed >= SAFETY_CAP {
+                    break;
+                }
+            }
+            Ok(Err(_)) => break, // link/broker error — stop, report what we removed
+            Err(_)      => break, // idle timeout — queue drained
+        }
+    }
+
+    receiver.close().await.ok();
+    session.end().await.ok();
+    connection.close().await.ok();
+
+    Ok(removed)
+}
+
 /// Extract the `delivery-count` field from an AMQP delivery's header, with a
 /// defensive default of 0 (matches the AMQP spec — `delivery-count` is
 /// optional in the wire format, and "absent" is semantically equivalent to
@@ -207,4 +266,35 @@ async fn try_send(url: &str, queue: &str, body: &str, content_type: &str) -> Res
     connection.close().await.ok();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod drain_live_tests {
+    use super::*;
+
+    /// End-to-end against a running SB emulator. Ignored by default.
+    ///   cargo test drain_queue_live -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn drain_queue_live() {
+        const HOST: &str = "localhost";
+        const Q: &str = "ais.apim.event"; // exists in the emulator Config.json
+
+        // Start clean, then seed 5 messages.
+        let _ = drain_queue(HOST, Q).await;
+        for i in 0..5 {
+            send_amqp_message(HOST, Q, &format!("{{\"n\":{i}}}")).await.expect("send");
+        }
+
+        let removed = drain_queue(HOST, Q).await.expect("drain");
+        assert_eq!(removed, 5, "should drain exactly the 5 seeded messages");
+
+        // Draining an already-empty queue removes nothing and doesn't hang.
+        let again = drain_queue(HOST, Q).await.expect("drain empty");
+        assert_eq!(again, 0);
+
+        // And peek confirms the queue is empty.
+        let peeked = peek_amqp_messages(HOST, Q, 10).await.expect("peek");
+        assert!(peeked.is_empty(), "queue should be empty after flush, got {}", peeked.len());
+    }
 }

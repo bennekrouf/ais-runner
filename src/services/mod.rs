@@ -13,6 +13,7 @@ pub mod sb_check;
 pub mod sftp_check;
 pub mod connection_diag;
 pub mod run_readiness;
+pub mod localize;
 pub mod blob_check;
 pub mod cosmos_check;
 pub mod cosmos_query;
