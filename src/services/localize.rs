@@ -144,6 +144,14 @@ pub fn localize(logic_apps_dir: &str) -> LocalizeReport {
             let mut updates: HashMap<String, String> = HashMap::new();
             if let Some(values) = json["Values"].as_object() {
                 for (k, v) in values {
+                    // Managed-API connector URLs are routing metadata the runtime
+                    // parses (api/connection name), not endpoints to redirect. A
+                    // well-formed value here (the user's real APIM URL or the
+                    // smart_default placeholder) must be left alone — clobbering it
+                    // with the mock URL breaks connector validation.
+                    if k.ends_with("_connectionUrl") {
+                        continue;
+                    }
                     if let Some(s) = v.as_str() {
                         if run_readiness::is_cloud_value(s) {
                             updates.insert(k.clone(), run_readiness::local_target(s));
@@ -276,5 +284,39 @@ mod localize_e2e {
         let r2 = localize(base);
         assert!(r2.msi_localized.is_empty());
         assert!(r2.settings_localized.is_empty());
+    }
+
+    #[test]
+    fn connector_urls_are_never_clobbered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let base = dir.to_str().unwrap();
+
+        std::fs::write(dir.join("connections.json"),
+            serde_json::to_string_pretty(&json!({ "serviceProviderConnections": {} })).unwrap()).unwrap();
+
+        // Real, well-formed managed-API connector URLs + one genuinely cloud value.
+        let teams  = "https://acme-prod.azure-apim.net/apim/teams/teams-1a2b/";
+        let logan  = "https://logic-apis-northeurope.azure-apim.net/apim/azureloganalyticsdatacollector/conn/";
+        std::fs::write(dir.join("local.settings.json"), serde_json::to_string_pretty(&json!({
+            "IsEncrypted": false,
+            "Values": {
+                "Teams_connectionUrl": teams,
+                "LogAnalytics_connectionUrl": logan,
+                "SomeDb_cs": "Server=tcp:corp.database.windows.net,1433;Database=x;"
+            }
+        })).unwrap()).unwrap();
+
+        let r = localize(base);
+
+        let settings: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("local.settings.json")).unwrap()).unwrap();
+        // Connector URLs left exactly as they were — not rewritten to the mock URL.
+        assert_eq!(settings["Values"]["Teams_connectionUrl"], teams);
+        assert_eq!(settings["Values"]["LogAnalytics_connectionUrl"], logan);
+        assert!(!r.settings_localized.contains(&"Teams_connectionUrl".to_string()));
+        assert!(!r.settings_localized.contains(&"LogAnalytics_connectionUrl".to_string()));
+        // The genuinely-cloud SQL value was still redirected.
+        assert!(r.settings_localized.contains(&"SomeDb_cs".to_string()));
     }
 }

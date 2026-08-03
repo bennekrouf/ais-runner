@@ -76,6 +76,14 @@ pub fn is_cloud_value(v: &str) -> bool {
     if MARKERS.iter().any(|m| l.contains(m)) {
         return true;
     }
+    // Managed-API connector URLs (`*.azure-apim.net/apim/<api>/<conn>/`) are NOT
+    // redirectable endpoints — the Logic Apps runtime parses the api/connection
+    // name out of that URL, and there is no local emulator or mock that speaks
+    // the connector protocol. Rewriting them to the mock URL breaks connector
+    // validation, so they are never treated as cloud values to redirect.
+    if l.contains("azure-apim.net") {
+        return false;
+    }
     // Any non-local https endpoint that isn't an already-neutralised placeholder.
     l.starts_with("https://")
         && !l.contains("localhost")
@@ -310,6 +318,9 @@ mod tests {
         assert!(!is_cloud_value("UseDevelopmentStorage=true"));
         assert!(!is_cloud_value("http://localhost:8081"));
         assert!(!is_cloud_value("https://placeholder.azure-apim.net/apim/teams/teams-local/"));
+        // Real managed-API connector URLs must NOT be treated as redirectable cloud.
+        assert!(!is_cloud_value("https://acme-prod.azure-apim.net/apim/teams/teams-1a2b/"));
+        assert!(!is_cloud_value("https://logic-apis-northeurope.azure-apim.net/apim/office365/conn/"));
         assert!(!is_cloud_value(""));
     }
 

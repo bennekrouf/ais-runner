@@ -80,7 +80,15 @@
       "Bash(nc -z -G1 localhost 5672)",
       "Bash(python3 -c 'import json;json.load\\(open\\('\\\\''__TRACKED_VAR__'\\\\''\\)\\);print\\('\\\\''VALID'\\\\''\\)')",
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('func API up —', len\\(d.get\\('value',d if isinstance\\(d,list\\) else []\\)\\), 'workflows'\\) \")",
-      "Bash(awk -F',' '{print NR\": \"NF\" fields\"}' tests/kyriba/PAYMENT_TEST.csv)"
+      "Bash(awk -F',' '{print NR\": \"NF\" fields\"}' tests/kyriba/PAYMENT_TEST.csv)",
+      "Bash(echo \"=== where does ais-runner point func_apps_dir? ===\" *)",
+      "Bash(java -version)",
+      "Bash(mvn -version)",
+      "Bash(curl -s -m 3 http://localhost:7072/admin/functions)",
+      "Bash(curl -s -m 3 -o /dev/null -w \"GET / -> HTTP %{http_code}\\\\n\" http://localhost:7072/)",
+      "Bash(xargs cat)",
+      "Bash(python3 -c \"import json,sys;d=json.load\\(sys.stdin\\);print\\('routePrefix:',d.get\\('extensions',{}\\).get\\('http',{}\\).get\\('routePrefix','api \\(default\\)'\\)\\)\")",
+      "Bash(cargo test *)"
     ]
   }
 }
