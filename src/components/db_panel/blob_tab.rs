@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use crate::services::{
     azure_cli::BlobInfo,
     azurite_client,
+    recorder::{self, RecorderState},
+    scenario::Step,
 };
 
 /// Create a container. Folders are deliberately NOT created here: an empty
@@ -11,12 +13,19 @@ use crate::services::{
 /// workflow fires on that marker before the user can add the real file. Folders
 /// instead come into existence atomically when a file is imported into them
 /// (see `join_blob_path` / the per-container Import form).
-async fn do_create_container(name: String) -> Result<(), String> {
+///
+/// Recording happens here rather than at either call site, so both the Enter key
+/// and the Create button capture the same step — and only when the container
+/// actually came into existence.
+async fn do_create_container(recorder: Signal<RecorderState>, name: String) -> Result<(), String> {
     let container = name.trim().to_string();
+    let recorded = container.clone();
     tokio::task::spawn_blocking(move || azurite_client::create_container(&container))
         .await
         .map_err(|e| format!("Task panicked: {}", e))?
-        .map_err(|e| format!("Create container failed: {}", e))
+        .map_err(|e| format!("Create container failed: {}", e))?;
+    recorder::record(recorder, Step::CreateContainer { container: recorded });
+    Ok(())
 }
 
 /// Normalise a user-typed blob path. The user types the full name including any
@@ -128,6 +137,9 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
     let mut status       = props.status;
     let active_tab       = props.active_tab;
     let azurite_up       = props.azurite_running;
+    // Scenario recording. `Signal` is Copy, so the closures below capture their
+    // own handle; when nothing is recording every `record` call is a no-op.
+    let recorder = use_context::<crate::screens::MainContext>().recorder;
 
     // Auto-refresh blob list whenever the blob tab becomes active (or the panel opens)
     use_effect(move || {
@@ -260,7 +272,7 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                     blob_creating.set(true);
                                     status.set(None);
                                     spawn(async move {
-                                        if let Err(msg) = do_create_container(name).await {
+                                        if let Err(msg) = do_create_container(recorder, name).await {
                                             status.set(Some((msg, true)));
                                             blob_creating.set(false);
                                             return;
@@ -286,7 +298,7 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                 blob_creating.set(true);
                                 status.set(None);
                                 spawn(async move {
-                                    if let Err(msg) = do_create_container(name).await {
+                                    if let Err(msg) = do_create_container(recorder, name).await {
                                         status.set(Some((msg, true)));
                                         blob_creating.set(false);
                                         return;
@@ -392,6 +404,7 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                                                             entry.1.clear();
                                                                         }
                                                                     }
+                                                                    recorder::record(recorder, Step::ClearContainer { container: c.clone() });
                                                                     status.set(Some((format!("🗑 {c}: {n} blob(s) deleted"), false)));
                                                                 }
                                                                 Ok(Err(e)) => status.set(Some((format!("❌ {c}: {e}"), true))),
@@ -477,12 +490,15 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                                                 blob_uploading.write().insert(c.clone());
                                                                 import_target.set(None);
                                                                 spawn(async move {
-                                                                    let (c2, bn) = (c.clone(), blob_name.clone());
+                                                                    let (c2, bn, src2) = (c.clone(), blob_name.clone(), src.clone());
                                                                     let res = tokio::task::spawn_blocking(move || {
                                                                         azurite_client::upload_blob(&c2, &src, &bn)
                                                                     }).await;
                                                                     match res {
-                                                                        Ok(Ok(())) => status.set(Some((format!("↑ {c}/{blob_name} imported"), false))),
+                                                                        Ok(Ok(())) => {
+                                                                            recorder::record_upload(recorder, c.clone(), src2, blob_name.clone()).await;
+                                                                            status.set(Some((format!("↑ {c}/{blob_name} imported"), false)));
+                                                                        }
                                                                         Ok(Err(e)) => status.set(Some((format!("❌ import: {e}"), true))),
                                                                         Err(e)     => status.set(Some((format!("❌ import task failed: {e}"), true))),
                                                                     }
@@ -622,7 +638,15 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                                                                     Err(e) => status.set(Some((format!("Template '{name}': {e}"), true))),
                                                                                     Ok((body, queue)) => {
                                                                                         match crate::services::sb_amqp::send_amqp_message("localhost", &queue, &body).await {
-                                                                                            Ok(()) => status.set(Some((format!("✅ Sent '{name}' for {fname} → {queue}"), false))),
+                                                                                            Ok(()) => {
+                                                                                                // `send_amqp_message` is the application/json path.
+                                                                                                recorder::record(recorder, Step::SendMessage {
+                                                                                                    queue: queue.clone(),
+                                                                                                    body: body.clone(),
+                                                                                                    content_type: "application/json".to_string(),
+                                                                                                });
+                                                                                                status.set(Some((format!("✅ Sent '{name}' for {fname} → {queue}"), false)));
+                                                                                            }
                                                                                             Err(e) => status.set(Some((format!("Send to {queue} failed: {e}"), true))),
                                                                                         }
                                                                                     }
@@ -650,9 +674,20 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                                                                     .save_file().await
                                                                                 {
                                                                                     let path = dest.path().to_string_lossy().to_string();
-                                                                                    let _ = tokio::task::spawn_blocking(move || {
+                                                                                    let (ct2, bn2, path2) = (ct.clone(), bn.clone(), path.clone());
+                                                                                    let res = tokio::task::spawn_blocking(move || {
                                                                                         azurite_client::download_blob(&ct, &bn, &path)
                                                                                     }).await;
+                                                                                    if matches!(res, Ok(Ok(()))) {
+                                                                                        // The destination is an output, not a fixture: keep it
+                                                                                        // project-relative when it lands inside the project.
+                                                                                        let root = recorder.peek().project_root.clone();
+                                                                                        recorder::record(recorder, Step::DownloadBlob {
+                                                                                            container: ct2,
+                                                                                            blob_name: bn2,
+                                                                                            dest: recorder::relative_to_project(&root, &path2),
+                                                                                        });
+                                                                                    }
                                                                                 }
                                                                                 blob_downloading.write().remove(&dk);
                                                                             });
@@ -674,10 +709,13 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                                                                 if let Some(file) = rfd::AsyncFileDialog::new().pick_file().await {
                                                                                     let path = file.path().to_string_lossy().to_string();
                                                                                     let blob_name = format!("{}/{}", pfx, file.file_name());
-                                                                                    let ct2 = ct.clone();
-                                                                                    let _ = tokio::task::spawn_blocking(move || {
+                                                                                    let (ct2, path2, bn2) = (ct.clone(), path.clone(), blob_name.clone());
+                                                                                    let res = tokio::task::spawn_blocking(move || {
                                                                                         azurite_client::upload_blob(&ct2, &path, &blob_name)
                                                                                     }).await;
+                                                                                    if matches!(res, Ok(Ok(()))) {
+                                                                                        recorder::record_upload(recorder, ct.clone(), path2, bn2).await;
+                                                                                    }
                                                                                     blob_expanded.write().insert(ct.clone());
                                                                                     let ct3 = ct.clone();
                                                                                     if let Ok(Ok(updated)) = tokio::task::spawn_blocking(move || {
@@ -718,8 +756,15 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                                                                         azurite_client::rename_virtual_folder(&c2, &o2, &n2)
                                                                                     }).await;
                                                                                     match res {
-                                                                                        Ok(Ok(n)) => status.set(Some((
-                                                                                            format!("✏️ {old} → {newp} ({n} blob(s) moved)"), false))),
+                                                                                        Ok(Ok(n)) => {
+                                                                                            recorder::record(recorder, Step::RenameFolder {
+                                                                                                container: ct.clone(),
+                                                                                                from: old.clone(),
+                                                                                                to: newp.clone(),
+                                                                                            });
+                                                                                            status.set(Some((
+                                                                                                format!("✏️ {old} → {newp} ({n} blob(s) moved)"), false)));
+                                                                                        }
                                                                                         Ok(Err(e)) => status.set(Some((format!("❌ rename: {e}"), true))),
                                                                                         Err(e)     => status.set(Some((format!("❌ rename task failed: {e}"), true))),
                                                                                     }

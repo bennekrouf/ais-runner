@@ -147,7 +147,31 @@
       "Bash(/usr/bin/grep -E \"^error|error\\\\[|scenario|tests_tab|cargo test\")",
       "Bash(/usr/bin/grep -cE \"scenario\\\\.rs|tests_tab\\\\.rs\")",
       "Bash(grep -E \"^🧪|Tests$\")",
-      "Bash(echo \"---exit $?\")"
+      "Bash(echo \"---exit $?\")",
+      "Bash(/usr/bin/grep -i \"ais-runner\\\\|dx serve\")",
+      "Bash(/usr/bin/grep -v grep)",
+      "Bash(/bin/ls -l target/debug/ais-runner src/components/db_panel/tests_tab.rs)",
+      "Bash(/usr/bin/strings target/debug/ais-runner)",
+      "Bash(/usr/bin/grep -c \"Test scenarios\")",
+      "Bash(/usr/bin/grep -m3 \"🧪\")",
+      "Bash(/usr/bin/grep -n \"show_db_panel\\\\|show_azure\\\\|is_open\\\\|_open\" src/screens/main_context.rs)",
+      "Bash(/usr/bin/grep -n \"db_panel_open\\\\|DbPanel\\\\|azure_panel_open\\\\|AzurePanel\" src/screens/main_screen.rs)",
+      "Bash(/usr/bin/grep -n \"current_view\\\\|visited_views\" src/screens/main_screen.rs)",
+      "Bash(/usr/bin/grep -n \"rsx! {\" -A 8 src/components/devops_panel.rs)",
+      "Bash(/usr/bin/grep -oE \"^\\\\.\\(devops|func|graph\\)-panel[a-z-]*\" assets/main.css)",
+      "Bash(/usr/bin/grep -n \"props.status\\\\|props.cosmos_connections\\\\|TestsTab\" src/components/tests_panel.rs)",
+      "Bash(/usr/bin/grep -n \"TestsPanel\\\\|\\\\\"Tests\\\\\"\" src/screens/main_screen.rs src/components/mod.rs)",
+      "Bash(/usr/bin/grep -E \"tests_panel|scenario\\\\.rs|db_panel\")",
+      "Bash(/usr/bin/grep -E \"cargo test|^error\")",
+      "Bash(/usr/bin/grep -E \"tests_panel|scenario\\\\.rs|^error\")",
+      "Bash(/usr/bin/grep -E \"cargo test\")",
+      "Bash(/usr/bin/grep -c \"Test scenarios\\\\|Saved scenarios\")",
+      "Bash(/usr/bin/grep -n \"run_trigger_direct\\\\|trigger_workflow\" src/handlers/workflow_run.rs src/components/*.rs)",
+      "Bash(/usr/bin/grep -cE \"^    [A-Z][A-Za-z]+ \\\\{\" src/services/scenario.rs)",
+      "Bash(perl -pi -e 's/vars: HashMap<String, String>,/vars: Vars,/; s/vars: &HashMap<String, String>/vars: \\\\&Vars/g; s/fn vars\\\\\\(pairs: &\\\\[\\\\\\(&str, &str\\\\\\)\\\\]\\\\\\) -> HashMap<String, String>/fn vars\\(pairs: \\\\&[\\(\\\\&str, \\\\&str\\)]\\) -> Vars/' src/services/scenario.rs)",
+      "Bash(perl -pi -e 's/if let Err\\\\\\(msg\\\\\\) = do_create_container\\\\\\(name\\\\\\)\\\\.await \\\\{/if let Err\\(msg\\) = do_create_container\\(recorder, name\\).await {/g' src/components/db_panel/blob_tab.rs)",
+      "Bash(grep -vE \"auto-clean|global cache|Caused by|Permission denied|^$|failed to remove\")",
+      "Bash(grep -vE \"auto-clean|global cache|Caused by|Permission denied|failed to remove|^$\")"
     ]
   }
 }

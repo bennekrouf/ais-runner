@@ -2,6 +2,8 @@ use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
 use crate::services::sql_check::{self, SqlAuthType, SqlConnection, TestResult};
 use crate::services::sql_runner;
+use crate::services::recorder;
+use crate::services::scenario::Step;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SqlTabProps {
@@ -14,6 +16,9 @@ pub struct SqlTabProps {
 pub fn SqlTab(props: SqlTabProps) -> Element {
     let mut sql_test_results: Signal<HashMap<String, TestResult>> = use_signal(HashMap::new);
     let mut sql_testing:      Signal<HashSet<String>>             = use_signal(HashSet::new);
+
+    // Scenario recording — a no-op unless a recording is in progress.
+    let recorder = use_context::<crate::screens::MainContext>().recorder;
 
     // ── SQL Dev Console state ──────────────────────────────────────────
     let mut dev_db_name:   Signal<String>              = use_signal(String::new);
@@ -193,7 +198,9 @@ pub fn SqlTab(props: SqlTabProps) -> Element {
                                                         let db = db_drop.clone();
                                                         confirm_drop.set(None);
                                                         spawn(async move {
-                                                            let _ = sql_runner::drop_database(&db).await;
+                                                            if sql_runner::drop_database(&db).await.is_ok() {
+                                                                recorder::record(recorder, Step::DropSqlDatabase { name: db.clone() });
+                                                            }
                                                             refresh_tree();
                                                         });
                                                     },
@@ -253,7 +260,11 @@ pub fn SqlTab(props: SqlTabProps) -> Element {
                                                                 onclick: move |_| {
                                                                     let db = db_f.clone(); let s = sch_f.clone(); let t = tbl_f.clone();
                                                                     spawn(async move {
-                                                                        let _ = sql_runner::truncate_table(&db, &s, &t).await;
+                                                                        if sql_runner::truncate_table(&db, &s, &t).await.is_ok() {
+                                                                            recorder::record(recorder, Step::TruncateTable {
+                                                                                database: db.clone(), schema: s.clone(), table: t.clone(),
+                                                                            });
+                                                                        }
                                                                         refresh_tree();
                                                                     });
                                                                 },
@@ -269,7 +280,11 @@ pub fn SqlTab(props: SqlTabProps) -> Element {
                                                                         let db = db_d.clone(); let s = sch_d.clone(); let t = tbl_d.clone();
                                                                         confirm_drop.set(None);
                                                                         spawn(async move {
-                                                                            let _ = sql_runner::drop_table(&db, &s, &t).await;
+                                                                            if sql_runner::drop_table(&db, &s, &t).await.is_ok() {
+                                                                                recorder::record(recorder, Step::DropTable {
+                                                                                    database: db.clone(), schema: s.clone(), table: t.clone(),
+                                                                                });
+                                                                            }
                                                                             refresh_tree();
                                                                         });
                                                                     },
@@ -330,6 +345,9 @@ pub fn SqlTab(props: SqlTabProps) -> Element {
                         dev_db_result.set(None);
                         spawn(async move {
                             let result = sql_runner::create_database(&name).await;
+                            if result.is_ok() {
+                                recorder::record(recorder, Step::CreateSqlDatabase { name: name.clone() });
+                            }
                             dev_db_result.set(Some(result));
                             dev_db_busy.set(false);
                             refresh_tree();
@@ -416,6 +434,14 @@ pub fn SqlTab(props: SqlTabProps) -> Element {
                         dev_sql_result.set(None);
                         spawn(async move {
                             let result = sql_runner::run_sql(&db, &sql).await;
+                            if result.is_ok() {
+                                // Covers CREATE TABLE and INSERT as well as SELECT —
+                                // a recorded scenario needs the schema and the seed
+                                // rows, and both arrive through this one console.
+                                recorder::record(recorder, Step::RunSql {
+                                    database: db.clone(), sql: sql.clone(), capture: None,
+                                });
+                            }
                             dev_sql_result.set(Some(result));
                             dev_sql_busy.set(false);
                             refresh_tree();

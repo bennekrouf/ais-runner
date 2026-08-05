@@ -4215,3 +4215,60 @@ body.light .wf-chip-liquid { background: #f5f3ff; color: #6d28d9; border-color: 
     font-size: 11px;
     font-variant-numeric: tabular-nums;
 }
+
+/* ── Recording indicator (toolbar) ───────────────────────────────────────────
+   Deliberately loud: the user spends a recording in another view, and one they
+   have forgotten about quietly captures everything they do next. */
+.rec-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: 10px;
+    padding: 3px 10px;
+    border: 1px solid var(--red);
+    border-radius: 12px;
+    background: var(--red-bg);
+    white-space: nowrap;
+}
+.rec-dot {
+    width: 8px;
+    height: 8px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--red);
+    animation: rec-pulse 1.4s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.25; }
+}
+.rec-name  { font-size: 12px; font-weight: 600; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.rec-count { font-size: 11px; color: var(--text2); font-variant-numeric: tabular-nums; }
+
+/* ── Review screen ───────────────────────────────────────────────────────── */
+.scenario-review-row {
+    border-bottom: 1px solid var(--border);
+}
+.scenario-review-row:last-child { border-bottom: none; }
+.scenario-review-row .scenario-step { border-bottom: none; }
+.scenario-step-actions {
+    flex: none;
+    display: flex;
+    gap: 4px;
+    margin-left: auto;
+}
+.scenario-step-editor {
+    padding: 0 14px 10px 42px;
+}
+.scenario-step-json {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    background: var(--bg2);
+    color: var(--text1);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    resize: vertical;
+}

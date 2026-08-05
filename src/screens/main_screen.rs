@@ -12,6 +12,7 @@ use crate::components::{
     settings_editor::SettingsEditor,
     db_panel::DbPanel,
     azure_panel::AzurePanel,
+    tests_panel::TestsPanel,
     devops_panel::DevOpsPanel,
     func_panel::FuncPanel,
     graph_panel::GraphPanel,
@@ -112,6 +113,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut cleared_wfs = ctx.cleared_wfs;
     let mut last_ran    = ctx.last_ran;
     let mut auto_watch  = ctx.auto_watch;
+    let mut recorder    = ctx.recorder;
     // Track which views have been opened — panels are lazy-mounted on first visit
     // but stay in the DOM afterwards so their state (caches, signals) survives tab switches.
     let mut visited_views = ctx.visited_views;
@@ -685,6 +687,29 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     }
                 }
 
+                // ── recording indicator ───────────────────────────────────────
+                // In the toolbar rather than the Tests view because the actions
+                // being captured happen elsewhere — usually in the Connectors
+                // panel — and a recording the user has forgotten about is worse
+                // than no recording at all.
+                if recorder.read().is_recording() {
+                    div { class: "rec-indicator",
+                        span { class: "rec-dot" }
+                        span { class: "rec-name", "{recorder.read().name}" }
+                        span { class: "rec-count", "{recorder.read().steps.len()} step(s)" }
+                        button {
+                            class: "btn btn-small btn-danger",
+                            title: "Stop recording and review the captured steps",
+                            onclick: move |_| {
+                                recorder.write().stop();
+                                visited_views.write().insert("Tests".into());
+                                current_view.set("Tests".into());
+                            },
+                            "■ Stop"
+                        }
+                    }
+                }
+
                 // ── spacer pushes the right group to the far edge ─────────────
                 div { style: "flex:1; min-width:0" }
 
@@ -719,6 +744,12 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         title: "Azure DevOps pipelines and runs",
                         onclick: move |_| { visited_views.write().insert("DevOps".into()); current_view.set("DevOps".into()); },
                         "DevOps"
+                    }
+                    button {
+                        class: if *current_view.read() == "Tests" { "view-btn active" } else { "view-btn" },
+                        title: "Saved scenarios — replay a sequence of actions against the local emulators",
+                        onclick: move |_| { visited_views.write().insert("Tests".into()); current_view.set("Tests".into()); },
+                        "Tests"
                     }
                 }
 
@@ -821,6 +852,11 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 if visited_views.read().contains("DevOps") {
                     div { style: if *current_view.read() == "DevOps" { "display:contents" } else { "display:none" },
                         DevOpsPanel { logic_apps_dir: dir.clone() }
+                    }
+                }
+                if visited_views.read().contains("Tests") {
+                    div { style: if *current_view.read() == "Tests" { "display:contents" } else { "display:none" },
+                        TestsPanel { logic_apps_dir: dir.clone() }
                     }
                 }
                 if visited_views.read().contains("Graph") {
@@ -1142,6 +1178,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                             queue_or_blob, body, &dir,
                             runs, actions, log_lines, running_wfs, active_tab,
                             traced_wfs, cleared_wfs, run_dialog, last_ran, run_gate,
+                            recorder,
                         )
                     },
                 }

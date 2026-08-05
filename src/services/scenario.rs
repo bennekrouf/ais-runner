@@ -19,14 +19,19 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::services::{azurite_client, cosmos_query, sb_amqp, sb_testing, sql_runner, workflows};
 
 /// Where scenarios live, relative to the selected project root.
-const SCENARIO_DIR: &str = ".ais-runner/scenarios";
+pub const SCENARIO_DIR: &str = ".ais-runner/scenarios";
+
+/// Ordered so a re-save produces a stable diff. `vars` used to be a `HashMap`,
+/// which shuffled key order on every write and made an otherwise no-op save
+/// look like a change in review.
+pub type Vars = BTreeMap<String, String>;
 
 /// How often a `WaitFor*` step re-checks its condition.
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -43,7 +48,7 @@ pub struct Scenario {
     /// Seed values for `{{var}}` substitution. Steps with a `capture` field add
     /// more as the run progresses.
     #[serde(default)]
-    pub vars: HashMap<String, String>,
+    pub vars: Vars,
     pub steps: Vec<Step>,
     /// Source file, for error messages and re-saving. Not part of the JSON.
     #[serde(skip)]
@@ -62,6 +67,10 @@ pub enum Step {
     CreateContainer {
         container: String,
     },
+    /// `file` is resolved against the project root when it is relative, so a
+    /// recorded upload can point at `.ais-runner/fixtures/…` and still replay on
+    /// a machine that has never seen the original file. An absolute path is
+    /// honoured as-is, which is what hand-written scenarios have always used.
     UploadFile {
         container: String,
         file: String,
@@ -77,11 +86,38 @@ pub enum Step {
     ClearContainer {
         container: String,
     },
+    /// Azurite has no real folders, so this copies every blob under `from/` to
+    /// `to/` and deletes the originals — same as the Blobs tab's rename.
+    RenameFolder {
+        container: String,
+        from: String,
+        to: String,
+    },
+    /// Write a blob back out to disk. `dest` follows the same
+    /// relative-to-project-root rule as `UploadFile`.
+    DownloadBlob {
+        container: String,
+        blob_name: String,
+        dest: String,
+    },
 
     // ── Service Bus ─────────────────────────────────────────────────────
+    /// Only writes `Config.json`; the emulator has to restart before the queue
+    /// exists. See [`queues_to_create`] — the caller is expected to apply these
+    /// and restart once *before* the run, not to rely on this step at replay
+    /// time.
+    CreateQueue {
+        queue: String,
+    },
     SendMessage {
         queue: String,
         body: String,
+        /// Decides how a Logic Apps SB trigger delivers the body:
+        /// `application/json` arrives raw in `contentData`, anything else
+        /// arrives base64-wrapped in `contentData.$content`. Defaulted so
+        /// scenarios written before this field existed keep working.
+        #[serde(default = "default_content_type")]
+        content_type: String,
     },
     DrainQueue {
         queue: String,
@@ -91,12 +127,25 @@ pub enum Step {
     CreateSqlDatabase {
         name: String,
     },
+    DropSqlDatabase {
+        name: String,
+    },
     /// `GO`-separated scripts are split by `sql_runner::run_sql` itself.
     RunSql {
         database: String,
         sql: String,
         #[serde(default)]
         capture: Option<String>,
+    },
+    TruncateTable {
+        database: String,
+        schema: String,
+        table: String,
+    },
+    DropTable {
+        database: String,
+        schema: String,
+        table: String,
     },
 
     // ── Cosmos ──────────────────────────────────────────────────────────
@@ -193,6 +242,9 @@ fn default_trigger() -> String {
 fn default_timeout() -> u64 {
     30_000
 }
+fn default_content_type() -> String {
+    "application/json".to_string()
+}
 
 /// Everything a run needs that the scenario file deliberately doesn't hardcode,
 /// so the same scenario works against whatever emulators are currently up.
@@ -201,6 +253,9 @@ pub struct RunContext {
     pub sb_host: String,
     pub cosmos_endpoint: String,
     pub cosmos_key: String,
+    /// Base for relative `UploadFile`/`DownloadBlob` paths. Deliberately not in
+    /// the JSON: the same scenario has to work from whatever checkout it's in.
+    pub project_root: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -256,6 +311,115 @@ pub fn load(path: &Path) -> Result<Scenario, String> {
     let mut scenario: Scenario = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     scenario.source = path.to_path_buf();
     Ok(scenario)
+}
+
+pub fn scenario_dir(project_root: &Path) -> PathBuf {
+    project_root.join(SCENARIO_DIR)
+}
+
+/// Filename-safe form of a scenario name: `Invoice → SAP (happy path)` becomes
+/// `invoice-sap-happy-path`.
+pub fn slug(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.trim().to_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "scenario".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Path for a new scenario called `name`, never one that already exists.
+///
+/// Two scenarios can legitimately share a slug (`Invoice v1` / `Invoice: v1`),
+/// and silently overwriting one with the other would lose work.
+pub fn unique_path(project_root: &Path, name: &str) -> PathBuf {
+    unique_in(&scenario_dir(project_root), name)
+}
+
+fn unique_in(dir: &Path, name: &str) -> PathBuf {
+    let base = slug(name);
+    let mut path = dir.join(format!("{base}.json"));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{base}-{n}.json"));
+        n += 1;
+    }
+    path
+}
+
+/// Write `scenario` to its `source`, creating the directory if needed.
+///
+/// Pretty-printed with a trailing newline because these files are committed and
+/// read in diffs, not just by this app.
+pub fn save(scenario: &Scenario) -> Result<(), String> {
+    if scenario.source.as_os_str().is_empty() {
+        return Err("scenario has no source path".to_string());
+    }
+    if let Some(parent) = scenario.source.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut text = serde_json::to_string_pretty(scenario).map_err(|e| e.to_string())?;
+    text.push('\n');
+    std::fs::write(&scenario.source, text).map_err(|e| e.to_string())
+}
+
+pub fn delete(scenario: &Scenario) -> Result<(), String> {
+    std::fs::remove_file(&scenario.source).map_err(|e| e.to_string())
+}
+
+/// Rename in place: change the name and move the file to match the new slug.
+///
+/// The move is skipped when the slug is unchanged, so re-saving under a cosmetic
+/// edit (`invoice` → `Invoice`) doesn't churn the filename in git.
+pub fn rename(scenario: &Scenario, new_name: &str) -> Result<Scenario, String> {
+    let mut renamed = scenario.clone();
+    renamed.name = new_name.trim().to_string();
+
+    let old_stem = scenario
+        .source
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    if slug(&renamed.name) != old_stem {
+        let dir = scenario.source.parent().unwrap_or(Path::new("."));
+        renamed.source = unique_in(dir, &renamed.name);
+    }
+
+    // Save first, delete second: interrupted between the two this leaves a
+    // duplicate, which the user can see and remove. The other order would lose
+    // the scenario outright.
+    save(&renamed)?;
+    if renamed.source != scenario.source {
+        let _ = std::fs::remove_file(&scenario.source);
+    }
+    Ok(renamed)
+}
+
+/// Queue names a scenario creates, with `{{var}}` already expanded.
+///
+/// `sb_emulator::add_queue_to_emulator_config` only edits `Config.json`; the
+/// emulator has to restart before the queue is real. Replaying `CreateQueue`
+/// inline would therefore produce a scenario whose very next send fails. The
+/// Tests view instead applies all of these up front and restarts once, which
+/// costs one restart no matter how many queues a scenario declares.
+pub fn queues_to_create(scenario: &Scenario) -> Vec<String> {
+    scenario
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::CreateQueue { queue } => Some(expand(queue, &scenario.vars)),
+            _ => None,
+        })
+        .filter(|q| !q.trim().is_empty())
+        .collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -330,7 +494,7 @@ pub async fn run(
 }
 
 struct RunState {
-    vars: HashMap<String, String>,
+    vars: Vars,
     /// Earliest start time a run may have and still satisfy `WaitForRun`.
     ///
     /// Set when the scenario starts, so a run left over from a previous replay
@@ -365,7 +529,8 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
             file,
             blob_name,
         } => {
-            let (c, f, b) = (container.clone(), file.clone(), blob_name.clone());
+            let (c, b) = (container.clone(), blob_name.clone());
+            let f = resolve_path(&ctx.project_root, file);
             blocking(move || azurite_client::upload_blob(&c, &f, &b)).await?;
             Ok(format!("uploaded '{blob_name}' to '{container}'"))
         }
@@ -384,11 +549,53 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
             let removed = blocking(move || azurite_client::clear_container(&name)).await?;
             Ok(format!("cleared {removed} blob(s) from '{container}'"))
         }
+        RenameFolder {
+            container,
+            from,
+            to,
+        } => {
+            let (c, f, t) = (container.clone(), from.clone(), to.clone());
+            let moved = blocking(move || azurite_client::rename_virtual_folder(&c, &f, &t)).await?;
+            Ok(format!("renamed '{from}' → '{to}' ({moved} blob(s) moved)"))
+        }
+        DownloadBlob {
+            container,
+            blob_name,
+            dest,
+        } => {
+            let (c, b) = (container.clone(), blob_name.clone());
+            let path = resolve_path(&ctx.project_root, dest);
+            // The destination folder may not exist in a fresh checkout.
+            if let Some(parent) = Path::new(&path).parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let shown = path.clone();
+            blocking(move || azurite_client::download_blob(&c, &b, &path)).await?;
+            Ok(format!("downloaded '{blob_name}' to {shown}"))
+        }
 
         // ── Service Bus ─────────────────────────────────────────────────
-        SendMessage { queue, body } => {
-            sb_amqp::send_amqp_message(&ctx.sb_host, queue, body).await?;
-            Ok(format!("sent {} bytes to '{queue}'", body.len()))
+        CreateQueue { queue } => {
+            let q = queue.clone();
+            let added =
+                blocking(move || crate::handlers::sb_emulator::add_queue_to_emulator_config(&q))
+                    .await?;
+            Ok(if added {
+                format!("'{queue}' written to Config.json — needs an emulator restart to exist")
+            } else {
+                format!("queue '{queue}' already in Config.json")
+            })
+        }
+        SendMessage {
+            queue,
+            body,
+            content_type,
+        } => {
+            sb_amqp::send_amqp_message_with_type(&ctx.sb_host, queue, body, content_type).await?;
+            Ok(format!(
+                "sent {} bytes to '{queue}' as {content_type}",
+                body.len()
+            ))
         }
         DrainQueue { queue } => {
             let n = sb_amqp::drain_queue(&ctx.sb_host, queue).await?;
@@ -397,6 +604,10 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
 
         // ── SQL ─────────────────────────────────────────────────────────
         CreateSqlDatabase { name } => sql_runner::create_database(name).await,
+        DropSqlDatabase { name } => {
+            sql_runner::drop_database(name).await?;
+            Ok(format!("dropped database '{name}'"))
+        }
         RunSql {
             database,
             sql,
@@ -407,6 +618,22 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                 state.vars.insert(key.clone(), out.trim().to_string());
             }
             Ok(summarise(&out))
+        }
+        TruncateTable {
+            database,
+            schema,
+            table,
+        } => {
+            sql_runner::truncate_table(database, schema, table).await?;
+            Ok(format!("truncated {schema}.{table}"))
+        }
+        DropTable {
+            database,
+            schema,
+            table,
+        } => {
+            sql_runner::drop_table(database, schema, table).await?;
+            Ok(format!("dropped {schema}.{table}"))
         }
 
         // ── Cosmos ──────────────────────────────────────────────────────
@@ -575,6 +802,20 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
     }
 }
 
+/// Make a recorded file path absolute.
+///
+/// Recorded steps store fixtures relative to the project root so a scenario
+/// stays replayable in someone else's checkout; hand-written ones have always
+/// used absolute paths, and those are left alone.
+fn resolve_path(project_root: &Path, path: &str) -> String {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        path.to_string()
+    } else {
+        project_root.join(p).to_string_lossy().into_owned()
+    }
+}
+
 /// Run a blocking service call off the async runtime.
 async fn blocking<T, F>(f: F) -> Result<T, String>
 where
@@ -659,10 +900,16 @@ pub fn label_of(step: &Step) -> String {
         UploadFile { blob_name, .. } => format!("upload {blob_name}"),
         UploadInline { blob_name, .. } => format!("write {blob_name}"),
         ClearContainer { container } => format!("clear {container}"),
+        RenameFolder { from, to, .. } => format!("rename folder {from} → {to}"),
+        DownloadBlob { blob_name, .. } => format!("download {blob_name}"),
+        CreateQueue { queue } => format!("create queue {queue}"),
         SendMessage { queue, .. } => format!("send to {queue}"),
         DrainQueue { queue } => format!("drain {queue}"),
         CreateSqlDatabase { name } => format!("create SQL db {name}"),
+        DropSqlDatabase { name } => format!("drop SQL db {name}"),
         RunSql { database, .. } => format!("run SQL on {database}"),
+        TruncateTable { schema, table, .. } => format!("truncate {schema}.{table}"),
+        DropTable { schema, table, .. } => format!("drop table {schema}.{table}"),
         CreateCosmosDatabase { database } => format!("create Cosmos db {database}"),
         CreateCosmosContainer { container, .. } => format!("create Cosmos container {container}"),
         UpsertCosmosDocument { container, .. } => format!("upsert doc into {container}"),
@@ -687,7 +934,7 @@ pub fn label_of(step: &Step) -> String {
 /// module needing to know each step's shape. Walking the tree rather than doing
 /// a textual replace on the serialized JSON also means a variable whose value
 /// contains a quote or backslash can't corrupt the document.
-fn resolve_vars(step: &Step, vars: &HashMap<String, String>) -> Result<Step, String> {
+fn resolve_vars(step: &Step, vars: &Vars) -> Result<Step, String> {
     if vars.is_empty() {
         return Ok(step.clone());
     }
@@ -696,7 +943,7 @@ fn resolve_vars(step: &Step, vars: &HashMap<String, String>) -> Result<Step, Str
     serde_json::from_value(value).map_err(|e| format!("substitution produced an invalid step: {e}"))
 }
 
-fn substitute(value: &mut Value, vars: &HashMap<String, String>) {
+fn substitute(value: &mut Value, vars: &Vars) {
     match value {
         Value::String(s) => {
             if s.contains("{{") {
@@ -712,7 +959,7 @@ fn substitute(value: &mut Value, vars: &HashMap<String, String>) {
 /// Expand `{{name}}` placeholders. An unknown name is left verbatim so the
 /// failure shows up as a recognisable `{{typo}}` in the step detail rather than
 /// silently becoming an empty string.
-fn expand(text: &str, vars: &HashMap<String, String>) -> String {
+fn expand(text: &str, vars: &Vars) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
 
@@ -740,7 +987,7 @@ fn expand(text: &str, vars: &HashMap<String, String>) -> String {
 mod tests {
     use super::*;
 
-    fn vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+    fn vars(pairs: &[(&str, &str)]) -> Vars {
         pairs
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -787,6 +1034,7 @@ mod tests {
         let step = Step::SendMessage {
             queue: "q".into(),
             body: "{{payload}}".into(),
+            content_type: default_content_type(),
         };
         let resolved = resolve_vars(&step, &vars(&[("payload", r#"{"a":"b\"c"}"#)])).unwrap();
         let Step::SendMessage { body, .. } = resolved else {
@@ -824,10 +1072,16 @@ mod tests {
             { "action": "upload_file", "container": "in", "file": "/tmp/a.xml", "blob_name": "a.xml" },
             { "action": "upload_inline", "container": "in", "blob_name": "b.xml", "content": "<x/>" },
             { "action": "clear_container", "container": "in" },
+            { "action": "rename_folder", "container": "in", "from": "old", "to": "new" },
+            { "action": "download_blob", "container": "in", "blob_name": "a.xml", "dest": "out/a.xml" },
+            { "action": "create_queue", "queue": "q" },
             { "action": "send_message", "queue": "q", "body": "{}" },
             { "action": "drain_queue", "queue": "q" },
             { "action": "create_sql_database", "name": "aisdev" },
+            { "action": "drop_sql_database", "name": "aisdev" },
             { "action": "run_sql", "database": "aisdev", "sql": "SELECT 1", "capture": "out" },
+            { "action": "truncate_table", "database": "aisdev", "schema": "dbo", "table": "Invoice" },
+            { "action": "drop_table", "database": "aisdev", "schema": "dbo", "table": "Invoice" },
             { "action": "create_cosmos_database", "database": "EventStore" },
             { "action": "create_cosmos_container", "database": "EventStore", "container": "events" },
             { "action": "upsert_cosmos_document", "database": "EventStore", "container": "events", "document": { "id": "1" } },
@@ -842,11 +1096,15 @@ mod tests {
         }"#;
 
         let scenario: Scenario = serde_json::from_str(json).unwrap();
-        assert_eq!(scenario.steps.len(), 18);
+        assert_eq!(scenario.steps.len(), 24);
 
         // Defaults applied where the document omitted them.
-        let Step::CreateCosmosContainer { partition_key, .. } = &scenario.steps[9] else {
-            panic!("wrong variant")
+        let Some(Step::CreateCosmosContainer { partition_key, .. }) = scenario
+            .steps
+            .iter()
+            .find(|s| matches!(s, Step::CreateCosmosContainer { .. }))
+        else {
+            panic!("missing variant")
         };
         assert_eq!(partition_key, "/id");
 
@@ -854,6 +1112,116 @@ mod tests {
         let text = serde_json::to_string(&scenario).unwrap();
         let again: Scenario = serde_json::from_str(&text).unwrap();
         assert_eq!(again.steps.len(), scenario.steps.len());
+    }
+
+    #[test]
+    fn a_send_message_written_before_content_type_existed_still_loads() {
+        // The field was added after scenarios were already in projects; without
+        // the serde default every one of those files would fail to parse.
+        let json = r#"{ "action": "send_message", "queue": "q", "body": "{}" }"#;
+        let Step::SendMessage { content_type, .. } = serde_json::from_str(json).unwrap() else {
+            panic!("wrong variant")
+        };
+        assert_eq!(content_type, "application/json");
+    }
+
+    #[test]
+    fn slug_produces_one_filename_safe_token_per_word() {
+        assert_eq!(slug("Invoice → SAP (happy path)"), "invoice-sap-happy-path");
+        assert_eq!(slug("  spaced  out  "), "spaced-out");
+        assert_eq!(slug("already-fine"), "already-fine");
+        // Nothing usable left — still needs a filename.
+        assert_eq!(slug("→→→"), "scenario");
+        assert_eq!(slug(""), "scenario");
+    }
+
+    #[test]
+    fn relative_fixture_paths_resolve_against_the_project_root() {
+        let root = Path::new("/repo/app");
+        assert_eq!(
+            resolve_path(root, ".ais-runner/fixtures/a.xml"),
+            "/repo/app/.ais-runner/fixtures/a.xml"
+        );
+        // Hand-written scenarios have always used absolute paths.
+        assert_eq!(resolve_path(root, "/tmp/a.xml"), "/tmp/a.xml");
+    }
+
+    #[test]
+    fn queues_to_create_collects_them_with_variables_expanded() {
+        let json = r#"{
+          "name": "q",
+          "vars": { "env": "dev" },
+          "steps": [
+            { "action": "create_queue", "queue": "ais.{{env}}.in" },
+            { "action": "send_message", "queue": "ais.{{env}}.in", "body": "{}" },
+            { "action": "create_queue", "queue": "ais.{{env}}.out" }
+          ]
+        }"#;
+        let scenario: Scenario = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            queues_to_create(&scenario),
+            vec!["ais.dev.in".to_string(), "ais.dev.out".to_string()]
+        );
+    }
+
+    #[test]
+    fn renaming_moves_the_file_and_leaves_nothing_behind() {
+        let dir = std::env::temp_dir().join(format!("ais-rn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let original = Scenario {
+            name: "Before".into(),
+            description: String::new(),
+            vars: Default::default(),
+            steps: vec![Step::DrainQueue { queue: "q".into() }],
+            source: unique_in(&dir, "Before"),
+        };
+        save(&original).unwrap();
+
+        let renamed = rename(&original, "After Rename").unwrap();
+        assert_eq!(renamed.name, "After Rename");
+        assert_eq!(renamed.source, dir.join("after-rename.json"));
+        assert!(renamed.source.exists());
+        assert!(!original.source.exists(), "the old file must not linger");
+
+        // A cosmetic change that leaves the slug alone keeps the filename, so a
+        // rename doesn't churn the path in git for nothing.
+        let again = rename(&renamed, "after-rename").unwrap();
+        assert_eq!(again.source, renamed.source);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn saving_and_reloading_a_scenario_preserves_every_step() {
+        let dir = std::env::temp_dir().join(format!("ais-scn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let scenario = Scenario {
+            name: "Round Trip".into(),
+            description: "d".into(),
+            vars: vars(&[("id", "1")]),
+            steps: vec![
+                Step::CreateQueue { queue: "q".into() },
+                Step::SendMessage {
+                    queue: "q".into(),
+                    body: "{}".into(),
+                    content_type: "application/octet-stream".into(),
+                },
+            ],
+            source: unique_in(&dir, "Round Trip"),
+        };
+        save(&scenario).unwrap();
+
+        let reloaded = load(&scenario.source).unwrap();
+        assert_eq!(reloaded.name, "Round Trip");
+        assert_eq!(reloaded.steps.len(), 2);
+        let Step::SendMessage { content_type, .. } = &reloaded.steps[1] else {
+            panic!("wrong variant")
+        };
+        assert_eq!(content_type, "application/octet-stream");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

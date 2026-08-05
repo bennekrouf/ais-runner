@@ -66,6 +66,11 @@ pub struct MainContext {
     pub azure_panel_open: Signal<bool>,
     pub auto_watch: Signal<bool>,
 
+    // Scenario recording. Lives here rather than in the Tests view because the
+    // actions being captured happen in the Connectors panel and the workflow
+    // list — every panel needs to reach it without four layers of prop drilling.
+    pub recorder: Signal<crate::services::recorder::RecorderState>,
+
     // Setup / environment
     pub setup_status: Signal<setup_manager::SetupStatus>,
     pub setup_updates: Signal<HashMap<String, String>>,
@@ -149,6 +154,8 @@ impl MainContext {
             db_panel_open: Signal::new(false),
             azure_panel_open: Signal::new(false),
             auto_watch: Signal::new(true),
+
+            recorder: Signal::new(Default::default()),
 
             setup_status: Signal::new(setup_manager::SetupStatus::MissingSettings),
             setup_updates: Signal::new(HashMap::new()),

@@ -16,3 +16,4 @@ pub mod func_panel;
 pub mod graph_panel;
 pub mod eventgrid_panel;
 pub mod sb_compare_panel;
+pub mod tests_panel;

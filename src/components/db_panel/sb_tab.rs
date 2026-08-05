@@ -5,6 +5,8 @@ use crate::services::{
     sb_check::SbQueueInfo,
 };
 use crate::services::sb_amqp::PeekedMessage;
+use crate::services::recorder;
+use crate::services::scenario::Step;
 
 /// One row in the inline peek list. Either a real peeked message (body + the
 /// AMQP `delivery-count` so the user can spot poison-loop messages without
@@ -52,6 +54,9 @@ pub fn SbTab(props: SbTabProps) -> Element {
     // the filter (the primary control) owns the toolbar.
     let mut create_open: Signal<bool> = use_signal(|| false);
     let mut trace_open:  Signal<bool> = use_signal(|| false);
+
+    // Scenario recording — a no-op unless a recording is in progress.
+    let recorder = use_context::<crate::screens::MainContext>().recorder;
 
     // Send variants: burst count and null-field path, per queue.
     let mut sb_send_counts: Signal<HashMap<String, String>> = use_signal(HashMap::new);
@@ -167,7 +172,11 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                     crate::handlers::sb_emulator::add_queue_to_emulator_config(&q2)
                                 }).await.unwrap_or(Err("task failed".into()));
                                 match result {
+                                    // Recorded on both arms: "already exists" still means
+                                    // the scenario depends on that queue, and a replay
+                                    // against a clean emulator has to create it.
                                     Ok(true) => {
+                                        recorder::record(recorder, Step::CreateQueue { queue: q.clone() });
                                         status.set(Some((
                                             format!("✅ '{}' added — restart SB Emulator to apply.", q),
                                             false,
@@ -175,6 +184,7 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                         new_queue_name.set(String::new());
                                     }
                                     Ok(false) => {
+                                        recorder::record(recorder, Step::CreateQueue { queue: q.clone() });
                                         status.set(Some((
                                             format!("ℹ '{}' already exists.", q),
                                             false,
@@ -430,7 +440,10 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                             spawn(async move {
                                                 let res = crate::services::sb_amqp::drain_queue("localhost", &qn).await;
                                                 match res {
-                                                    Ok(n)  => status.set(Some((format!("🧹 {qn}: flushed {n} message(s)"), false))),
+                                                    Ok(n)  => {
+                                                        recorder::record(recorder, Step::DrainQueue { queue: qn.clone() });
+                                                        status.set(Some((format!("🧹 {qn}: flushed {n} message(s)"), false)));
+                                                    }
                                                     Err(e) => status.set(Some((format!("❌ flush {qn}: {e}"), true))),
                                                 }
                                                 // Reflect the drain: clear any peeked rows and zero the local count.
@@ -559,7 +572,17 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                                             match crate::services::sb_amqp::send_amqp_message_with_type(
                                                                 "localhost", &qn4, &body, encoding.content_type(),
                                                             ).await {
-                                                                Ok(()) => sent += 1,
+                                                                Ok(()) => {
+                                                                    // One step per message actually sent: a burst of
+                                                                    // five is five sends, and replaying one wouldn't
+                                                                    // reproduce it.
+                                                                    recorder::record(recorder, Step::SendMessage {
+                                                                        queue: qn4.clone(),
+                                                                        body: body.clone(),
+                                                                        content_type: encoding.content_type().to_string(),
+                                                                    });
+                                                                    sent += 1;
+                                                                }
                                                                 Err(e) => { err = Some(e); break; }
                                                             }
                                                         }
@@ -850,9 +873,19 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                                         }).await.unwrap_or(
                                                             crate::services::sb_testing::QueueEncoding::RawJson { consumer: None }
                                                         );
-                                                        crate::services::sb_amqp::send_amqp_message_with_type(
+                                                        let sent = crate::services::sb_amqp::send_amqp_message_with_type(
                                                             "localhost", &qn3, &normalised.body, encoding.content_type(),
-                                                        ).await
+                                                        ).await;
+                                                        if sent.is_ok() {
+                                                            recorder::record(recorder, Step::SendMessage {
+                                                                queue: qn3.clone(),
+                                                                // The normalised body, not the raw one: that is what
+                                                                // reached the queue, envelope already unwrapped.
+                                                                body: normalised.body.clone(),
+                                                                content_type: encoding.content_type().to_string(),
+                                                            });
+                                                        }
+                                                        sent
                                                     } else {
                                                         Err("SB Emulator is not running — start it from the toolbar first.".into())
                                                     };

@@ -12,6 +12,7 @@ fn epoch_now() -> u64 {
 use crate::components::log_panel::{LogLevel, LogLine};
 use crate::services::{
     connection_diag, payload, run_readiness, sb_check,
+    scenario::Step,
     workflows::{self, ActionItem, RunItem, WorkflowItem},
 };
 use crate::utils::{filter_cleared, make_push, sweep_run_history};
@@ -79,6 +80,28 @@ pub fn handle_trigger_from_detail(
     run_dialog.set(Some((wf.name, wf.trigger_name, wf.trigger_type, initial_body, blob_container, queue_name)));
 }
 
+/// Capture a direct trigger as a `RunWorkflow` step.
+///
+/// Only the branches that genuinely trigger call this. The blob branch never
+/// does: it watches a container the user filled earlier, so the upload is the
+/// recorded action and a `RunWorkflow` step would trigger something the real
+/// pipeline never triggers directly.
+fn record_run(
+    recorder: Signal<crate::services::recorder::RecorderState>,
+    workflow: &str,
+    trigger: &str,
+    body: &str,
+) {
+    crate::services::recorder::record(
+        recorder,
+        Step::RunWorkflow {
+            workflow: workflow.to_string(),
+            trigger: trigger.to_string(),
+            body: body.to_string(),
+        },
+    );
+}
+
 pub fn handle_run(
     name: String,
     trigger_name: String,
@@ -96,6 +119,7 @@ pub fn handle_run(
     mut run_dialog: Signal<Option<(String, String, String, String, Option<String>, Option<String>)>>,
     mut last_ran: Signal<HashMap<String, u64>>,
     mut run_gate: Signal<Option<run_readiness::RunReadiness>>,
+    recorder: Signal<crate::services::recorder::RecorderState>,
 ) {
     // ── Local-readiness gate ──────────────────────────────────────────────
     // Logic Apps consumes connection config at func start, so a workflow whose
@@ -211,7 +235,10 @@ pub fn handle_run(
             );
         } else if is_recurrence {
             match workflows::run_trigger_direct(&wf, &trigger_name, &body).await {
-                Ok(_)  => push(format!("Run triggered ({})", trigger_type), LogLevel::Ok),
+                Ok(_)  => {
+                    record_run(recorder, &wf, &trigger_name, &body);
+                    push(format!("Run triggered ({})", trigger_type), LogLevel::Ok);
+                }
                 Err(e) => {
                     let es = e.to_string();
                     push(format!("Trigger error: {}", es), LogLevel::Error);
@@ -228,7 +255,13 @@ pub fn handle_run(
                 Ok(url) => {
                     push(format!("$ curl -X POST \"{}\"", url), LogLevel::Info);
                     match workflows::trigger_workflow(&url, &body).await {
-                        Ok(run_id) => push(format!("Run started: {}", run_id), LogLevel::Ok),
+                        Ok(run_id) => {
+                            // Recorded as run_trigger_direct rather than as the
+                            // callback POST: the URL carries a session-scoped
+                            // signature that won't be valid on replay.
+                            record_run(recorder, &wf, &trigger_name, &body);
+                            push(format!("Run started: {}", run_id), LogLevel::Ok);
+                        }
                         Err(e) => {
                             let es = e.to_string();
                             push(format!("Trigger error: {}", es), LogLevel::Error);
@@ -288,6 +321,14 @@ pub fn handle_run(
             };
             match result {
                 Ok(()) => {
+                    // A queue-triggered "run" is really a send: replaying the
+                    // send is what starts the workflow, and a run_workflow step
+                    // would bypass the trigger this scenario exists to exercise.
+                    crate::services::recorder::record(recorder, Step::SendMessage {
+                        queue: queue.clone(),
+                        body: body_clone.clone(),
+                        content_type: "application/json".to_string(),
+                    });
                     push("✅ Message sent — waiting for workflow run…".into(), LogLevel::Ok);
                 }
                 Err(e) => {
