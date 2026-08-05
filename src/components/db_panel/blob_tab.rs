@@ -72,6 +72,8 @@ fn blob_fetch_all() -> Result<Vec<(String, Vec<BlobInfo>)>, String> {
 #[derive(Props, Clone, PartialEq)]
 pub struct BlobTabProps {
     pub azurite_running: bool,
+    /// Project path, used to discover `.ais-runner/message-templates`.
+    pub logic_apps_dir:  String,
     pub blob_edits:      Signal<HashMap<String, String>>,
     pub webjobs_edit:    Signal<String>,
     pub is_open:         Signal<bool>,
@@ -101,6 +103,13 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
     let mut blob_expanded:    Signal<HashSet<String>> = use_signal(HashSet::new);
     let mut new_container_name: Signal<String>        = use_signal(String::new);
     let mut blob_clear_confirm: Signal<Option<String>> = use_signal(|| None);
+    // Message templates are read once per mount: they're small, project-local
+    // files that change far less often than the blob list they decorate.
+    let templates: Signal<Vec<crate::services::msg_template::MessageTemplate>> = {
+        let dir = props.logic_apps_dir.clone();
+        use_signal(move || crate::services::msg_template::discover(std::path::Path::new(&dir)).0)
+    };
+    let mut sending_event: Signal<HashSet<String>> = use_signal(HashSet::new);
     // Folder rename: which (container, folder-path) is being edited, the in-flight
     // set, and the text box contents.
     let mut folder_rename:  Signal<Option<(String, String)>> = use_signal(|| None);
@@ -570,11 +579,60 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
                                                         let ct_for_dl = cname.clone();
                                                         let blob_name_dl = full.clone();
                                                         let display_dl = display.clone();
+                                                        // A blob is "announceable" when some template's regex claims its
+                                                        // name. Most blobs match nothing, so the button stays hidden
+                                                        // rather than being shown-but-disabled on every row.
+                                                        let event_key = format!("{}/{}", cname, full);
+                                                        let is_sending_event = sending_event.read().contains(&event_key);
+                                                        let matched: Option<(String, String)> = templates
+                                                            .read()
+                                                            .iter()
+                                                            .find(|t| t.matches(&display))
+                                                            .map(|t| (t.name.clone(), t.queue.clone()));
+                                                        let tpl_name_for_send = matched.as_ref().map(|(n, _)| n.clone());
+                                                        let send_display = display.clone();
                                                         rsx! {
                                                             div { class: "{row_cls}", title: "{full}",
                                                                 span { class: "blob-row-icon", "{icon}" }
                                                                 span { class: "blob-name", "{display}" }
                                                                 span { class: "blob-size", "{size_str}" }
+                                                                if let Some((tpl_name, queue)) = matched.clone() {
+                                                                    button {
+                                                                        class: "btn btn-small blob-event-btn",
+                                                                        disabled: is_sending_event,
+                                                                        title: "Send \"{tpl_name}\" event for this file to {queue}",
+                                                                        onclick: move |_| {
+                                                                            let key   = event_key.clone();
+                                                                            let fname = send_display.clone();
+                                                                            let name  = tpl_name_for_send.clone().unwrap_or_default();
+                                                                            let mut status = status;
+                                                                            sending_event.write().insert(key.clone());
+                                                                            spawn(async move {
+                                                                                let rendered = templates.read().iter()
+                                                                                    .find(|t| t.name == name)
+                                                                                    .ok_or_else(|| "template disappeared".to_string())
+                                                                                    .and_then(|t| {
+                                                                                        let ctx = crate::services::msg_template::RenderContext {
+                                                                                            env: "DEV".into(),
+                                                                                            blob_endpoint: String::new(),
+                                                                                        };
+                                                                                        t.render(&fname, &ctx).map(|b| (b, t.queue.clone()))
+                                                                                    });
+                                                                                match rendered {
+                                                                                    Err(e) => status.set(Some((format!("Template '{name}': {e}"), true))),
+                                                                                    Ok((body, queue)) => {
+                                                                                        match crate::services::sb_amqp::send_amqp_message("localhost", &queue, &body).await {
+                                                                                            Ok(()) => status.set(Some((format!("✅ Sent '{name}' for {fname} → {queue}"), false))),
+                                                                                            Err(e) => status.set(Some((format!("Send to {queue} failed: {e}"), true))),
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                                sending_event.write().remove(&key);
+                                                                            });
+                                                                        },
+                                                                        if is_sending_event { "⚡ …" } else { "⚡" }
+                                                                    }
+                                                                }
                                                                 if !is_folder {
                                                                     button {
                                                                         class: "btn btn-small blob-dl-btn",

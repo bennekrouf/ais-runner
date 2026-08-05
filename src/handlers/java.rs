@@ -28,25 +28,44 @@ pub fn handle_start(
     spawn(async move {
         let mut push = make_push(log_lines);
 
-        // ── Kill stale process on port 7072 if present ───────────────────
+        // ── Port 7072 already in use? Reclaim only if it's OUR project. ───
         if tokio::net::TcpStream::connect("127.0.0.1:7072").await.is_ok() {
-            push("Port 7072 already in use — killing stale process…".into(), LogLevel::Warn);
+            // Identify the owner so we don't silently kill a *different*
+            // project's function host (the exact multi-clone footgun: one repo
+            // holds :7072 while you're trying to run another).
+            let owner_dir = dir.clone();
+            let foreign = tokio::task::spawn_blocking(move || {
+                crate::services::port_owner::owner(7072).map(|o| {
+                    let ours = crate::services::port_owner::belongs_to(&o, &owner_dir);
+                    (ours, o.pid, o.detail)
+                })
+            }).await.ok().flatten();
+
+            if let Some((false, pid, detail)) = &foreign {
+                // A different project owns 7072 — do NOT kill it.
+                push(format!(
+                    "⛔ Port 7072 is held by a DIFFERENT project's function host (PID {pid}){}. \
+                     Stop that one first (or run this project's functions there) — \
+                     ais-runner won't kill another project's host for you.",
+                    if detail.is_empty() { String::new() } else { format!(":\n     {}", detail) }
+                ), LogLevel::Error);
+                state.set(ServiceState::Stopped);
+                return;
+            }
+
+            push("Port 7072 in use by a stale instance of this project — reclaiming…".into(), LogLevel::Warn);
             tokio::task::spawn_blocking(|| {
-                // macOS / Linux: find and kill by port
                 if cfg!(target_os = "windows") {
-                    // netstat + taskkill
                     if let Ok(out) = std::process::Command::new("cmd")
                         .args(["/c", "for /f \"tokens=5\" %a in ('netstat -aon ^| findstr :7072') do taskkill /F /PID %a"])
                         .output() { let _ = out; }
-                } else {
-                    if let Ok(out) = std::process::Command::new("lsof")
-                        .args(["-ti", ":7072"])
-                        .output()
-                    {
-                        let pids = String::from_utf8_lossy(&out.stdout);
-                        for pid in pids.split_whitespace() {
-                            let _ = std::process::Command::new("kill").args(["-9", pid]).status();
-                        }
+                } else if let Ok(out) = std::process::Command::new("lsof")
+                    .args(["-ti", ":7072"])
+                    .output()
+                {
+                    let pids = String::from_utf8_lossy(&out.stdout);
+                    for pid in pids.split_whitespace() {
+                        let _ = std::process::Command::new("kill").args(["-9", pid]).status();
                     }
                 }
             }).await.ok();

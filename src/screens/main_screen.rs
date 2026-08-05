@@ -616,6 +616,27 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     },
                     on_stop: move |_| func_start::handle_stop(func_state, func_proc, log_lines),
                 }
+                // Clear extension-bundle cache (repairs corrupt-bundle func start failures)
+                button {
+                    class: "btn btn-svc",
+                    title: "Delete the func extension-bundle cache so it re-downloads cleanly — fixes 'File already exists in ExtensionBundles' / SSL / missing-DLL start failures. Then Start func again.",
+                    onclick: move |_| {
+                        spawn(async move {
+                            let mut push = crate::utils::make_push(log_lines);
+                            let res = tokio::task::spawn_blocking(crate::services::bundle_cache::clear).await
+                                .unwrap_or_else(|e| Err(format!("task failed: {e}")));
+                            match res {
+                                Ok(cleared) if cleared.is_empty() =>
+                                    push("ℹ No extension-bundle cache found — nothing to clear.".into(), LogLevel::Info),
+                                Ok(cleared) => push(
+                                    format!("🧹 Cleared extension-bundle cache ({}). Start func — it will re-download the bundle.", cleared.join(", ")),
+                                    LogLevel::Ok),
+                                Err(e) => push(format!("❌ Could not clear bundle cache: {e}"), LogLevel::Error),
+                            }
+                        });
+                    },
+                    "⟳ Clear bundle cache"
+                }
                 // Auto blob-trigger toggle
                 {
                     let is_on   = *auto_watch.read();

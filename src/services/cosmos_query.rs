@@ -230,6 +230,111 @@ pub async fn run_query(
     serde_json::from_str(&text).map_err(|e| e.to_string())
 }
 
+/// `POST /dbs` — create a database.
+///
+/// Returns `Ok(false)` when the database already exists (Cosmos answers 409),
+/// so callers can put this at the top of a setup sequence unconditionally.
+pub async fn create_database(endpoint: &str, key: &str, db: &str) -> Result<bool, String> {
+    post_resource(endpoint, key, "dbs", "", "/dbs", json!({ "id": db }), &[]).await
+}
+
+/// `POST /dbs/{db}/colls` — create a container with a hash partition key.
+///
+/// `partition_key` is a document path such as `/id`. Returns `Ok(false)` if the
+/// container already exists.
+pub async fn create_container(
+    endpoint: &str,
+    key: &str,
+    db: &str,
+    coll: &str,
+    partition_key: &str,
+) -> Result<bool, String> {
+    post_resource(
+        endpoint,
+        key,
+        "colls",
+        &format!("dbs/{db}"),
+        &format!("/dbs/{db}/colls"),
+        json!({
+            "id": coll,
+            "partitionKey": { "paths": [partition_key], "kind": "Hash" }
+        }),
+        &[],
+    )
+    .await
+}
+
+/// `POST /dbs/{db}/colls/{coll}/docs` with the upsert header — insert a document,
+/// replacing any existing one with the same `id`.
+///
+/// Always returns `Ok(true)` on success: an upsert has no "already existed"
+/// outcome, since a conflicting document is replaced rather than rejected.
+pub async fn upsert_document(
+    endpoint: &str,
+    key: &str,
+    db: &str,
+    coll: &str,
+    doc: serde_json::Value,
+) -> Result<bool, String> {
+    post_resource(
+        endpoint,
+        key,
+        "docs",
+        &format!("dbs/{db}/colls/{coll}"),
+        &format!("/dbs/{db}/colls/{coll}/docs"),
+        doc,
+        &[("x-ms-documentdb-is-upsert", "true")],
+    )
+    .await
+}
+
+/// Shared POST path for the three create/upsert calls above.
+///
+/// 409 Conflict maps to `Ok(false)` rather than an error — every caller here
+/// wants create-if-absent semantics, and distinguishing "I made it" from "it was
+/// already there" is more useful to report than a failure.
+async fn post_resource(
+    endpoint: &str,
+    key: &str,
+    resource_type: &str,
+    resource_link: &str,
+    path: &str,
+    body: serde_json::Value,
+    extra_headers: &[(&'static str, &str)],
+) -> Result<bool, String> {
+    let endpoint = normalize_endpoint(endpoint);
+    let date = now_rfc1123();
+    let auth = auth_header("POST", resource_type, resource_link, &date, key)?;
+
+    let mut headers = vec![
+        ("authorization", auth),
+        ("x-ms-date", date),
+        ("x-ms-version", API_VERSION.to_string()),
+        ("content-type", "application/json".to_string()),
+    ];
+    headers.extend(extra_headers.iter().map(|(k, v)| (*k, v.to_string())));
+
+    let resp = send_with_http_fallback(
+        &client()?,
+        reqwest::Method::POST,
+        &endpoint,
+        path,
+        headers,
+        Some(body.to_string()),
+    )
+    .await?;
+
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(true);
+    }
+    if status == reqwest::StatusCode::CONFLICT {
+        return Ok(false);
+    }
+    let text = resp.text().await.unwrap_or_default();
+    Err(format!("HTTP {status}: {text}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

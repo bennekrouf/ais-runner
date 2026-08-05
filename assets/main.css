@@ -3043,6 +3043,22 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
 .blob-row-icon { color: var(--text3); flex-shrink: 0; font-size: 11px; }
 .blob-folder-row .blob-name { color: var(--text1); font-style: italic; }
 .blob-nested-row { padding-left: 20px; }
+/* Only rendered for blobs a message template claims, so unlike the
+   hover-revealed download button it stays visible: its presence is the signal
+   that this file can be announced to a queue. */
+.blob-event-btn {
+    font-size: 10px;
+    padding: 1px 5px;
+    flex-shrink: 0;
+    margin-left: auto;
+    opacity: 0.65;
+    transition: opacity 0.1s;
+}
+.blob-row:hover .blob-event-btn,
+.blob-nested-row:hover .blob-event-btn { opacity: 1; }
+/* When both are present the event button already claimed the auto margin, so
+   the download button just trails it instead of splitting to the far edge. */
+.blob-event-btn + .blob-dl-btn { margin-left: 4px; }
 .blob-dl-btn {
     font-size: 10px;
     padding: 1px 5px;
@@ -4119,3 +4135,83 @@ body.light .wf-chip-liquid { background: #f5f3ff; color: #6d28d9; border-color: 
     opacity: 0.7;
 }
 .update-banner-dismiss:hover { opacity: 1; }
+
+/* ── Test scenarios tab ──────────────────────────────────────────────────── */
+.scenario-card {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 12px;
+    overflow: hidden;
+}
+.scenario-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: var(--bg1);
+    border-bottom: 1px solid var(--border);
+}
+.scenario-name {
+    font-weight: 600;
+}
+.scenario-count {
+    color: var(--text3);
+    font-size: 11px;
+}
+.scenario-desc {
+    padding: 8px 14px;
+    color: var(--text2);
+    font-size: 12px;
+    border-bottom: 1px solid var(--border);
+}
+.scenario-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+.scenario-badge.idle    { color: var(--text3); background: var(--bg2); }
+.scenario-badge.running { color: var(--blue);  background: var(--blue-bg); }
+.scenario-badge.ok      { color: var(--green); background: var(--green-bg); }
+.scenario-badge.fail    { color: var(--red);   background: var(--red-bg); }
+
+.scenario-steps {
+    display: flex;
+    flex-direction: column;
+}
+.scenario-step {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 5px 14px;
+    font-size: 12px;
+    border-bottom: 1px solid var(--border);
+}
+.scenario-step:last-child { border-bottom: none; }
+.scenario-step.fail    { background: var(--red-bg); }
+.scenario-step.skipped { opacity: 0.55; }
+.scenario-step-icon  { flex: none; }
+.scenario-step-label { flex: none; min-width: 220px; font-weight: 500; }
+/* The detail is the variable-length part — let it take the slack and clip,
+   so a long SQL error can't push the timing column off the panel. */
+.scenario-step-detail {
+    flex: 1;
+    color: var(--text2);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+}
+.scenario-step-time {
+    flex: none;
+    color: var(--text3);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+.scenario-step-num {
+    flex: none;
+    min-width: 18px;
+    text-align: right;
+    color: var(--text3);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}

@@ -213,6 +213,24 @@ pub fn handle_start(
         for (msg, lvl) in msgs { push(msg, lvl); }
     }
 
+    // Inline-JavaScript pre-flight: flag workflows using `Execute JavaScript
+    // Code`. They need the Node language worker, which the host starts on
+    // demand — we can't start it, but forewarning saves a confusing debug.
+    {
+        let d = dir.clone();
+        let js_wfs = tokio::task::spawn_blocking(move || {
+            crate::services::inline_js::workflows_with_inline_js(&d)
+        }).await.unwrap_or_default();
+        if !js_wfs.is_empty() {
+            push(format!(
+                "  ℹ {} workflow(s) use inline JavaScript ({}). These run in the Node language worker — \
+                 ensure Node.js is installed. If a run fails with 'actively refused (localhost:PORT)', \
+                 that's the JS worker not starting, not your workflow.",
+                js_wfs.len(), js_wfs.join(", ")
+            ), LogLevel::Info);
+        }
+    }
+
     func_state.set(ServiceState::Starting);
 
     {
@@ -257,7 +275,19 @@ pub fn handle_start(
             .env("PATH", crate::services::process::rich_path())
             .output();
 
-        match proc.read().start("func", &["start"], Some(&func_cwd)) {
+        // Pin the func host to the C locale. On machines with a comma-decimal
+        // locale (fr/de/…), the Logic Apps job scheduler serializes
+        // numbers/timestamps with a comma, which corrupts the Azurite table
+        // row-keys it dispatches on — jobs silently stop firing. LC_ALL/LANG=C
+        // makes .NET resolve CurrentCulture to Invariant, which is enough.
+        // Do NOT add DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: it unloads ICU, and
+        // the Workflows extension hardcodes CultureInfo("en-us") during host
+        // startup, which then throws and faults the script host.
+        let func_env: Vec<(String, String)> = vec![
+            ("LC_ALL".into(), "C".into()),
+            ("LANG".into(), "C".into()),
+        ];
+        match proc.read().start_with_env("func", &["start"], Some(&func_cwd), &func_env) {
             Ok((stdout, stderr)) => {
                 func_state.set(ServiceState::Running);
                 push("func start launched — waiting for workflows…".into(), LogLevel::Ok);
@@ -268,6 +298,8 @@ pub fn handle_start(
                 let mut push3 = make_push(log_lines);
                 spawn(async move {
                     let mut function_conn_warned = false;
+                    let mut bundle_warned = false;
+                    let mut js_warned = false;
                     while let Some((line, is_err)) = rx.recv().await {
                         if line.contains("functionConnections") && line.contains("cannot be parsed") {
                             if !function_conn_warned {
@@ -292,6 +324,26 @@ pub fn handle_start(
                         // refuses to flip kind on a live registration and logs this
                         // every start until the file is reverted — drop the noise.
                         if line.contains("cannot be changed from 'Stateless' to 'Stateful'") {
+                            continue;
+                        }
+                        // Inline-JS worker didn't start — translate the cryptic
+                        // "actively refused (localhost:PORT)" into plain English.
+                        if crate::services::inline_js::is_inline_js_worker_error(&line) {
+                            push3(line.clone(), LogLevel::Error);
+                            if !js_warned {
+                                js_warned = true;
+                                push3("⚠ That 'actively refused (localhost:PORT)' is the inline-JavaScript (Node language worker) failing to start — not your workflow. Check Node.js is installed and on PATH, then restart func.".into(), LogLevel::Warn);
+                            }
+                            continue;
+                        }
+                        // Corrupt extension-bundle cache — surface a clear,
+                        // actionable message once (the raw error is cryptic).
+                        if crate::services::bundle_cache::is_bundle_error(&line) {
+                            push3(line.clone(), LogLevel::Error);
+                            if !bundle_warned {
+                                bundle_warned = true;
+                                push3("⚠ Extension bundle cache looks corrupt. Click ⟳ Clear bundle cache (next to func), then Start again — func will re-download it.".into(), LogLevel::Warn);
+                            }
                             continue;
                         }
                         push3(line, if is_err { LogLevel::Error } else { LogLevel::Info });

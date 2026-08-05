@@ -3,12 +3,14 @@ pub mod cosmos_tab;
 pub mod sb_tab;
 pub mod sftp_tab;
 pub mod sql_tab;
+pub mod tests_tab;
 
 pub use blob_tab::BlobTab;
 pub use cosmos_tab::CosmosTab;
 pub use sb_tab::SbTab;
 pub use sftp_tab::SftpTab;
 pub use sql_tab::SqlTab;
+pub use tests_tab::TestsTab;
 
 use dioxus::prelude::*;
 use std::collections::HashMap;
@@ -237,6 +239,11 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                     onclick: move |_| active_tab.set("maps"),
                     "🔄 Maps"
                 }
+                button {
+                    class: if *active_tab.read() == "tests" { "db-tab active" } else { "db-tab" },
+                    onclick: move |_| active_tab.set("tests"),
+                    "🧪 Tests"
+                }
             }
 
             // ── Status bar ─────────────────────────────────────────────────
@@ -266,7 +273,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                 // Blob tab
                 div {
                     class: if *active_tab.read() == "blob" { "tab-pane" } else { "tab-pane hidden" },
-                    BlobTab { azurite_running: props.azurite_running, blob_edits, webjobs_edit, is_open: props.is_open, active_tab, status }
+                    BlobTab { azurite_running: props.azurite_running, logic_apps_dir: props.logic_apps_dir.clone(), blob_edits, webjobs_edit, is_open: props.is_open, active_tab, status }
                 }
                 // SFTP tab
                 div {
@@ -277,6 +284,15 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                 div {
                     class: if *active_tab.read() == "maps" { "tab-pane" } else { "tab-pane hidden" },
                     MapsTab { logic_apps_dir: props.logic_apps_dir.clone() }
+                }
+                // Tests tab
+                div {
+                    class: if *active_tab.read() == "tests" { "tab-pane" } else { "tab-pane hidden" },
+                    TestsTab {
+                        logic_apps_dir: props.logic_apps_dir.clone(),
+                        cosmos_connections: props.cosmos_connections.clone(),
+                        status,
+                    }
                 }
             }
         }

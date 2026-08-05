@@ -29,6 +29,35 @@ fn base_config(database: &str) -> Config {
     config
 }
 
+/// What `run_sql` returns when a script emitted no result set at all.
+pub const NO_ROWS: &str = "Command(s) completed successfully.";
+
+/// True for a line `run_sql` emits as *status* rather than as a data row.
+///
+/// `run_sql` returns rows and progress notes interleaved in one string, so
+/// anything counting rows has to know which lines aren't rows. Keeping that
+/// knowledge here — next to the code that writes those lines — means a new
+/// status line can't silently start counting as data somewhere else.
+pub fn is_status_line(line: &str) -> bool {
+    let l = line.trim();
+    l.is_empty()
+        || l == NO_ROWS
+        || (l.starts_with("(") && l.ends_with(")") && {
+            l.ends_with("row(s) affected)")
+                || l.contains("already exists")
+                || l.contains("auto-created schema")
+        })
+}
+
+/// Number of data rows in `run_sql` output.
+///
+/// A `SELECT` matching nothing yields `NO_ROWS`, not an empty string, so naive
+/// line counting reports one row for an empty result — which silently satisfies
+/// any "wait until this query returns something" gate.
+pub fn count_rows(output: &str) -> usize {
+    output.lines().filter(|l| !is_status_line(l)).count()
+}
+
 /// Execute a SQL statement against the ais-sql-dev container.
 /// Async — call with `.await` from an async context or wrap in spawn.
 pub async fn run_sql(database: &str, sql: &str) -> Result<String, String> {
@@ -162,7 +191,7 @@ pub async fn run_sql(database: &str, sql: &str) -> Result<String, String> {
 
     if output.is_empty() {
         sql_log("  ✓ OK".to_string());
-        output = "Command(s) completed successfully.".into();
+        output = NO_ROWS.into();
     } else {
         sql_log(format!("  ✓ {}", output.trim().lines().next().unwrap_or("")));
     }
