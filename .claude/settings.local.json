@@ -88,7 +88,10 @@
       "Bash(curl -s -m 3 -o /dev/null -w \"GET / -> HTTP %{http_code}\\\\n\" http://localhost:7072/)",
       "Bash(xargs cat)",
       "Bash(python3 -c \"import json,sys;d=json.load\\(sys.stdin\\);print\\('routePrefix:',d.get\\('extensions',{}\\).get\\('http',{}\\).get\\('routePrefix','api \\(default\\)'\\)\\)\")",
-      "Bash(cargo test *)"
+      "Bash(cargo test *)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); t=d.get\\('definition',{}\\).get\\('triggers',{}\\); print\\(json.dumps\\(t, indent=2\\)\\)\")",
+      "Bash(git check-ignore *)",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }
