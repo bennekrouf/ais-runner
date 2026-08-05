@@ -154,7 +154,10 @@ pub fn localize(logic_apps_dir: &str) -> LocalizeReport {
                     }
                     if let Some(s) = v.as_str() {
                         if run_readiness::is_cloud_value(s) {
-                            updates.insert(k.clone(), run_readiness::local_target(s));
+                            updates.insert(
+                                k.clone(),
+                                run_readiness::local_target_for(k, s, &json),
+                            );
                         }
                     }
                 }

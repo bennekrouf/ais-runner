@@ -299,6 +299,7 @@ pub fn handle_start(
                 spawn(async move {
                     let mut function_conn_warned = false;
                     let mut bundle_warned = false;
+                    let mut prebuild_warned = false;
                     let mut js_warned = false;
                     while let Some((line, is_err)) = rx.recv().await {
                         if line.contains("functionConnections") && line.contains("cannot be parsed") {
@@ -333,6 +334,17 @@ pub fn handle_start(
                             if !js_warned {
                                 js_warned = true;
                                 push3("⚠ That 'actively refused (localhost:PORT)' is the inline-JavaScript (Node language worker) failing to start — not your workflow. Check Node.js is installed and on PATH, then restart func.".into(), LogLevel::Warn);
+                            }
+                            continue;
+                        }
+                        // A native binding the bundle has no build of for this
+                        // platform/Node ABI. Called out separately from a corrupt
+                        // cache because clearing the cache cannot fix it.
+                        if crate::services::bundle_cache::is_missing_prebuild(&line) {
+                            push3(line.clone(), LogLevel::Error);
+                            if !prebuild_warned {
+                                prebuild_warned = true;
+                                push3("⚠ The extension bundle ships no build of this native module for your platform/Node version — inline-JavaScript actions will fail. Clearing the bundle cache will NOT help (it re-downloads the same bundle). Workflows without a JavaScriptCode action are unaffected.".into(), LogLevel::Warn);
                             }
                             continue;
                         }

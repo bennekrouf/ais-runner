@@ -12,7 +12,18 @@
 use std::path::PathBuf;
 
 /// True for a func-output line that indicates a corrupt/failed extension bundle.
+///
+/// Deliberately excludes missing native prebuilds. Every path inside the bundle
+/// contains "ExtensionBundles", so a line like
+/// `Cannot find module '…/isolated-vm/prebuilds/darwin-arm64/node-v127.node'`
+/// used to match on the path alone and produce a "clear the cache" prompt. That
+/// advice is worse than useless there: the bundle ships prebuilds only for the
+/// platforms and Node ABIs it was built against, so re-downloading fetches the
+/// identical missing file and the user loops. See [`is_missing_prebuild`].
 pub fn is_bundle_error(line: &str) -> bool {
+    if is_missing_prebuild(line) {
+        return false;
+    }
     let l = line.to_lowercase();
     let mentions_bundle = l.contains("extensionbundle") || l.contains("extension bundle");
     let failed = l.contains("already exists")
@@ -23,6 +34,17 @@ pub fn is_bundle_error(line: &str) -> bool {
         || l.contains("unable to")
         || l.contains("error");
     mentions_bundle && failed
+}
+
+/// True for a line reporting a native module the bundle has no build of for
+/// this platform/Node ABI — the `isolated-vm` binding that inline-JavaScript
+/// actions need is the one that bites in practice.
+///
+/// Not a cache problem and not fixable by clearing anything: the bundle simply
+/// doesn't ship that combination.
+pub fn is_missing_prebuild(line: &str) -> bool {
+    let l = line.to_lowercase();
+    l.contains("prebuilds") && (l.contains("cannot find module") || l.contains("not available"))
 }
 
 /// Candidate extension-bundle cache directories, most-likely first.
@@ -92,6 +114,24 @@ mod tests {
         assert!(!is_bundle_error("Loaded 42 workflows"));
         assert!(!is_bundle_error("Host unavailable after check"));
         assert!(!is_bundle_error("ExtensionBundle loaded successfully")); // mentions bundle but no failure word
+    }
+
+    #[test]
+    fn a_missing_native_prebuild_is_not_a_corrupt_cache() {
+        // Every path under the bundle contains "ExtensionBundles", so this line
+        // matched on its path alone and told the user to clear a cache that was
+        // perfectly fine — re-downloading fetches the same missing file.
+        let line = "isolated-vm not available, module failed to load: Cannot find module \
+                    '/Users/x/.azure-functions-core-tools/Functions/ExtensionBundles/\
+                    Microsoft.Azure.Functions.ExtensionBundle.Workflows/1.170.43/JS/node_modules/\
+                    isolated-vm/prebuilds/darwin-arm64/node-v127.node'";
+        assert!(is_missing_prebuild(line));
+        assert!(!is_bundle_error(line));
+
+        // A genuine cache failure still reports as one.
+        assert!(!is_missing_prebuild(
+            "A host error has occurred: File already exists in ExtensionBundles"
+        ));
     }
 
     #[test]

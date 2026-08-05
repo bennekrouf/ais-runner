@@ -91,14 +91,49 @@ pub fn is_cloud_value(v: &str) -> bool {
         && !l.contains("placeholder")
 }
 
+/// The database a SQL connection-string key belongs to, read from its sibling
+/// `*_databaseName` setting: `sqlServerAIS_connectionString` pairs with
+/// `sqlServerAIS_databaseName`.
+///
+/// Logic Apps projects carry both, and that pair is the only place the local
+/// setup can learn which database a workflow's tables and stored procedures
+/// actually live in. Without it every SQL connection was pointed at `master`,
+/// which opens fine and then fails every lookup — a workflow calling a stored
+/// procedure gets "the stored procedure 'X' doesn't exist" even though X was
+/// created correctly in the project's own database.
+pub fn sibling_database(key: &str, settings: &serde_json::Value) -> Option<String> {
+    let prefix = key.strip_suffix("_connectionString")?;
+    let name = settings["Values"][format!("{prefix}_databaseName")]
+        .as_str()?
+        .trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// The local target a cloud value should be rewritten to.
+///
+/// Prefer [`local_target_for`] where the setting key is known: it can aim a SQL
+/// connection at the project's real database instead of `master`.
 pub fn local_target(value: &str) -> String {
+    local_target_in(value, None)
+}
+
+/// [`local_target`], but aware of which setting is being rewritten so a SQL
+/// connection string keeps its database rather than being flattened to `master`.
+pub fn local_target_for(key: &str, value: &str, settings: &serde_json::Value) -> String {
+    local_target_in(value, sibling_database(key, settings).as_deref())
+}
+
+fn local_target_in(value: &str, database: Option<&str>) -> String {
     let l = value.to_lowercase();
     if l.contains(".database.windows.net") {
         format!(
-            "Server=localhost,{};Database=master;User Id=sa;Password={};\
+            "Server=localhost,{};Database={};User Id=sa;Password={};\
              Encrypt=false;TrustServerCertificate=true;",
-            sql_emulator::SQL_PORT, sql_emulator::SA_PASSWORD,
+            sql_emulator::SQL_PORT,
+            // `master` only as a last resort: it always exists, so the
+            // connection at least opens when the project names no database.
+            database.unwrap_or("master"),
+            sql_emulator::SA_PASSWORD,
         )
     } else if l.contains(".documents.azure.com") {
         cosmos_emulator::local_connection_string()
@@ -117,8 +152,15 @@ pub fn check(logic_apps_dir: &str, workflow: &str) -> RunReadiness {
     let mut auto_fixable = Vec::new();
     let mut blocking_settings = Vec::new();
 
+    // Read once so a SQL default can pick up its sibling `*_databaseName`
+    // rather than falling back to `master`.
+    let settings: serde_json::Value = crate::services::settings_file::read_local_settings(logic_apps_dir)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(serde_json::Value::Null);
+
     for (conn, key) in connection_diag::missing_endpoints_for_workflow(logic_apps_dir, workflow) {
-        let default = setup_manager::smart_default(&key);
+        let default = setup_manager::smart_default_for(&key, &settings);
         if default.is_empty() {
             blocking_settings.push((conn, key));
         } else {
@@ -186,7 +228,8 @@ fn cloud_pointing_for(logic_apps_dir: &str, workflow: &str) -> Vec<(String, Stri
         }
         let val = settings["Values"][&key].as_str().unwrap_or("");
         if is_cloud_value(val) {
-            out.push((key, val.to_string(), local_target(val)));
+            let target = local_target_for(&key, val, &settings);
+            out.push((key, val.to_string(), target));
         }
     }
     out.sort();
@@ -331,5 +374,45 @@ mod tests {
         assert!(local_target("x.servicebus.windows.net").contains("localhost"));
         assert_eq!(local_target("x.blob.core.windows.net"), "UseDevelopmentStorage=true");
         assert_eq!(local_target("https://partner.example.com"), MOCK_BASE_URL);
+    }
+
+    #[test]
+    fn a_sql_connection_keeps_the_database_its_sibling_setting_names() {
+        // Pointing every SQL connection at `master` opens fine and then fails
+        // every lookup: a workflow calling a stored procedure gets "doesn't
+        // exist" even though the procedure was created in the project's own
+        // database. The database name is right there in local.settings.json.
+        let settings = serde_json::json!({
+            "Values": {
+                "sqlServerAIS_connectionString": "Server=tcp:corp.database.windows.net,1433;Database=ais;",
+                "sqlServerAIS_databaseName": "aisdev",
+                "sqlServerODS_connectionString": "Server=tcp:corp.database.windows.net,1433;Database=ods;",
+                "sqlServerODS_databaseName": "  ",
+            }
+        });
+
+        assert_eq!(
+            sibling_database("sqlServerAIS_connectionString", &settings).as_deref(),
+            Some("aisdev")
+        );
+        let target = local_target_for(
+            "sqlServerAIS_connectionString",
+            "Server=tcp:corp.database.windows.net,1433;Database=ais;",
+            &settings,
+        );
+        assert!(target.contains("Database=aisdev;"), "got {target}");
+
+        // A blank or absent sibling falls back to master, which at least opens.
+        assert_eq!(
+            sibling_database("sqlServerODS_connectionString", &settings),
+            None
+        );
+        assert!(local_target_for(
+            "sqlServerODS_connectionString",
+            "Server=tcp:corp.database.windows.net,1433;Database=ods;",
+            &settings,
+        )
+        .contains("Database=master;"));
+        assert_eq!(sibling_database("someOther_key", &settings), None);
     }
 }

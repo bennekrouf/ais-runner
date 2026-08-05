@@ -420,10 +420,43 @@ pub fn auto_detect_resources(
 /// Writes smart defaults for every key in `missing_keys` that isn't already in local.settings.json.
 /// Idempotent — never overwrites existing values.
 pub fn stub_missing_keys(dir: &str, missing_keys: &[String]) -> Result<(), String> {
+    // The existing settings are read so a SQL stub can pick up the database from
+    // its sibling `*_databaseName` key rather than defaulting to `master`.
+    let settings: serde_json::Value =
+        crate::services::settings_file::read_local_settings(dir)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(serde_json::Value::Null);
     let stubs: HashMap<String, String> = missing_keys.iter()
-        .map(|k| (k.clone(), smart_default(k)))
+        .map(|k| (k.clone(), smart_default_for(k, &settings)))
         .collect();
     apply_settings(dir, stubs)
+}
+
+/// [`smart_default`], but able to consult the rest of `local.settings.json`.
+///
+/// Only SQL connection strings differ: pointing them at `master` opens a
+/// connection that then fails every table and stored-procedure lookup, and the
+/// project almost always names the real database in a sibling setting.
+pub fn smart_default_for(key: &str, settings: &serde_json::Value) -> String {
+    let is_sql_conn = key.to_uppercase().contains("SQL") && key.to_uppercase().contains("CONNECTION");
+    if is_sql_conn {
+        if let Some(db) = crate::services::run_readiness::sibling_database(key, settings) {
+            return local_sql_connection(&db);
+        }
+    }
+    smart_default(key)
+}
+
+/// Connection string for the bundled SQL Edge emulator, aimed at `database`.
+fn local_sql_connection(database: &str) -> String {
+    format!(
+        "Server=localhost,{};Database={};User Id=sa;Password={};\
+         Encrypt=false;TrustServerCertificate=true;",
+        crate::handlers::sql_emulator::SQL_PORT,
+        database,
+        crate::handlers::sql_emulator::SA_PASSWORD,
+    )
 }
 
 /// Returns a sensible local-dev default for a known key pattern, or empty string.
@@ -480,13 +513,12 @@ pub fn smart_default(key: &str) -> String {
         // Local-only: point at the bundled SQL Edge emulator (reachable), NOT a
         // cloud-shaped placeholder. Database=master always exists so the
         // connection opens even before the workflow's own DB is created.
+        // `master` is the fallback only — it always exists, so the connection
+        // opens even when the project names no database anywhere. Prefer
+        // `smart_default_for`, which reads the sibling `*_databaseName` and
+        // aims at the database the workflow's objects actually live in.
         k if k.to_uppercase().contains("SQL") && k.to_uppercase().contains("CONNECTION") => {
-            format!(
-                "Server=localhost,{};Database=master;User Id=sa;Password={};\
-                 Encrypt=false;TrustServerCertificate=true;",
-                crate::handlers::sql_emulator::SQL_PORT,
-                crate::handlers::sql_emulator::SA_PASSWORD,
-            )
+            local_sql_connection("master")
         }
 
         // ── Cosmos DB ───────────────────────────────────────────────────────────

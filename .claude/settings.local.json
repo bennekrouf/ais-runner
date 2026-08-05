@@ -171,7 +171,12 @@
       "Bash(perl -pi -e 's/vars: HashMap<String, String>,/vars: Vars,/; s/vars: &HashMap<String, String>/vars: \\\\&Vars/g; s/fn vars\\\\\\(pairs: &\\\\[\\\\\\(&str, &str\\\\\\)\\\\]\\\\\\) -> HashMap<String, String>/fn vars\\(pairs: \\\\&[\\(\\\\&str, \\\\&str\\)]\\) -> Vars/' src/services/scenario.rs)",
       "Bash(perl -pi -e 's/if let Err\\\\\\(msg\\\\\\) = do_create_container\\\\\\(name\\\\\\)\\\\.await \\\\{/if let Err\\(msg\\) = do_create_container\\(recorder, name\\).await {/g' src/components/db_panel/blob_tab.rs)",
       "Bash(grep -vE \"auto-clean|global cache|Caused by|Permission denied|^$|failed to remove\")",
-      "Bash(grep -vE \"auto-clean|global cache|Caused by|Permission denied|failed to remove|^$\")"
+      "Bash(grep -vE \"auto-clean|global cache|Caused by|Permission denied|failed to remove|^$\")",
+      "Bash(node -p \"process.versions.modules\")",
+      "Bash(P=/Users/mb/code/oryx/ais_tom_platform; echo \"=== SP in repo ===\"; rtk proxy grep -rln \"MapTranscodingsImportFromJSON\" \"$P/sql\" 2>/dev/null; echo \"=== sql tree ===\"; find \"$P/sql\" -maxdepth 2 -type d 2>/dev/null | head -20; echo \"=== sql-server-ais connection ===\"; rtk proxy grep -n \"sql-server-ais\" -A 12 \"$P/logic_apps/connections.json\" 2>/dev/null | head -25)",
+      "Bash(rtk docker *)",
+      "Bash(perl -pi -e 's/pub fn sibling_database\\\\\\(key: &str, settings: &Value\\\\\\)/pub fn sibling_database\\(key: \\\\&str, settings: \\\\&serde_json::Value\\)/; s/pub fn local_target_for\\\\\\(key: &str, value: &str, settings: &Value\\\\\\)/pub fn local_target_for\\(key: \\\\&str, value: \\\\&str, settings: \\\\&serde_json::Value\\)/' src/services/run_readiness.rs)",
+      "Bash(awk 'NR>=53 && NR<=56' /Users/mb/code/oryx/ais_tom_platform/logic_apps/local.settings.json)"
     ]
   }
 }
