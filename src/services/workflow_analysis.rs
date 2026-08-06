@@ -112,11 +112,19 @@ fn scan_actions(node: &Value, out: &mut WorkflowAnalysis) {
         Value::Object(map) => {
             for action in map.values() {
                 process_action(action, out);
-                // recurse into branches (If/Switch/Foreach/Until)
-                for branch_key in &["actions", "else", "cases", "default"] {
-                    scan_actions(&action[branch_key], out);
-                }
-                // Switch cases
+                // Foreach/Until put the actions map directly under "actions", so
+                // recursing into that value is correct. If's true branch is the
+                // same shape. If's "else" and Switch's "default" are ONE LEVEL
+                // DEEPER — { "actions": { ... } } — so recursing into the branch
+                // itself (rather than branch["actions"]) visits the wrapper
+                // object instead of the action map inside it, and every action
+                // under an else/default silently goes unseen. Confirmed by a
+                // failing test (actions_nested_inside_if_else_branch_are_found)
+                // before this fix.
+                scan_actions(&action["actions"], out);
+                scan_actions(&action["else"]["actions"], out);
+                scan_actions(&action["default"]["actions"], out);
+                // Switch cases: each case is itself { "actions": {...} }.
                 if let Some(cases) = action["cases"].as_object() {
                     for case in cases.values() {
                         scan_actions(&case["actions"], out);
@@ -285,3 +293,7 @@ fn extract_host(uri: &str) -> Option<String> {
     if host.is_empty() || host.starts_with('@') { return None; }
     Some(host.to_string())
 }
+
+#[cfg(test)]
+#[path = "workflow_analysis_tests.rs"]
+mod tests;

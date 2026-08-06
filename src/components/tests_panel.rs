@@ -156,12 +156,16 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
                 }
             }
 
+            // Pinned above the scroll area: a run's verdict has to stay readable
+            // while the user scrolls a long step list looking for what failed.
             if let Some((msg, is_err)) = status.read().clone() {
                 div {
                     class: if is_err { "settings-status error" } else { "settings-status ok" },
                     "{msg}"
                 }
             }
+
+            div { class: "settings-scroll",
 
             // ── name prompt ─────────────────────────────────────────────────
             if *naming.read() {
@@ -643,6 +647,7 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
                 }
             }
             }
+            } // .settings-scroll
         }
     }
 }

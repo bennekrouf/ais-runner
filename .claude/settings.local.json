@@ -176,7 +176,20 @@
       "Bash(P=/Users/mb/code/oryx/ais_tom_platform; echo \"=== SP in repo ===\"; rtk proxy grep -rln \"MapTranscodingsImportFromJSON\" \"$P/sql\" 2>/dev/null; echo \"=== sql tree ===\"; find \"$P/sql\" -maxdepth 2 -type d 2>/dev/null | head -20; echo \"=== sql-server-ais connection ===\"; rtk proxy grep -n \"sql-server-ais\" -A 12 \"$P/logic_apps/connections.json\" 2>/dev/null | head -25)",
       "Bash(rtk docker *)",
       "Bash(perl -pi -e 's/pub fn sibling_database\\\\\\(key: &str, settings: &Value\\\\\\)/pub fn sibling_database\\(key: \\\\&str, settings: \\\\&serde_json::Value\\)/; s/pub fn local_target_for\\\\\\(key: &str, value: &str, settings: &Value\\\\\\)/pub fn local_target_for\\(key: \\\\&str, value: \\\\&str, settings: \\\\&serde_json::Value\\)/' src/services/run_readiness.rs)",
-      "Bash(awk 'NR>=53 && NR<=56' /Users/mb/code/oryx/ais_tom_platform/logic_apps/local.settings.json)"
+      "Bash(awk 'NR>=53 && NR<=56' /Users/mb/code/oryx/ais_tom_platform/logic_apps/local.settings.json)",
+      "Read(//Users/mb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/**)",
+      "Read(//Users/mb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.91/**)",
+      "Bash(echo \"=== root-owned entries under ~/.cargo \\(top-level of each\\) ===\"; find /Users/mb/.cargo -maxdepth 4 -user root -prune -print 2>/dev/null | head -30; echo \"=== count of root-owned files total ===\"; find /Users/mb/.cargo -user root 2>/dev/null | wc -l)",
+      "Bash(awk 'NR>=470 && NR<=500' src/components/tests_panel.rs)",
+      "Bash(awk -F: '$1>590 && $1<630')",
+      "Bash(awk 'NR>=598 && NR<=620' src/components/tests_panel.rs)",
+      "Bash(awk -F: '$1>630')",
+      "Bash(/usr/bin/grep -n \"^\\\\s*--red-bg\\\\|^\\\\s*--red\\\\b\\\\|^\\\\s*--text2\\\\|^\\\\s*--text3\" assets/main.css)",
+      "Bash(/usr/bin/grep -n \"settings-status\" -A 10 assets/main.css)",
+      "Bash(/usr/bin/grep -n \"sftp-badge\" -A 3 assets/main.css)",
+      "Bash(/usr/bin/grep -n \"red-bg\" assets/main.css)",
+      "Bash(/usr/bin/grep -nE \"^\\\\s*--\\(green|blue|green-bg|blue-bg\\):\" assets/main.css)",
+      "Bash(/usr/bin/grep -c \"color-mix\" assets/main.css)"
     ]
   }
 }

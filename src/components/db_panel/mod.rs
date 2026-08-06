@@ -220,7 +220,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
                 button {
                     class: if *active_tab.read() == "sql" { "db-tab active" } else { "db-tab" },
                     onclick: move |_| active_tab.set("sql"),
-                    "🗄 SQL"
+                    "🛢 SQL"
                 }
                 button {
                     class: if *active_tab.read() == "cosmos" { "db-tab active" } else { "db-tab" },

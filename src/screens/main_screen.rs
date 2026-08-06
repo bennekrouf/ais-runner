@@ -620,8 +620,8 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 }
                 // Clear extension-bundle cache (repairs corrupt-bundle func start failures)
                 button {
-                    class: "btn btn-svc",
-                    title: "Delete the func extension-bundle cache so it re-downloads cleanly — fixes 'File already exists in ExtensionBundles' / SSL / missing-DLL start failures. Then Start func again.",
+                    class: "btn btn-svc btn-icon-only",
+                    title: "Clear bundle cache — delete the func extension-bundle cache so it re-downloads cleanly. Fixes 'File already exists in ExtensionBundles' / SSL / missing-DLL start failures. Then Start func again.",
                     onclick: move |_| {
                         spawn(async move {
                             let mut push = crate::utils::make_push(log_lines);
@@ -637,7 +637,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                             }
                         });
                     },
-                    "⟳ Clear bundle cache"
+                    "⟳"
                 }
                 // Auto blob-trigger toggle
                 {
@@ -667,8 +667,8 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     let mut msi = msi_wfs;
                     rsx! {
                         button {
-                            class: "btn btn-svc",
-                            title: "Re-run setup: patch connections.json (MSI → connectionString), stub missing keys, auto-detect Azure resources",
+                            class: "btn btn-svc btn-icon-only",
+                            title: "Setup — re-run setup: patch connections.json (MSI → connectionString), stub missing keys, auto-detect Azure resources",
                             onclick: move |_| {
                                 let d = dir_s.clone();
                                 setup::handle_initialize_default(&dir_s, setup_status, log_lines, link_s.clone());
@@ -682,7 +682,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                     msi.set(refreshed);
                                 });
                             },
-                            "⚙ Setup"
+                            "⚙"
                         }
                     }
                 }
@@ -713,43 +713,52 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 // ── spacer pushes the right group to the far edge ─────────────
                 div { style: "flex:1; min-width:0" }
 
-                // ── view switch: Workflows | Graph | Settings | DevOps ───────────
+                // ── view switch: Workflows | Functions | Tests | DevOps | Settings ──
+                // Icon-only: the full name is still available on hover via
+                // `title`, and five spelled-out labels plus Graph didn't fit the
+                // header alongside the service buttons and status widgets.
                 div { class: "view-switch",
                     button {
                         class: if *current_view.read() == "Workflows" { "view-btn active" } else { "view-btn" },
-                        title: "Workflow list and run detail",
+                        title: "Workflows — workflow list and run detail",
                         onclick: move |_| current_view.set("Workflows".into()),
-                        "Workflows"
-                    }
-                    button {
-                        class: if *current_view.read() == "Graph" { "view-btn active" } else { "view-btn" },
-                        title: "Workflow chain graph — interactive D3.js visualization",
-                        onclick: move |_| { visited_views.write().insert("Graph".into()); current_view.set("Graph".into()); },
-                        "Graph"
+                        "📋"
                     }
                     button {
                         class: if *current_view.read() == "Functions" { "view-btn active" } else { "view-btn" },
-                        title: "Browse and edit function app source files",
+                        title: "Functions — browse and edit function app source files",
                         onclick: move |_| { visited_views.write().insert("Functions".into()); current_view.set("Functions".into()); },
-                        "Functions"
-                    }
-                    button {
-                        class: if *current_view.read() == "Settings" { "view-btn active" } else { "view-btn" },
-                        title: "Edit local.settings.json",
-                        onclick: move |_| { visited_views.write().insert("Settings".into()); current_view.set("Settings".into()); },
-                        "Settings"
-                    }
-                    button {
-                        class: if *current_view.read() == "DevOps" { "view-btn active" } else { "view-btn" },
-                        title: "Azure DevOps pipelines and runs",
-                        onclick: move |_| { visited_views.write().insert("DevOps".into()); current_view.set("DevOps".into()); },
-                        "DevOps"
+                        "𝑓(x)"
                     }
                     button {
                         class: if *current_view.read() == "Tests" { "view-btn active" } else { "view-btn" },
-                        title: "Saved scenarios — replay a sequence of actions against the local emulators",
+                        title: "Tests — saved scenarios, replayed against the local emulators",
                         onclick: move |_| { visited_views.write().insert("Tests".into()); current_view.set("Tests".into()); },
-                        "Tests"
+                        "🧪"
+                    }
+                    button {
+                        class: if *current_view.read() == "DevOps" { "view-btn active" } else { "view-btn" },
+                        title: "DevOps — Azure DevOps pipelines and runs",
+                        onclick: move |_| { visited_views.write().insert("DevOps".into()); current_view.set("DevOps".into()); },
+                        "🚀"
+                    }
+                    button {
+                        class: if *current_view.read() == "Settings" { "view-btn active" } else { "view-btn" },
+                        title: "Settings — edit local.settings.json",
+                        onclick: move |_| { visited_views.write().insert("Settings".into()); current_view.set("Settings".into()); },
+                        "🛠"
+                    }
+                }
+
+                // Graph is a visualization, not a config/list panel like the rest of
+                // the switch — kept out of that group and set off with its own
+                // divider so it doesn't read as "just another tab".
+                div { class: "view-switch view-switch-graph",
+                    button {
+                        class: if *current_view.read() == "Graph" { "view-btn active" } else { "view-btn" },
+                        title: "Graph — workflow chain graph, interactive D3.js visualization",
+                        onclick: move |_| { visited_views.write().insert("Graph".into()); current_view.set("Graph".into()); },
+                        "🔗"
                     }
                 }
 

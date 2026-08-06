@@ -111,14 +111,9 @@ pub fn sibling_database(key: &str, settings: &serde_json::Value) -> Option<Strin
 
 /// The local target a cloud value should be rewritten to.
 ///
-/// Prefer [`local_target_for`] where the setting key is known: it can aim a SQL
-/// connection at the project's real database instead of `master`.
-pub fn local_target(value: &str) -> String {
-    local_target_in(value, None)
-}
-
-/// [`local_target`], but aware of which setting is being rewritten so a SQL
-/// connection string keeps its database rather than being flattened to `master`.
+/// Aware of which setting is being rewritten so a SQL connection string keeps
+/// its database (read from the sibling `*_databaseName` key) rather than being
+/// flattened to `master`.
 pub fn local_target_for(key: &str, value: &str, settings: &serde_json::Value) -> String {
     local_target_in(value, sibling_database(key, settings).as_deref())
 }
@@ -369,11 +364,13 @@ mod tests {
 
     #[test]
     fn cloud_maps_to_local_emulators() {
-        assert!(local_target("x.database.windows.net").contains("Server=localhost,1433"));
-        assert!(local_target("x.documents.azure.com").contains("localhost:8081"));
-        assert!(local_target("x.servicebus.windows.net").contains("localhost"));
-        assert_eq!(local_target("x.blob.core.windows.net"), "UseDevelopmentStorage=true");
-        assert_eq!(local_target("https://partner.example.com"), MOCK_BASE_URL);
+        let no_settings = serde_json::Value::Null;
+        let target = |v: &str| local_target_for("unrelated_key", v, &no_settings);
+        assert!(target("x.database.windows.net").contains("Server=localhost,1433"));
+        assert!(target("x.documents.azure.com").contains("localhost:8081"));
+        assert!(target("x.servicebus.windows.net").contains("localhost"));
+        assert_eq!(target("x.blob.core.windows.net"), "UseDevelopmentStorage=true");
+        assert_eq!(target("https://partner.example.com"), MOCK_BASE_URL);
     }
 
     #[test]
