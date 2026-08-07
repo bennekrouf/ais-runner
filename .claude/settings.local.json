@@ -189,7 +189,22 @@
       "Bash(/usr/bin/grep -n \"sftp-badge\" -A 3 assets/main.css)",
       "Bash(/usr/bin/grep -n \"red-bg\" assets/main.css)",
       "Bash(/usr/bin/grep -nE \"^\\\\s*--\\(green|blue|green-bg|blue-bg\\):\" assets/main.css)",
-      "Bash(/usr/bin/grep -c \"color-mix\" assets/main.css)"
+      "Bash(/usr/bin/grep -c \"color-mix\" assets/main.css)",
+      "Bash(curl -s '__TRACKED_VAR__/workflows/Check-Ignite-Payment-File/runs/__TRACKED_VAR__/actions?$expand=outputLinks' -o /private/tmp/claude-501/-Users-mb-code-ais-runner/5074d955-d79e-44e0-bcef-6bd987c66756/scratchpad/actions2.json)",
+      "Bash(lsof -iTCP -sTCP:LISTEN -P)",
+      "Bash(read f *)",
+      "Bash(xargs '-I{}' python3 -c ' *)",
+      "Bash(cd /Users/mb/code/oryx/ais_tom_platform && rtk git status --short --branch | head -20)",
+      "Bash(find /Users/mb/code/oryx/ais_tom_platform/logic_apps -maxdepth 1 -iname parameters*)",
+      "Bash(curl -s -X POST http://localhost:7071/runtime/webhooks/workflow/api/management/workflows/Send-Kyriba-files/triggers/When_a_HTTP_request_is_received/run -H 'Content-Type: application/json' -d '{\"name\":\"some-file.txt\",\"flowType\":\"XX_UNKNOWN\"}' -w '\\\\nHTTP %{http_code}\\\\n')",
+      "Bash(curl -s -X POST http://localhost:7071/runtime/webhooks/workflow/api/management/workflows/Send-Kyriba-files/triggers/When_a_HTTP_request_is_received/listCallbackUrl -H 'Content-Type: application/json' -o /private/tmp/claude-501/-Users-mb-code-ais-runner/5074d955-d79e-44e0-bcef-6bd987c66756/scratchpad/cb.json)",
+      "Bash(find /Users/mb/code/oryx/ais_tom_platform -maxdepth 3 -iname *local.settings*)",
+      "Bash(python3 -c *)",
+      "Bash(curl -s -o /dev/null -w 'workflows list HTTP %{http_code}\\\\n' http://localhost:7071/runtime/webhooks/workflow/api/management/workflows --max-time 5)",
+      "Bash(curl -s --max-time 8 http://localhost:7071/runtime/webhooks/workflow/api/management/workflows/AIS-GenericNotif/runs)",
+      "Bash(B=http://localhost:7071/runtime/webhooks/workflow/api/management *)",
+      "Bash(perl -pi -e 's/^\\(\\\\s*\\)settings_snapshot: std::collections::HashMap::new\\\\\\(\\\\\\),$/$1settings_snapshot: std::collections::HashMap::new\\(\\),\\\\n$1last_run: std::collections::HashMap::new\\(\\),/' src/services/scenario.rs)",
+      "Bash(curl -s --max-time 10 'http://localhost:7071/runtime/webhooks/workflow/api/management/workflows/Check-Ignite-Cashflow-File/runs/08584155684295017537530234904CU00/actions?$expand=outputLinks' -o /private/tmp/claude-501/-Users-mb-code-ais-runner/5074d955-d79e-44e0-bcef-6bd987c66756/scratchpad/r03.json)"
     ]
   }
 }

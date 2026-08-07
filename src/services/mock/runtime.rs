@@ -118,6 +118,16 @@ mod tests {
     /// server, fire a probe HTTP request through the mock prefix, assert the
     /// canned response comes back, then shut down and verify settings are
     /// restored.
+    ///
+    /// **Ignored by default, and must stay that way.** `MockRuntime::start`
+    /// rewrites the workspace's `local.settings.json`, and `stop()` restores
+    /// it from `.ais-cache/local.settings.json.original` — a backup that may
+    /// be months old. Running this against a real, in-use workspace silently
+    /// reverts the developer's current settings to whatever that snapshot
+    /// held, which is indistinguishable from "my settings keep disappearing".
+    /// Run it deliberately with `cargo test -- --ignored` on a workspace you
+    /// don't mind rewriting.
+    #[ignore = "rewrites and restores a real workspace's local.settings.json — see doc comment"]
     #[tokio::test(flavor = "current_thread")]
     async fn e2e_runtime_against_real_workspace() {
         let path = std::path::Path::new("/Users/mb/code/oryx/ais_tom_platform/logic_apps");

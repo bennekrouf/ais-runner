@@ -98,6 +98,8 @@ fn record_run(
             workflow: workflow.to_string(),
             trigger: trigger.to_string(),
             body: body.to_string(),
+            capture: None,
+            expect_trigger_error: false,
         },
     );
 }

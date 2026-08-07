@@ -14,6 +14,19 @@ const SQL_EDGE_IMAGE: &str =
 pub const SB_EMULATOR_PORT: u16 = 5672;
 const MSSQL_PASSWORD: &str = "AisRunner_Emulator1!";
 
+/// Hard limit enforced by the Service Bus emulator: queues + topics per namespace.
+/// Exceeding it makes the emulator host refuse to start with a FluentAssertions
+/// failure ("Max Queue/Topic supported $50, but found N") and exit 133 — the
+/// container dies, nothing listens on 5672, and every scenario then fails on its
+/// first queue operation with a bare ConnectionRefused that says nothing about
+/// the real cause. Worse, the port-open probe used to report "emulator ready"
+/// just before the crash, so the log claimed success.
+///
+/// The config is a *merge* of workflow-detected queues and whatever is already in
+/// Config.json, so the list grows monotonically across runs and across projects —
+/// it will silently cross this limit sooner or later. Cap it here instead.
+const SB_EMULATOR_MAX_ENTITIES: usize = 50;
+
 /// Returns the working directory for compose + config files.
 ///
 /// On macOS/Linux we use `/tmp/ais-sb-emulator` — Docker Desktop shares `/tmp`
@@ -171,7 +184,10 @@ pub const EMULATOR_CONN_STR: &str =
 /// Write docker-compose.yml + config.json to WORK_DIR.
 /// `queues` comes from scanning the workflow's local.settings.json — we
 /// pre-create every queue the Logic App uses so it's ready on first run.
-fn write_compose_files(queues: &[(String, bool)]) -> Result<PathBuf, String> {
+///
+/// Returns the work dir plus the names of any queues dropped to stay under
+/// [`SB_EMULATOR_MAX_ENTITIES`], so the caller can surface them.
+fn write_compose_files(queues: &[(String, bool)]) -> Result<(PathBuf, Vec<String>), String> {
     let dir = work_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
@@ -273,6 +289,23 @@ networks:
         effective_queues.push(("ais.default".to_string(), false));
     }
 
+    // Enforce the emulator's ceiling. `queues` (workflow-detected) come first in
+    // effective_queues and are what the current project actually needs, so a plain
+    // truncate keeps them and drops the preserved leftovers — queues carried over
+    // from earlier runs or other projects, which is exactly the accumulation that
+    // pushes the list over the limit. Dropping them beats emitting a config the
+    // emulator rejects outright.
+    let dropped_queues: Vec<String> = if effective_queues.len() > SB_EMULATOR_MAX_ENTITIES {
+        let dropped = effective_queues[SB_EMULATOR_MAX_ENTITIES..]
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect();
+        effective_queues.truncate(SB_EMULATOR_MAX_ENTITIES);
+        dropped
+    } else {
+        Vec::new()
+    };
+
     // LockDuration: PT5M (5 minutes) — generous default for local cold-start runs.
     // Logic Apps consumers commonly need >1 min for the first invocation
     // (function host JIT + child-workflow warmup + SQL roundtrips), producing
@@ -318,7 +351,7 @@ networks:
     std::fs::write(dir.join("Config.json"), config)
         .map_err(|e| e.to_string())?;
 
-    Ok(dir)
+    Ok((dir, dropped_queues))
 }
 
 /// Build a `Command` that runs `docker compose <args>`.
@@ -474,7 +507,7 @@ pub fn handle_start(
         }
     }
 
-    let dir = match write_compose_files(&queues) {
+    let (dir, dropped_queues) = match write_compose_files(&queues) {
         Ok(d)  => d,
         Err(e) => {
             state.set(ServiceState::Stopped);
@@ -482,6 +515,19 @@ pub fn handle_start(
             return;
         }
     };
+    if !dropped_queues.is_empty() {
+        push(
+            format!(
+                "⚠ Config.json held more than {} queues (the emulator's hard limit) — \
+                 dropped {} carried over from previous runs: {}. Workflow-detected queues \
+                 were kept. Use the emulator reset to clear the accumulated list.",
+                SB_EMULATOR_MAX_ENTITIES,
+                dropped_queues.len(),
+                dropped_queues.join(", "),
+            ),
+            LogLevel::Warn,
+        );
+    }
     // write_compose_files silently deletes a bad Config.json (wrong namespace name
     // or wrong logging key) and regenerates it correctly. Inform the user.
     if !std::path::Path::new("/tmp/ais-sb-emulator/Config.json.bak").exists() {

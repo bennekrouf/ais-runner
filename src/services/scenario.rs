@@ -23,7 +23,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::services::{azurite_client, cosmos_query, sb_amqp, sb_testing, sql_runner, workflows};
+use crate::services::{
+    azurite_client, cosmos_query, sb_amqp, sb_testing, settings_file, sql_runner, workflows,
+};
 
 /// Where scenarios live, relative to the selected project root.
 pub const SCENARIO_DIR: &str = ".ais-runner/scenarios";
@@ -85,6 +87,14 @@ pub enum Step {
     },
     ClearContainer {
         container: String,
+    },
+    /// Non-destructive assertion — unlike `clear_container`/`upload_file`, this
+    /// never changes emulator state.
+    CheckBlobExists {
+        container: String,
+        blob_name: String,
+        #[serde(default = "default_true")]
+        exists: bool,
     },
     /// Azurite has no real folders, so this copies every blob under `from/` to
     /// `to/` and deletes the originals — same as the Blobs tab's rename.
@@ -178,6 +188,49 @@ pub enum Step {
         trigger: String,
         #[serde(default)]
         body: String,
+        /// When set, invoke the workflow's own HTTP endpoint and capture its
+        /// synchronous response body as `{{name}}` instead of firing it via
+        /// the management API's fire-and-forget trigger-run endpoint. For an
+        /// HTTP-triggered workflow whose `Response` action is the thing under
+        /// test — e.g. a routing resolver — rather than one whose side
+        /// effects are checked by a later step.
+        #[serde(default)]
+        capture: Option<String>,
+        /// The trigger call itself is expected to come back as an HTTP error —
+        /// not because firing it failed, but because the workflow's own logic
+        /// terminates the run (e.g. `runStatus: "Cancelled"` on invalid input),
+        /// which kills any pending `Response` action before it can answer the
+        /// caller. That's normal when the workflow is invoked directly over
+        /// HTTP for a case designed to be reached via the internal
+        /// `Workflow`-invoke mechanism instead, where a terminated child run
+        /// is a status, not a broken connection. Set this so the step still
+        /// records the run for a later `wait_for_run` to check, rather than
+        /// failing here on a response that was never coming.
+        #[serde(default)]
+        expect_trigger_error: bool,
+    },
+
+    // ── Local settings ────────────────────────────────────────────────────
+    /// Write key/value pairs into `local.settings.json`, snapshotting whatever
+    /// each key held before (or its absence) so `restore_settings` — or an
+    /// automatic restore after a later step fails — can put it back exactly.
+    ///
+    /// Logic Apps Standard reads this file only at host startup, so a setting
+    /// changed here has no effect until a `restart_func` step follows it.
+    SetSettings {
+        values: Vars,
+    },
+    /// Put back every key touched by `set_settings` since the last restore (or
+    /// since the scenario started). A no-op, not an error, when nothing was
+    /// snapshotted — safe to include defensively at the end of a scenario even
+    /// if an earlier step already triggered the automatic restore.
+    RestoreSettings,
+    /// Stop and restart the func host, then wait for its workflows to
+    /// re-register. Only meaningful after `set_settings`, which otherwise sits
+    /// in `local.settings.json` unread by an already-running host.
+    RestartFunc {
+        #[serde(default = "default_func_restart_timeout")]
+        timeout_ms: u64,
     },
 
     // ── Synchronisation ─────────────────────────────────────────────────
@@ -200,12 +253,16 @@ pub enum Step {
     /// Poll until `workflow` has a run in a terminal state that started after
     /// the most recent `run_workflow` step in this scenario.
     ///
-    /// Fails if that run finished in any state other than Succeeded — a
-    /// workflow that reliably reaches "Failed" is not a passing scenario.
+    /// Fails if that run finishes in any terminal state other than
+    /// `expect_status` — a workflow whose failure path is itself the thing
+    /// under test (e.g. "no record found" should reach `Failed`) sets that
+    /// explicitly; everything else defaults to `Succeeded`.
     WaitForRun {
         workflow: String,
         #[serde(default = "default_timeout")]
         timeout_ms: u64,
+        #[serde(default = "default_expect_status")]
+        expect_status: String,
     },
     /// Poll until `sql` returns at least `min_rows` rows.
     WaitForSql {
@@ -228,6 +285,30 @@ pub enum Step {
         #[serde(default = "one")]
         min_count: usize,
     },
+    /// Assert on one action inside a workflow run: its status, and optionally
+    /// that its inputs/outputs contain `contains`.
+    ///
+    /// The way to verify a message a live consumer would otherwise eat. A queue
+    /// with its own triggered workflow (`ais.teams.notif` → `AIS-GenericNotif`)
+    /// can't be observed with `wait_for_message`: the consumer peek-locks each
+    /// message within a second and holds it for minutes, so a scenario polling
+    /// the queue sees nothing whether the consumer succeeded or failed. The
+    /// producing action's recorded inputs are not a race — they're durable run
+    /// history, and they carry the payload that was actually sent.
+    ///
+    /// Targets the run a preceding `wait_for_run` on the same workflow matched;
+    /// otherwise the most recent run started since the scenario began.
+    ExpectAction {
+        workflow: String,
+        /// Not `action`: that key is the enum's own serde tag.
+        action_name: String,
+        #[serde(default = "default_expect_status")]
+        status: String,
+        #[serde(default)]
+        contains: Option<String>,
+        #[serde(default = "default_timeout")]
+        timeout_ms: u64,
+    },
 }
 
 fn one() -> usize {
@@ -245,10 +326,41 @@ fn default_timeout() -> u64 {
 fn default_content_type() -> String {
     "application/json".to_string()
 }
+fn default_true() -> bool {
+    true
+}
+fn default_expect_status() -> String {
+    "Succeeded".to_string()
+}
+fn default_func_restart_timeout() -> u64 {
+    // Cold func start plus workflow re-registration routinely takes over a
+    // minute; the shared default_timeout() (30s) is tuned for emulator polls,
+    // not a process restart.
+    180_000
+}
+
+/// Future returned by [`RestartFn`] — boxed because the concrete future
+/// depends on Dioxus `Signal`s the closure captures, which `scenario.rs`
+/// itself knows nothing about.
+///
+/// Not `Send`: a `Signal` is backed by a thread-local `RefCell` and can't
+/// cross threads. That's fine — `scenario::run` is driven by Dioxus's own
+/// (single-threaded) `spawn` from the Tests view, never `tokio::spawn`.
+pub type BoxFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>>>>;
+
+/// Stops and restarts the func host, waits for its workflows to re-register,
+/// and reports a short summary — or an error.
+///
+/// A plain callback rather than baking Dioxus signals into `RunContext`:
+/// restarting func needs half a dozen of `MainContext`'s signals
+/// (`azurite_state`, `func_state`, `func_proc`, `workflows`, `traced_wfs`,
+/// `cleared_wfs`, `log_lines`), and this module has no Dioxus dependency
+/// otherwise. The Tests view, which does have them, supplies the closure.
+pub type RestartFn = std::sync::Arc<dyn Fn() -> BoxFuture>;
 
 /// Everything a run needs that the scenario file deliberately doesn't hardcode,
 /// so the same scenario works against whatever emulators are currently up.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RunContext {
     pub sb_host: String,
     pub cosmos_endpoint: String,
@@ -256,6 +368,10 @@ pub struct RunContext {
     /// Base for relative `UploadFile`/`DownloadBlob` paths. Deliberately not in
     /// the JSON: the same scenario has to work from whatever checkout it's in.
     pub project_root: PathBuf,
+    /// `None` when the caller can't restart func (only the Tests view can) —
+    /// a `restart_func` step then fails with a clear message instead of
+    /// panicking on a missing callback.
+    pub restart_func: Option<RestartFn>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -440,6 +556,8 @@ pub async fn run(
         vars: scenario.vars.clone(),
         run_floor: chrono::Utc::now(),
         claimed_runs: std::collections::HashSet::new(),
+        settings_snapshot: std::collections::HashMap::new(),
+        last_run: std::collections::HashMap::new(),
     };
     let mut results = Vec::new();
     let mut aborted = false;
@@ -459,22 +577,31 @@ pub async fn run(
         }
 
         let started = std::time::Instant::now();
-        // Substitute per-step rather than up front, so a step can consume a
-        // variable captured by the step before it.
-        let outcome = match resolve_vars(step, &state.vars) {
+        // Built-ins are recomputed fresh every step (so `{{NOW_UTC}}` etc. are
+        // never stale) and layered under the scenario/captured vars, which win
+        // on a name clash. Substituted per-step rather than up front, so a
+        // step can consume a variable captured by the step before it.
+        let mut lookup = builtin_vars();
+        lookup.extend(state.vars.clone());
+        let outcome = match resolve_vars(step, &lookup) {
             Ok(resolved) => exec(&resolved, ctx, &mut state).await,
             Err(e) => Err(e),
         };
         let elapsed_ms = started.elapsed().as_millis();
 
         let result = match outcome {
-            Ok(detail) => StepResult {
-                index,
-                label: label_of(step),
-                status: StepStatus::Ok,
-                detail,
-                elapsed_ms,
-            },
+            Ok(detail) => {
+                // Available to the next step as `{{PREV_STEP_RESULT}}` without
+                // that step needing an explicit `capture` field.
+                state.vars.insert("PREV_STEP_RESULT".to_string(), detail.clone());
+                StepResult {
+                    index,
+                    label: label_of(step),
+                    status: StepStatus::Ok,
+                    detail,
+                    elapsed_ms,
+                }
+            }
             Err(detail) => {
                 aborted = true;
                 StepResult {
@@ -488,6 +615,34 @@ pub async fn run(
         };
         on_step(result.clone());
         results.push(result);
+
+        // A failure mid-scenario must not leave local.settings.json holding
+        // values a set_settings step put there for this run only — restore
+        // even though the scenario's own restore_settings step, if any, is
+        // about to be skipped like every other remaining step.
+        if aborted && !state.settings_snapshot.is_empty() {
+            let restore_started = std::time::Instant::now();
+            let outcome = restore_settings_now(ctx, &mut state).await;
+            let elapsed_ms = restore_started.elapsed().as_millis();
+            let auto_result = match outcome {
+                Ok(detail) => StepResult {
+                    index: results.len(),
+                    label: "auto-restore settings after failure".to_string(),
+                    status: StepStatus::Ok,
+                    detail,
+                    elapsed_ms,
+                },
+                Err(detail) => StepResult {
+                    index: results.len(),
+                    label: "auto-restore settings after failure".to_string(),
+                    status: StepStatus::Failed,
+                    detail,
+                    elapsed_ms,
+                },
+            };
+            on_step(auto_result.clone());
+            results.push(auto_result);
+        }
     }
 
     results
@@ -511,6 +666,21 @@ struct RunState {
     /// on the same workflow are both satisfied by the first run — the second
     /// would pass before its trigger had produced anything.
     claimed_runs: std::collections::HashSet<String>,
+    /// Original value of every `local.settings.json` key touched by
+    /// `set_settings` since the last restore (or since the scenario started).
+    /// `None` means the key didn't exist before and should be removed, not
+    /// blanked, on restore. First write per key wins, so two `set_settings`
+    /// steps in a row still roll back to the true original rather than the
+    /// intermediate value.
+    settings_snapshot: std::collections::HashMap<String, Option<String>>,
+    /// workflow → the run name the most recent `WaitForRun` matched.
+    ///
+    /// `ExpectAction` inspects *that* run rather than re-resolving "the latest
+    /// one". A workflow whose trigger keeps redelivering (an uncompleted
+    /// peek-lock message, say) can start another run between the wait and the
+    /// assertion, and asserting against a different run than the one just
+    /// verified is a race that only shows up intermittently.
+    last_run: std::collections::HashMap<String, String>,
 }
 
 async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<String, String> {
@@ -548,6 +718,23 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
             let name = container.clone();
             let removed = blocking(move || azurite_client::clear_container(&name)).await?;
             Ok(format!("cleared {removed} blob(s) from '{container}'"))
+        }
+        CheckBlobExists {
+            container,
+            blob_name,
+            exists,
+        } => {
+            let (c, b) = (container.clone(), blob_name.clone());
+            let found = blocking(move || {
+                Ok(azurite_client::list_blobs(&c)?.iter().any(|i| i.name == b))
+            })
+            .await?;
+            match (found, exists) {
+                (true, true) => Ok(format!("'{blob_name}' exists in '{container}'")),
+                (false, false) => Ok(format!("'{blob_name}' is absent from '{container}', as expected")),
+                (false, true) => Err(format!("expected '{blob_name}' to exist in '{container}', but it does not")),
+                (true, false) => Err(format!("expected '{blob_name}' to be absent from '{container}', but it exists")),
+            }
         }
         RenameFolder {
             container,
@@ -707,13 +894,32 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
             workflow,
             trigger,
             body,
+            capture,
+            expect_trigger_error,
         } => {
             // Tighten the floor *before* triggering: a run that starts while the
             // request is still in flight must still count.
             state.run_floor = chrono::Utc::now();
-            workflows::run_trigger_direct(workflow, trigger, body).await?;
-            Ok(format!("triggered '{workflow}' via '{trigger}'"))
+            if let Some(key) = capture {
+                let url = workflows::get_callback_url(workflow, trigger).await?;
+                let resp = workflows::trigger_workflow_capture_body(&url, body).await?;
+                state.vars.insert(key.clone(), resp.clone());
+                Ok(summarise(&resp))
+            } else {
+                match workflows::run_trigger_direct(workflow, trigger, body).await {
+                    Ok(()) => Ok(format!("triggered '{workflow}' via '{trigger}'")),
+                    Err(e) if *expect_trigger_error => Ok(format!(
+                        "triggered '{workflow}' via '{trigger}' — call errored as expected ({e}); checking the run itself next"
+                    )),
+                    Err(e) => Err(e),
+                }
+            }
         }
+
+        // ── Local settings ────────────────────────────────────────────────
+        SetSettings { values } => set_settings_now(ctx, state, values).await,
+        RestoreSettings => restore_settings_now(ctx, state).await,
+        RestartFunc { timeout_ms } => restart_func_now(ctx, *timeout_ms).await,
 
         // ── Synchronisation ─────────────────────────────────────────────
         Sleep { ms } => {
@@ -738,6 +944,7 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
         WaitForRun {
             workflow,
             timeout_ms,
+            expect_status,
         } => {
             let floor = state.run_floor;
             let claimed = state.claimed_runs.clone();
@@ -749,19 +956,26 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
 
             let detail = poll_until(*timeout_ms, || async {
                 match latest_terminal_run(workflow, floor, &claimed).await {
-                    Some((run_name, status)) if status == "Succeeded" => {
+                    Some((run_name, status)) if status == *expect_status => {
                         *winner.borrow_mut() = Some(run_name.clone());
-                        Ok((true, format!("run {run_name} Succeeded")))
+                        Ok((true, format!("run {run_name} {status}")))
                     }
-                    // A terminal non-success is final — no amount of waiting
-                    // improves it, so surface it now instead of at timeout.
-                    Some((run_name, status)) => Err(format!("run {run_name} finished {status}")),
+                    // Any other terminal status is final — no amount of waiting
+                    // improves it, so surface it now instead of at timeout. A
+                    // workflow expected to fail that instead succeeds (or
+                    // vice versa) is exactly as wrong as one that errors.
+                    Some((run_name, status)) => {
+                        Err(format!("run {run_name} finished {status}, expected {expect_status}"))
+                    }
                     None => Ok((false, "no terminal run yet".to_string())),
                 }
             })
             .await?;
 
             if let Some(name) = winner.into_inner() {
+                // Remembered so a following `expect_action` inspects this exact
+                // run rather than whatever is newest by then.
+                state.last_run.insert(workflow.clone(), name.clone());
                 state.claimed_runs.insert(name);
             }
             Ok(detail)
@@ -799,7 +1013,76 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                 Err(r.detail)
             }
         }
+        ExpectAction {
+            workflow,
+            action_name: action,
+            status,
+            contains,
+            timeout_ms,
+        } => {
+            let run_id = match state.last_run.get(workflow) {
+                Some(id) => id.clone(),
+                None => latest_run_since(workflow, state.run_floor)
+                    .await
+                    .ok_or_else(|| format!("no run of '{workflow}' found since the scenario started"))?,
+            };
+
+            // Poll: the action may not have executed yet when the run is still
+            // in flight, and a missing action is indistinguishable from one
+            // that hasn't started.
+            let found: std::cell::RefCell<Option<workflows::ActionPayload>> = Default::default();
+            poll_until(*timeout_ms, || async {
+                match workflows::action_payload(workflow, &run_id, action).await {
+                    Ok(p) if p.status == "Unknown" => {
+                        Ok((false, format!("action '{action}' has not run yet")))
+                    }
+                    Ok(p) => {
+                        let detail = format!("action '{action}' is {}", p.status);
+                        *found.borrow_mut() = Some(p);
+                        Ok((true, detail))
+                    }
+                    Err(e) => Ok((false, format!("action '{action}' not readable yet: {e}"))),
+                }
+            })
+            .await?;
+
+            let payload = found
+                .into_inner()
+                .ok_or_else(|| format!("action '{action}' never reported a status"))?;
+
+            if payload.status != *status {
+                return Err(format!(
+                    "action '{action}' in run {run_id} is {}, expected {status}",
+                    payload.status
+                ));
+            }
+            if let Some(needle) = contains {
+                if !payload.text.contains(needle.as_str()) {
+                    return Err(format!(
+                        "action '{action}' is {status} but its inputs/outputs do not contain '{needle}'"
+                    ));
+                }
+                return Ok(format!("action '{action}' {status}, and contains '{needle}'"));
+            }
+            Ok(format!("action '{action}' {status}"))
+        }
     }
+}
+
+/// Most recent run of `workflow` started at or after `floor`, in any state.
+///
+/// Unlike `latest_terminal_run` this doesn't require a terminal status: an
+/// `expect_action` may legitimately inspect an action that has already
+/// completed inside a run that is still going.
+async fn latest_run_since(
+    workflow: &str,
+    floor: chrono::DateTime<chrono::Utc>,
+) -> Option<String> {
+    let runs = workflows::list_runs(workflow).await.ok()?;
+    runs.iter()
+        .filter(|r| started_at_or_after(r.properties.start_time.as_deref(), floor))
+        .max_by_key(|r| r.properties.start_time.clone())
+        .map(|r| r.name.clone())
 }
 
 /// Make a recorded file path absolute.
@@ -814,6 +1097,145 @@ fn resolve_path(project_root: &Path, path: &str) -> String {
     } else {
         project_root.join(p).to_string_lossy().into_owned()
     }
+}
+
+/// Write `values` into `local.settings.json`, snapshotting whatever each key
+/// held before into `state.settings_snapshot`.
+///
+/// First write per key wins: if a key is already snapshotted from an earlier
+/// `set_settings` in this run (no restore in between), that original is kept
+/// rather than overwritten with the intermediate value.
+async fn set_settings_now(ctx: &RunContext, state: &mut RunState, values: &Vars) -> Result<String, String> {
+    let dir = ctx.project_root.to_string_lossy().into_owned();
+    let values = values.clone();
+    let count = values.len();
+    let originals: std::collections::HashMap<String, Option<String>> = blocking(move || {
+        let mut json = read_settings_json(&dir)?;
+        let obj = values_object(&mut json)?;
+        let mut originals = std::collections::HashMap::new();
+        for (k, v) in &values {
+            originals.insert(k.clone(), obj.get(k).and_then(|x| x.as_str()).map(str::to_string));
+            obj.insert(k.clone(), Value::String(v.clone()));
+        }
+        write_settings_json(&dir, &json)?;
+        Ok(originals)
+    })
+    .await?;
+
+    for (k, orig) in originals {
+        state.settings_snapshot.entry(k).or_insert(orig);
+    }
+    Ok(format!("set {count} setting(s) — will restore on scenario end or failure"))
+}
+
+/// Put back every key in `state.settings_snapshot`, then clear it.
+///
+/// Shared by the `restore_settings` step and the automatic restore `run()`
+/// triggers after any step failure — a `set_settings` value must never
+/// outlive the run that set it, whether or not the scenario remembered its
+/// own cleanup step.
+async fn restore_settings_now(ctx: &RunContext, state: &mut RunState) -> Result<String, String> {
+    if state.settings_snapshot.is_empty() {
+        return Ok("no settings were changed — nothing to restore".to_string());
+    }
+    let dir = ctx.project_root.to_string_lossy().into_owned();
+    let snapshot = std::mem::take(&mut state.settings_snapshot);
+    let count = snapshot.len();
+    blocking(move || {
+        let mut json = read_settings_json(&dir)?;
+        let obj = values_object(&mut json)?;
+        for (k, orig) in snapshot {
+            match orig {
+                Some(v) => {
+                    obj.insert(k, Value::String(v));
+                }
+                None => {
+                    obj.remove(&k);
+                }
+            }
+        }
+        write_settings_json(&dir, &json)
+    })
+    .await?;
+    Ok(format!("restored {count} setting(s)"))
+}
+
+fn read_settings_json(dir: &str) -> Result<Value, String> {
+    let text = settings_file::read_local_settings(dir)?;
+    if text.trim().is_empty() {
+        Ok(serde_json::json!({ "IsEncrypted": false, "Values": {} }))
+    } else {
+        serde_json::from_str(&text).map_err(|e| format!("local.settings.json is invalid JSON: {e}"))
+    }
+}
+
+fn write_settings_json(dir: &str, json: &Value) -> Result<(), String> {
+    let pretty = serde_json::to_string_pretty(json).map_err(|e| e.to_string())?;
+    settings_file::write_local_settings(dir, &pretty)
+}
+
+fn values_object(json: &mut Value) -> Result<&mut serde_json::Map<String, Value>, String> {
+    if json["Values"].is_null() {
+        json["Values"] = Value::Object(serde_json::Map::new());
+    }
+    json["Values"]
+        .as_object_mut()
+        .ok_or_else(|| "local.settings.json has a non-object \"Values\"".to_string())
+}
+
+/// Stop and restart func via the caller-supplied [`RestartFn`], bounded by
+/// `timeout_ms` on top of whatever timeout the callback applies internally.
+async fn restart_func_now(ctx: &RunContext, timeout_ms: u64) -> Result<String, String> {
+    let restart = ctx.restart_func.clone().ok_or_else(|| {
+        "this environment can't restart func — restart_func requires running from the Tests view".to_string()
+    })?;
+    match tokio::time::timeout(Duration::from_millis(timeout_ms), restart()).await {
+        Ok(inner) => inner,
+        Err(_) => Err(format!("func did not finish restarting within {timeout_ms}ms")),
+    }
+}
+
+/// Dynamic values available to every step as `{{name}}`, alongside the
+/// scenario's own `vars` and any `capture`d/`PREV_STEP_RESULT` values (which
+/// take precedence on a name clash — see `run()`).
+fn builtin_vars() -> Vars {
+    let mut out = Vars::new();
+    let now_utc = chrono::Utc::now();
+    let cet = now_cet(now_utc);
+    out.insert("NOW_UTC".to_string(), now_utc.to_rfc3339());
+    out.insert("NOW_CET_HH:mm".to_string(), cet.format("%H:%M").to_string());
+    out.insert("NOW_CET_HHmm".to_string(), cet.format("%H%M").to_string());
+    out.insert("TODAY_YYYYMMDD".to_string(), cet.format("%Y%m%d").to_string());
+    out.insert("GUID".to_string(), uuid::Uuid::new_v4().to_string());
+    out
+}
+
+/// Central European local time (CET/CEST) for `utc`, computed without a
+/// timezone database.
+///
+/// The EU's one DST rule — clocks forward the last Sunday of March at 01:00
+/// UTC, back the last Sunday of October at 01:00 UTC — is simple enough not
+/// to justify adding `chrono-tz` as a dependency just for this.
+fn now_cet(utc: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::FixedOffset> {
+    use chrono::Datelike;
+    let year = utc.year();
+    let dst_start = last_sunday_1am_utc(year, 3);
+    let dst_end = last_sunday_1am_utc(year, 10);
+    let offset_hours = if utc >= dst_start && utc < dst_end { 2 } else { 1 };
+    utc.with_timezone(&chrono::FixedOffset::east_opt(offset_hours * 3600).unwrap())
+}
+
+/// The most recent Sunday on or before the last day of `month` in `year`, at
+/// 01:00 UTC — the instant EU daylight-saving transitions take effect.
+fn last_sunday_1am_utc(year: i32, month: u32) -> chrono::DateTime<chrono::Utc> {
+    use chrono::{Datelike, NaiveDate, TimeZone, Utc};
+    let (next_year, next_month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+    let first_of_next = NaiveDate::from_ymd_opt(next_year, next_month, 1)
+        .expect("month is always 1..=12");
+    let last_day = first_of_next - chrono::Duration::days(1);
+    let back_to_sunday = last_day.weekday().num_days_from_sunday() as i64;
+    let last_sunday = last_day - chrono::Duration::days(back_to_sunday);
+    Utc.from_utc_datetime(&last_sunday.and_hms_opt(1, 0, 0).expect("1:00:00 is always valid"))
 }
 
 /// Run a blocking service call off the async runtime.
@@ -900,6 +1322,8 @@ pub fn label_of(step: &Step) -> String {
         UploadFile { blob_name, .. } => format!("upload {blob_name}"),
         UploadInline { blob_name, .. } => format!("write {blob_name}"),
         ClearContainer { container } => format!("clear {container}"),
+        CheckBlobExists { blob_name, exists: true, .. } => format!("check {blob_name} exists"),
+        CheckBlobExists { blob_name, exists: false, .. } => format!("check {blob_name} absent"),
         RenameFolder { from, to, .. } => format!("rename folder {from} → {to}"),
         DownloadBlob { blob_name, .. } => format!("download {blob_name}"),
         CreateQueue { queue } => format!("create queue {queue}"),
@@ -914,12 +1338,17 @@ pub fn label_of(step: &Step) -> String {
         CreateCosmosContainer { container, .. } => format!("create Cosmos container {container}"),
         UpsertCosmosDocument { container, .. } => format!("upsert doc into {container}"),
         RunCosmosQuery { container, .. } => format!("query {container}"),
+        RunWorkflow { workflow, capture: Some(key), .. } => format!("run {workflow} → {{{{{key}}}}}"),
         RunWorkflow { workflow, .. } => format!("run {workflow}"),
+        SetSettings { values } => format!("set {} setting(s)", values.len()),
+        RestoreSettings => "restore settings".to_string(),
+        RestartFunc { .. } => "restart func".to_string(),
         Sleep { ms } => format!("sleep {ms}ms"),
         WaitForMessage { queue, .. } => format!("wait for message on {queue}"),
-        WaitForRun { workflow, .. } => format!("wait for {workflow} run"),
+        WaitForRun { workflow, expect_status, .. } => format!("wait for {workflow} run ({expect_status})"),
         WaitForSql { database, .. } => format!("wait for SQL on {database}"),
         Expect { queue, .. } => format!("expect on {queue}"),
+        ExpectAction { workflow, action_name, .. } => format!("expect {action_name} in {workflow}"),
     }
 }
 
@@ -1051,6 +1480,8 @@ mod tests {
             workflow,
             trigger,
             body,
+            capture,
+            expect_trigger_error,
         } = step
         else {
             panic!("wrong variant")
@@ -1058,6 +1489,8 @@ mod tests {
         assert_eq!(workflow, "Pivot-Ignite-Invoice");
         assert_eq!(trigger, "manual");
         assert_eq!(body, "");
+        assert_eq!(capture, None);
+        assert!(!expect_trigger_error);
     }
 
     #[test]
@@ -1072,6 +1505,7 @@ mod tests {
             { "action": "upload_file", "container": "in", "file": "/tmp/a.xml", "blob_name": "a.xml" },
             { "action": "upload_inline", "container": "in", "blob_name": "b.xml", "content": "<x/>" },
             { "action": "clear_container", "container": "in" },
+            { "action": "check_blob_exists", "container": "in", "blob_name": "b.xml" },
             { "action": "rename_folder", "container": "in", "from": "old", "to": "new" },
             { "action": "download_blob", "container": "in", "blob_name": "a.xml", "dest": "out/a.xml" },
             { "action": "create_queue", "queue": "q" },
@@ -1087,16 +1521,21 @@ mod tests {
             { "action": "upsert_cosmos_document", "database": "EventStore", "container": "events", "document": { "id": "1" } },
             { "action": "run_cosmos_query", "database": "EventStore", "container": "events", "query": "SELECT * FROM c" },
             { "action": "run_workflow", "workflow": "W", "trigger": "manual", "body": "{}" },
+            { "action": "set_settings", "values": { "kyriba:sla:checkTime": "{{NOW_CET_HH:mm}}" } },
+            { "action": "restart_func" },
+            { "action": "restore_settings" },
             { "action": "sleep", "ms": 100 },
             { "action": "wait_for_message", "queue": "q", "path": "id", "expected": "42" },
             { "action": "wait_for_run", "workflow": "W" },
+            { "action": "wait_for_run", "workflow": "W", "expect_status": "Failed" },
             { "action": "wait_for_sql", "database": "aisdev", "sql": "SELECT 1", "min_rows": 1 },
-            { "action": "expect", "queue": "q", "expected": "42", "min_count": 1 }
+            { "action": "expect", "queue": "q", "expected": "42", "min_count": 1 },
+            { "action": "expect_action", "workflow": "W", "action_name": "Send_notif", "contains": "42" }
           ]
         }"#;
 
         let scenario: Scenario = serde_json::from_str(json).unwrap();
-        assert_eq!(scenario.steps.len(), 24);
+        assert_eq!(scenario.steps.len(), 30);
 
         // Defaults applied where the document omitted them.
         let Some(Step::CreateCosmosContainer { partition_key, .. }) = scenario
@@ -1258,6 +1697,300 @@ mod tests {
         assert_eq!(summarise(""), "ok");
         assert_eq!(summarise("one row\n"), "one row");
         assert_eq!(summarise("a\nb\nc"), "a (+2 more lines)");
+    }
+
+    fn test_ctx(project_root: &Path) -> RunContext {
+        RunContext {
+            sb_host: "127.0.0.1".to_string(),
+            cosmos_endpoint: String::new(),
+            cosmos_key: String::new(),
+            project_root: project_root.to_path_buf(),
+            restart_func: None,
+        }
+    }
+
+    fn test_state() -> RunState {
+        RunState {
+            vars: Vars::new(),
+            run_floor: chrono::Utc::now(),
+            claimed_runs: std::collections::HashSet::new(),
+            settings_snapshot: std::collections::HashMap::new(),
+            last_run: std::collections::HashMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_settings_then_restore_settings_round_trips_exactly() {
+        let dir = std::env::temp_dir().join(format!("ais-settings-{}-a", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("local.settings.json"),
+            r#"{ "IsEncrypted": false, "Values": { "kept": "already-here", "changed": "before" } }"#,
+        )
+        .unwrap();
+
+        let ctx = test_ctx(&dir);
+        let mut state = test_state();
+
+        let mut values = Vars::new();
+        values.insert("changed".to_string(), "after".to_string());
+        values.insert("new_key".to_string(), "brand-new".to_string());
+        set_settings_now(&ctx, &mut state, &values).await.unwrap();
+
+        let after_set: Value =
+            serde_json::from_str(&settings_file::read_local_settings(dir.to_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(after_set["Values"]["changed"], "after");
+        assert_eq!(after_set["Values"]["new_key"], "brand-new");
+        assert_eq!(after_set["Values"]["kept"], "already-here");
+
+        restore_settings_now(&ctx, &mut state).await.unwrap();
+        assert!(state.settings_snapshot.is_empty());
+
+        let restored: Value =
+            serde_json::from_str(&settings_file::read_local_settings(dir.to_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(restored["Values"]["changed"], "before");
+        assert_eq!(restored["Values"]["kept"], "already-here");
+        // A key that didn't exist before set_settings must be removed, not
+        // left behind blank — leaving it would be a subtler leak than the
+        // value it replaced.
+        assert!(restored["Values"].get("new_key").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_second_set_settings_does_not_overwrite_the_first_snapshot() {
+        let dir = std::env::temp_dir().join(format!("ais-settings-{}-b", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("local.settings.json"),
+            r#"{ "IsEncrypted": false, "Values": { "k": "original" } }"#,
+        )
+        .unwrap();
+
+        let ctx = test_ctx(&dir);
+        let mut state = test_state();
+
+        let mut first = Vars::new();
+        first.insert("k".to_string(), "intermediate".to_string());
+        set_settings_now(&ctx, &mut state, &first).await.unwrap();
+
+        let mut second = Vars::new();
+        second.insert("k".to_string(), "final".to_string());
+        set_settings_now(&ctx, &mut state, &second).await.unwrap();
+
+        // Two writes, one restore — the snapshot must still be the true
+        // original, not the intermediate value the first write produced.
+        assert_eq!(state.settings_snapshot.get("k"), Some(&Some("original".to_string())));
+
+        restore_settings_now(&ctx, &mut state).await.unwrap();
+        let restored: Value =
+            serde_json::from_str(&settings_file::read_local_settings(dir.to_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(restored["Values"]["k"], "original");
+    }
+
+    #[tokio::test]
+    async fn restoring_with_nothing_snapshotted_is_a_harmless_no_op() {
+        let dir = std::env::temp_dir().join(format!("ais-settings-{}-c", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = test_ctx(&dir);
+        let mut state = test_state();
+        let detail = restore_settings_now(&ctx, &mut state).await.unwrap();
+        assert!(detail.contains("nothing to restore"));
+    }
+
+    #[tokio::test]
+    async fn restart_func_without_a_callback_fails_with_a_clear_message() {
+        // The Tests view always supplies one; anything constructing RunContext
+        // without it (or a future caller that forgets to) should get a message
+        // that explains why, not a panic on a missing closure.
+        let ctx = test_ctx(Path::new("/tmp"));
+        let err = restart_func_now(&ctx, 1_000).await.unwrap_err();
+        assert!(err.contains("Tests view"), "got: {err}");
+    }
+
+    #[test]
+    fn check_blob_exists_defaults_to_asserting_presence() {
+        let json = r#"{ "action": "check_blob_exists", "container": "c", "blob_name": "b.xml" }"#;
+        let Step::CheckBlobExists { exists, .. } = serde_json::from_str(json).unwrap() else {
+            panic!("wrong variant")
+        };
+        assert!(exists);
+    }
+
+    #[test]
+    fn expect_action_defaults_to_succeeded_and_no_substring_check() {
+        let json = r#"{ "action": "expect_action", "workflow": "W", "action_name": "Send_notif" }"#;
+        let Step::ExpectAction {
+            workflow,
+            action_name,
+            status,
+            contains,
+            timeout_ms,
+        } = serde_json::from_str(json).unwrap()
+        else {
+            panic!("wrong variant")
+        };
+        assert_eq!(workflow, "W");
+        assert_eq!(action_name, "Send_notif");
+        assert_eq!(status, "Succeeded");
+        assert_eq!(contains, None);
+        assert_eq!(timeout_ms, 30_000);
+    }
+
+    #[test]
+    fn expect_action_uses_action_name_because_action_is_the_serde_tag() {
+        // The enum is `#[serde(tag = "action")]`, so a field literally called
+        // `action` would collide with the discriminator. Guards against someone
+        // "tidying" the field name back to `action` later.
+        let step = Step::ExpectAction {
+            workflow: "W".into(),
+            action_name: "A".into(),
+            status: "Succeeded".into(),
+            contains: None,
+            timeout_ms: 1,
+        };
+        let text = serde_json::to_string(&step).unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["action"], "expect_action");
+        assert_eq!(v["action_name"], "A");
+    }
+
+    #[test]
+    fn expect_action_label_names_both_the_action_and_its_workflow() {
+        assert_eq!(
+            label_of(&Step::ExpectAction {
+                workflow: "Check-Ignite-Payment-File".into(),
+                action_name: "Send_success_notification".into(),
+                status: "Succeeded".into(),
+                contains: None,
+                timeout_ms: 1,
+            }),
+            "expect Send_success_notification in Check-Ignite-Payment-File"
+        );
+    }
+
+    #[test]
+    fn wait_for_run_defaults_to_expecting_success() {
+        let json = r#"{ "action": "wait_for_run", "workflow": "W" }"#;
+        let Step::WaitForRun { expect_status, .. } = serde_json::from_str(json).unwrap() else {
+            panic!("wrong variant")
+        };
+        assert_eq!(expect_status, "Succeeded");
+    }
+
+    #[test]
+    fn eu_dst_transitions_land_on_a_sunday_at_1am_utc_near_month_end() {
+        use chrono::{Datelike, Timelike};
+        for year in [2024, 2025, 2026, 2027] {
+            for month in [3, 10] {
+                let t = last_sunday_1am_utc(year, month);
+                assert_eq!(t.weekday(), chrono::Weekday::Sun);
+                assert_eq!(t.hour(), 1);
+                assert_eq!(t.month(), month);
+                // Always within the last 7 days of the month.
+                assert!(t.day() > 24, "{t} is not near the end of the month");
+            }
+        }
+    }
+
+    #[test]
+    fn now_cet_is_one_hour_ahead_in_january_and_two_in_july() {
+        use chrono::TimeZone;
+        let jan = chrono::Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
+        let jul = chrono::Utc.with_ymd_and_hms(2026, 7, 15, 12, 0, 0).unwrap();
+        assert_eq!(now_cet(jan).offset().local_minus_utc(), 3600);
+        assert_eq!(now_cet(jul).offset().local_minus_utc(), 7200);
+    }
+
+    #[test]
+    fn builtin_vars_cover_every_documented_placeholder() {
+        let vars = builtin_vars();
+        for key in ["NOW_UTC", "NOW_CET_HH:mm", "NOW_CET_HHmm", "TODAY_YYYYMMDD", "GUID"] {
+            assert!(vars.contains_key(key), "missing {key}");
+        }
+        assert!(chrono::DateTime::parse_from_rfc3339(&vars["NOW_UTC"]).is_ok());
+        assert_eq!(vars["TODAY_YYYYMMDD"].len(), 8);
+    }
+
+    #[tokio::test]
+    async fn prev_step_result_is_available_to_the_step_that_follows() {
+        // Exercises the mechanism through the public run() loop rather than
+        // poking state directly, since that's the actual contract: a step's
+        // detail becomes {{PREV_STEP_RESULT}} for the very next step, with no
+        // explicit `capture` field required.
+        let dir = std::env::temp_dir().join(format!("ais-prevstep-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("local.settings.json"), r#"{ "Values": {} }"#).unwrap();
+
+        let scenario = Scenario {
+            name: "prev-step".to_string(),
+            description: String::new(),
+            vars: Vars::new(),
+            steps: vec![
+                Step::Sleep { ms: 0 },
+                Step::SetSettings {
+                    values: {
+                        let mut v = Vars::new();
+                        v.insert("marker".to_string(), "{{PREV_STEP_RESULT}}".to_string());
+                        v
+                    },
+                },
+            ],
+            source: dir.join("prev-step.json"),
+        };
+        let ctx = test_ctx(&dir);
+        let results = run(&scenario, &ctx, |_| {}).await;
+        assert_eq!(results[1].status, StepStatus::Ok);
+
+        let after: Value =
+            serde_json::from_str(&settings_file::read_local_settings(dir.to_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(after["Values"]["marker"], "slept 0ms");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_failed_step_auto_restores_settings_even_without_a_restore_step() {
+        let dir = std::env::temp_dir().join(format!("ais-autorestore-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("local.settings.json"),
+            r#"{ "Values": { "k": "original" } }"#,
+        )
+        .unwrap();
+
+        let scenario = Scenario {
+            name: "auto-restore".to_string(),
+            description: String::new(),
+            vars: Vars::new(),
+            steps: vec![
+                Step::SetSettings {
+                    values: {
+                        let mut v = Vars::new();
+                        v.insert("k".to_string(), "changed".to_string());
+                        v
+                    },
+                },
+                // No restart_func callback in this test's RunContext, so this
+                // step fails — the scenario never reaches an explicit
+                // restore_settings step, if it even had one.
+                Step::RestartFunc { timeout_ms: 100 },
+            ],
+            source: dir.join("auto-restore.json"),
+        };
+        let ctx = test_ctx(&dir);
+        let results = run(&scenario, &ctx, |_| {}).await;
+
+        assert_eq!(results[1].status, StepStatus::Failed);
+        // The synthetic auto-restore step, appended after the failure.
+        let auto = results.last().unwrap();
+        assert!(auto.label.contains("auto-restore"));
+        assert_eq!(auto.status, StepStatus::Ok);
+
+        let after: Value =
+            serde_json::from_str(&settings_file::read_local_settings(dir.to_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(after["Values"]["k"], "original");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 

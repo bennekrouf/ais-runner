@@ -547,6 +547,31 @@ pub fn smart_default(key: &str) -> String {
             format!("http://localhost:7072/api/{}", name)
         }
 
+        // Base URL of the project's own function app, referenced straight from
+        // a workflow's HTTP action rather than through connections.json —
+        // e.g. `@concat(appsetting('AIS_Functions_BaseUrl'), '/api/Convert…')`.
+        // Same host as the triggerUrl keys above; only the shape differs.
+        k if k.ends_with("_Functions_BaseUrl") || k == "Functions_BaseUrl" => {
+            "http://localhost:7072".into()
+        }
+        // Paired function key. Locally the functions are AuthorizationLevel
+        // ANONYMOUS, so any non-empty value works — but empty would send a
+        // blank `x-functions-key` header, which some hosts reject outright.
+        k if k.ends_with("_Functions_Key") || k == "Functions_Key" => {
+            "placeholder".into()
+        }
+
+        // ── Teams routing ─────────────────────────────────────────────────────
+        // Real channel/group ids are per-tenant and meaningless locally, but a
+        // blank makes every routing branch resolve to the same empty string —
+        // so a routing rule that picks the wrong channel looks identical to one
+        // that picks the right one. A distinct derived value per key keeps the
+        // resolution visible and testable without touching the real tenant.
+        "teams:groupId" => "local-teams-group".into(),
+        k if k.starts_with("teams:channel:") => {
+            format!("local-channel-{}", k.trim_start_matches("teams:channel:").replace(':', "-"))
+        }
+
         // ── Managed API connection URLs ────────────────────────────────────────
         // Must be a valid APIM-style URL: https://…/apim/{api-name}/{conn-name}/
         // The Logic Apps runtime parses this URL to extract api-name and conn-name.
@@ -749,6 +774,44 @@ mod sql_msi_local_tests {
         assert_eq!(
             out["serviceProviderConnections"]["sql"]["parameterValues"]["connectionString"],
             "@appsetting('sql_connectionString')"
+        );
+    }
+
+    #[test]
+    fn function_app_base_url_and_key_get_local_defaults() {
+        // These are referenced straight from a workflow's HTTP action rather
+        // than through connections.json, so they only surface via the
+        // missing-settings scan — but "Auto-stub all" must still produce a
+        // value that actually works locally, not a blank to fill in by hand.
+        assert_eq!(smart_default("AIS_Functions_BaseUrl"), "http://localhost:7072");
+        assert_eq!(smart_default("Functions_BaseUrl"), "http://localhost:7072");
+        // Non-empty: a blank x-functions-key header is rejected by some hosts
+        // even when the function itself is anonymous.
+        assert_eq!(smart_default("AIS_Functions_Key"), "placeholder");
+        assert_eq!(smart_default("Functions_Key"), "placeholder");
+        // The pre-existing per-function keys keep their own shape.
+        assert_eq!(
+            smart_default("azureFunction_ConvertXlsxToTxt_triggerUrl"),
+            "http://localhost:7072/api/ConvertXlsxToTxt"
+        );
+    }
+
+    #[test]
+    fn teams_routing_keys_resolve_to_distinct_local_values() {
+        // Distinctness is the point: with blanks, a rule routing to the wrong
+        // channel is indistinguishable from one routing correctly.
+        assert_eq!(smart_default("teams:groupId"), "local-teams-group");
+        assert_eq!(
+            smart_default("teams:channel:kyriba:alerts"),
+            "local-channel-kyriba-alerts"
+        );
+        assert_eq!(
+            smart_default("teams:channel:ventriks:notifications"),
+            "local-channel-ventriks-notifications"
+        );
+        assert_ne!(
+            smart_default("teams:channel:kyriba:alerts"),
+            smart_default("teams:channel:kyriba:notifications")
         );
     }
 }

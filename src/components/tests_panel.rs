@@ -92,6 +92,36 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
         }
     });
 
+    // `restart_func` needs half a dozen of MainContext's signals — see the
+    // doc comment on `scenario::RestartFn` for why that lives here rather
+    // than in scenario.rs itself. `handle_start` kicks the process off and
+    // returns immediately, so `wait_for_workflows` is what actually waits
+    // for func to be ready.
+    let restart_func: scenario::RestartFn = {
+        let azurite_state = ctx.azurite_state;
+        let func_state = ctx.func_state;
+        let func_proc = ctx.func_proc;
+        let workflows_sig = ctx.workflows;
+        let traced_wfs = ctx.traced_wfs;
+        let cleared_wfs = ctx.cleared_wfs;
+        let log_lines = ctx.log_lines;
+        let dir = props.logic_apps_dir.clone();
+        std::sync::Arc::new(move || {
+            let dir = dir.clone();
+            Box::pin(async move {
+                crate::handlers::func_start::handle_stop(func_state, func_proc, log_lines);
+                crate::handlers::func_start::handle_start(
+                    azurite_state, func_state, func_proc, workflows_sig, traced_wfs, cleared_wfs,
+                    log_lines, dir,
+                );
+                match crate::services::workflows::wait_for_workflows(120).await {
+                    Ok(list) => Ok(format!("func restarted — {} workflow(s) registered", list.len())),
+                    Err(e) => Err(format!("func restarted but its workflows never came back: {e}")),
+                }
+            }) as scenario::BoxFuture
+        })
+    };
+
     let run_ctx = {
         let conns = cosmos_connections.read();
         RunContext {
@@ -99,6 +129,7 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
             cosmos_endpoint: cosmos_endpoint_of(&conns),
             cosmos_key: cosmos_key_of(&conns),
             project_root: project_root.clone(),
+            restart_func: Some(restart_func.clone()),
         }
     };
 
@@ -131,27 +162,88 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
                             "● Create scenario"
                         }
                     }
+                    if !is_recording && !in_review {
+                        button {
+                            class: "btn btn-small btn-run",
+                            disabled: busy.is_some() || list.is_empty(),
+                            title: if busy.is_some() {
+                                "A scenario is already running".to_string()
+                            } else {
+                                "Run every scenario in order — scenarios share the local emulators, so they run one at a time, not in parallel".to_string()
+                            },
+                            onclick: {
+                                let all_scenarios = list.clone();
+                                let run_ctx = run_ctx.clone();
+                                let dir = props.logic_apps_dir.clone();
+                                move |_| {
+                                    let all_scenarios = all_scenarios.clone();
+                                    let run_ctx = run_ctx.clone();
+                                    let dir = dir.clone();
+                                    let mut status = status;
+                                    spawn(async move {
+                                        let total = all_scenarios.len();
+                                        let mut passed = 0usize;
+                                        let mut failed_names: Vec<String> = Vec::new();
+
+                                        for (i, s) in all_scenarios.into_iter().enumerate() {
+                                            let key = s.name.clone();
+                                            running.set(Some(key.clone()));
+                                            status.set(Some((
+                                                format!("Running {}/{total}: {key}", i + 1),
+                                                false,
+                                            )));
+
+                                            match run_one(
+                                                s, run_ctx.clone(), dir.clone(),
+                                                ctx.sb_emu_state, ctx.sb_emu_proc,
+                                                ctx.log_lines, ctx.sb_emu_lines,
+                                                results, status,
+                                            ).await {
+                                                Some(steps) if steps.iter().any(|r| r.status == StepStatus::Failed) => {
+                                                    failed_names.push(key);
+                                                }
+                                                Some(_) => passed += 1,
+                                                // Queue setup failed — status already explains why;
+                                                // still counts against the scenario, not a crash of the sweep.
+                                                None => failed_names.push(key),
+                                            }
+                                        }
+
+                                        running.set(None);
+                                        status.set(Some(if failed_names.is_empty() {
+                                            (format!("✅ Run all: {passed}/{total} scenario(s) passed"), false)
+                                        } else {
+                                            (
+                                                format!(
+                                                    "❌ Run all: {passed}/{total} passed — failed: {}",
+                                                    failed_names.join(", ")
+                                                ),
+                                                true,
+                                            )
+                                        }));
+                                    });
+                                }
+                            },
+                            "▶▶ Run all"
+                        }
+                    }
                     button {
                         class: "btn btn-small",
-                        title: "Re-read .ais-runner/scenarios from disk",
+                        title: "Re-read .ais-runner/scenarios from disk — picks up files added, edited, or removed outside the app",
                         onclick: reload,
                         "↻ Reload"
                     }
                     button {
                         class: "btn btn-small",
-                        title: "Create a starter scenario file and open it in your editor",
+                        title: "Clear every scenario's last-run results from this view (does not touch the scenario files themselves)",
                         onclick: {
-                            let dir = scenario_dir.clone();
                             let mut status = status;
-                            move |_| match scaffold_scenario(&dir) {
-                                Ok(path) => {
-                                    crate::utils::open_in_editor(&path.to_string_lossy());
-                                    status.set(Some((format!("Created {}", path.display()), false)));
-                                }
-                                Err(e) => status.set(Some((e, true))),
+                            move |_| {
+                                results.write().clear();
+                                status.set(None);
                             }
                         },
-                        "+ New scenario"
+                        "🧹 Flush results"
                     }
                 }
             }
@@ -533,47 +625,24 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
                                                 let run_ctx = run_ctx.clone();
                                                 let key = key.clone();
                                                 let dir = dir.clone();
-                                                // Clear previous results so a rerun
-                                                // never shows a mix of two runs.
-                                                results.write().insert(key.clone(), Vec::new());
                                                 running.set(Some(key.clone()));
                                                 spawn(async move {
-                                                    // Queue setup runs before the steps: adding a
-                                                    // queue only edits Config.json, so the emulator
-                                                    // has to come back up before anything can send
-                                                    // to it. See `prepare_queues`.
-                                                    let queues = scenario::queues_to_create(&to_run);
-                                                    if !queues.is_empty() {
-                                                        status.set(Some((format!("Preparing {} queue(s)…", queues.len()), false)));
-                                                        if let Err(e) = prepare_queues(
-                                                            queues, ctx.sb_emu_state, ctx.sb_emu_proc,
-                                                            ctx.log_lines, ctx.sb_emu_lines, dir,
-                                                        ).await {
-                                                            status.set(Some((format!("❌ {key}: queue setup failed — {e}"), true)));
-                                                            running.set(None);
-                                                            return;
-                                                        }
+                                                    if let Some(all) = run_one(
+                                                        to_run, run_ctx, dir,
+                                                        ctx.sb_emu_state, ctx.sb_emu_proc,
+                                                        ctx.log_lines, ctx.sb_emu_lines,
+                                                        results, status,
+                                                    ).await {
+                                                        let failed = all
+                                                            .iter()
+                                                            .filter(|r| r.status == StepStatus::Failed)
+                                                            .count();
+                                                        status.set(Some(if failed == 0 {
+                                                            (format!("✅ {key}: {} step(s) passed", all.len()), false)
+                                                        } else {
+                                                            (format!("❌ {key}: {failed} step(s) failed"), true)
+                                                        }));
                                                     }
-
-                                                    let key_for_step = key.clone();
-                                                    let all = scenario::run(&to_run, &run_ctx, move |r| {
-                                                        results
-                                                            .write()
-                                                            .entry(key_for_step.clone())
-                                                            .or_default()
-                                                            .push(r);
-                                                    })
-                                                    .await;
-
-                                                    let failed = all
-                                                        .iter()
-                                                        .filter(|r| r.status == StepStatus::Failed)
-                                                        .count();
-                                                    status.set(Some(if failed == 0 {
-                                                        (format!("✅ {key}: {} step(s) passed", all.len()), false)
-                                                    } else {
-                                                        (format!("❌ {key}: {failed} step(s) failed"), true)
-                                                    }));
                                                     running.set(None);
                                                 });
                                             }
@@ -650,6 +719,48 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
             } // .settings-scroll
         }
     }
+}
+
+/// Run one scenario end to end: queue setup, then every step, streaming
+/// results into `results` as they land.
+///
+/// Shared by the single-scenario Run button and "Run all" so the two paths
+/// can't drift — a scenario behaves identically alone or as part of a sweep.
+///
+/// `None` means queue setup itself failed before any step ran — `status` is
+/// already set with why. Distinct from `Some(vec![])`, an empty-but-real
+/// result, so a prep failure can never be reported as "0 step(s) passed".
+async fn run_one(
+    scenario_item: Scenario,
+    run_ctx: RunContext,
+    dir: String,
+    sb_emu_state: Signal<ServiceState>,
+    sb_emu_proc: Signal<std::sync::Arc<ManagedProcess>>,
+    log_lines: Signal<Vec<LogLine>>,
+    sb_emu_lines: Signal<Vec<String>>,
+    mut results: Signal<HashMap<String, Vec<StepResult>>>,
+    mut status: Signal<Option<(String, bool)>>,
+) -> Option<Vec<StepResult>> {
+    let key = scenario_item.name.clone();
+    // Clear previous results so a rerun never shows a mix of two runs.
+    results.write().insert(key.clone(), Vec::new());
+
+    let queues = scenario::queues_to_create(&scenario_item);
+    if !queues.is_empty() {
+        status.set(Some((format!("Preparing {} queue(s)…", queues.len()), false)));
+        if let Err(e) = prepare_queues(queues, sb_emu_state, sb_emu_proc, log_lines, sb_emu_lines, dir).await {
+            status.set(Some((format!("❌ {key}: queue setup failed — {e}"), true)));
+            return None;
+        }
+    }
+
+    let key_for_step = key.clone();
+    Some(
+        scenario::run(&scenario_item, &run_ctx, move |r| {
+            results.write().entry(key_for_step.clone()).or_default().push(r);
+        })
+        .await,
+    )
 }
 
 /// Apply a scenario's `create_queue` steps, restarting the emulator once if any
@@ -822,50 +933,6 @@ fn cosmos_key_of(connections: &[CosmosConnection]) -> String {
         .to_string()
 }
 
-/// Write a starter scenario next to any existing ones, without clobbering.
-fn scaffold_scenario(dir: &Path) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-
-    let mut path = dir.join("new-scenario.json");
-    let mut n = 2;
-    while path.exists() {
-        path = dir.join(format!("new-scenario-{n}.json"));
-        n += 1;
-    }
-
-    const STARTER: &str = r#"{
-  "name": "New scenario",
-  "description": "Describe what this proves.",
-  "vars": {
-    "id": "TEST-001"
-  },
-  "steps": [
-    { "action": "drain_queue", "queue": "REPLACE.input.queue" },
-    { "action": "drain_queue", "queue": "REPLACE.output.queue" },
-
-    {
-      "action": "send_message",
-      "queue": "REPLACE.input.queue",
-      "body": "{\"id\":\"{{id}}\"}"
-    },
-
-    { "action": "wait_for_run", "workflow": "REPLACE-Workflow-Name", "timeout_ms": 60000 },
-
-    {
-      "action": "wait_for_message",
-      "queue": "REPLACE.output.queue",
-      "path": "id",
-      "expected": "{{id}}",
-      "min_count": 1
-    }
-  ]
-}
-"#;
-
-    std::fs::write(&path, STARTER).map_err(|e| e.to_string())?;
-    Ok(path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -944,7 +1011,8 @@ mod tests {
         assert!(!step_hint(&Step::Sleep { ms: 2000 }).is_empty());
         assert!(!step_hint(&Step::WaitForRun {
             workflow: "W".into(),
-            timeout_ms: 60_000
+            timeout_ms: 60_000,
+            expect_status: "Succeeded".into(),
         })
         .is_empty());
         assert!(step_hint(&Step::DrainQueue { queue: "q".into() }).is_empty());

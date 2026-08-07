@@ -116,6 +116,7 @@ impl RecorderState {
             self.steps.push(Step::WaitForRun {
                 workflow,
                 timeout_ms: RUN_WAIT_MS,
+                expect_status: "Succeeded".to_string(),
             });
             self.suppress_next_gap = true;
         }
@@ -287,6 +288,8 @@ mod tests {
             workflow: "Invoice".into(),
             trigger: "manual".into(),
             body: String::new(),
+            capture: None,
+            expect_trigger_error: false,
         });
 
         assert_eq!(state.steps.len(), 2);

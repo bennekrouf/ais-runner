@@ -384,6 +384,33 @@ pub async fn trigger_workflow(callback_url: &str, body: &str) -> Result<String, 
     Ok(run_id)
 }
 
+/// Like [`trigger_workflow`], but returns the response body instead of the
+/// run-id header.
+///
+/// For an HTTP-triggered workflow whose own `Response` action *is* the thing
+/// under test — a routing resolver, a lookup — rather than a fire-and-forget
+/// trigger whose side effects are checked elsewhere. `run_trigger_direct`
+/// (the management API's generic trigger-run endpoint) can't be used for
+/// this: it fires the trigger asynchronously and never returns the
+/// workflow's own synchronous response.
+pub async fn trigger_workflow_capture_body(callback_url: &str, body: &str) -> Result<String, String> {
+    let body_val: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+    let resp = http_client()
+        .post(callback_url)
+        .header("Content-Type", "application/json")
+        .json(&body_val)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    if status.is_success() {
+        Ok(text)
+    } else {
+        Err(format!("HTTP {status}: {text}"))
+    }
+}
+
 // ── Run history ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -578,6 +605,68 @@ pub async fn list_actions(workflow: &str, run_id: &str) -> Result<Vec<ActionItem
         .await.map_err(|e| e.to_string())?
         .json().await.map_err(|e| e.to_string())?;
     parse_value_array(body)
+}
+
+/// An action's terminal status plus its inputs/outputs rendered as text.
+#[derive(Debug, Clone)]
+pub struct ActionPayload {
+    pub status: String,
+    /// Inputs and outputs concatenated. Kept as text rather than parsed JSON
+    /// because callers search it for a substring, and because the runtime
+    /// sometimes returns payloads with raw control characters that strict JSON
+    /// parsing rejects.
+    pub text: String,
+}
+
+/// Status and payload of one action in a run.
+///
+/// Handles both shapes the management API uses. A top-level action carries its
+/// own `inputsLink`/`outputsLink`. An action nested inside a `Foreach` carries
+/// neither — its per-iteration payloads live under `/repetitions`, and the
+/// action record itself only reports an aggregate status. Without the
+/// repetition fallback, asserting on anything inside a loop silently sees an
+/// empty payload.
+pub async fn action_payload(workflow: &str, run_id: &str, action: &str) -> Result<ActionPayload, String> {
+    let detail = get_action_detail(workflow, run_id, action).await?;
+    let status = detail
+        .pointer("/properties/status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown")
+        .to_string();
+
+    let mut text = String::new();
+    for field in ["inputs", "outputs"] {
+        if let Some(v) = detail.pointer(&format!("/properties/{field}")) {
+            text.push_str(&v.to_string());
+            text.push('\n');
+        }
+    }
+
+    // Nested-in-Foreach case: pull every iteration's payload instead.
+    if text.trim().is_empty() {
+        let url = format!("{}/workflows/{}/runs/{}/actions/{}/repetitions", BASE, workflow, run_id, action);
+        if let Ok(resp) = reqwest::get(&url).await {
+            if let Ok(body) = resp.text().await {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+                let reps = parsed["value"].as_array().cloned().unwrap_or_default();
+                for rep in reps {
+                    for link in ["inputsLink", "outputsLink"] {
+                        if let Some(uri) = rep.pointer(&format!("/properties/{link}/uri")).and_then(|v| v.as_str()) {
+                            if let Ok(r) = reqwest::get(uri).await {
+                                if let Ok(t) = r.text().await {
+                                    text.push_str(&t);
+                                    text.push('\n');
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(ActionPayload { status, text })
 }
 
 // ── ForEach repetitions ────────────────────────────────────────────────────
