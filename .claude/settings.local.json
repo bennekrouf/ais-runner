@@ -204,7 +204,14 @@
       "Bash(curl -s --max-time 8 http://localhost:7071/runtime/webhooks/workflow/api/management/workflows/AIS-GenericNotif/runs)",
       "Bash(B=http://localhost:7071/runtime/webhooks/workflow/api/management *)",
       "Bash(perl -pi -e 's/^\\(\\\\s*\\)settings_snapshot: std::collections::HashMap::new\\\\\\(\\\\\\),$/$1settings_snapshot: std::collections::HashMap::new\\(\\),\\\\n$1last_run: std::collections::HashMap::new\\(\\),/' src/services/scenario.rs)",
-      "Bash(curl -s --max-time 10 'http://localhost:7071/runtime/webhooks/workflow/api/management/workflows/Check-Ignite-Cashflow-File/runs/08584155684295017537530234904CU00/actions?$expand=outputLinks' -o /private/tmp/claude-501/-Users-mb-code-ais-runner/5074d955-d79e-44e0-bcef-6bd987c66756/scratchpad/r03.json)"
+      "Bash(curl -s --max-time 10 'http://localhost:7071/runtime/webhooks/workflow/api/management/workflows/Check-Ignite-Cashflow-File/runs/08584155684295017537530234904CU00/actions?$expand=outputLinks' -o /private/tmp/claude-501/-Users-mb-code-ais-runner/5074d955-d79e-44e0-bcef-6bd987c66756/scratchpad/r03.json)",
+      "Bash(kill -0 21767)",
+      "Bash(kill -0 31628)",
+      "Bash(awk '{print $5}')",
+      "Bash(chmod +x /tmp/mon4.sh)",
+      "Bash(sysctl -n vm.swapusage)",
+      "Bash(exit 0)",
+      "Bash(echo \"exit=$?\")"
     ]
   }
 }
