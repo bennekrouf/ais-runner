@@ -98,9 +98,51 @@ pub fn belongs_to(owner: &PortOwner, project_dir: &str) -> bool {
     !needle.is_empty() && !owner.detail.is_empty() && owner.detail.contains(needle)
 }
 
+/// Force-kill whatever is *listening* on `port`, and return its pid.
+///
+/// Safety rules, in order:
+///  1. Only the LISTENING socket owner is considered. A bare `lsof -ti :PORT`
+///     also matches *client* connections, and this app keeps pooled keep-alive
+///     connections to the func management APIs — so the unfiltered form can
+///     SIGKILL ais-runner itself.
+///  2. Our own pid is never killed, belt-and-braces: ais-runner never listens
+///     on these ports, so a self match can only be a lookup bug.
+///
+/// Returns `None` when nothing is listening (nothing to do).
+pub fn kill_listener(port: u16) -> Option<u32> {
+    let owner = owner(port)?;
+    if owner.pid == std::process::id() {
+        return None;
+    }
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &owner.pid.to_string()])
+            .output();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &owner.pid.to_string()])
+            .status();
+    }
+    Some(owner.pid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kill_listener_never_targets_our_own_pid() {
+        // Bind a port in-process so *we* are the listener, then assert
+        // kill_listener refuses to act on it (it would kill this test run).
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert_eq!(kill_listener(port), None, "must never kill our own pid");
+        // Still alive and still bound — proof we did not shoot ourselves.
+        assert!(listener.local_addr().is_ok());
+    }
 
     #[test]
     fn belongs_to_matches_same_project_only() {

@@ -21,8 +21,11 @@ pub fn handle_start(
                 LogLevel::Warn,
             );
             tokio::task::spawn_blocking(|| {
-                // pkill is best-effort; ignore errors
-                let _ = std::process::Command::new("pkill").args(["-f", "azurite"]).status();
+                // Kill only whatever actually holds :10000. The previous
+                // `pkill -f azurite` matched any command line containing
+                // "azurite" — including unrelated user processes such as a
+                // `tail -f /tmp/azurite/debug.log` or another project's node.
+                crate::services::port_owner::kill_listener(10000)
             }).await.ok();
             // Wait for port to be freed
             let mut freed = false;

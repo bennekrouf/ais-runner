@@ -54,20 +54,11 @@ pub fn handle_start(
             }
 
             push("Port 7072 in use by a stale instance of this project — reclaiming…".into(), LogLevel::Warn);
+            // Listener-only, never our own pid — the previous `lsof -ti :7072`
+            // form also matched this app's client connections to the Java host
+            // and could SIGKILL ais-runner itself.
             tokio::task::spawn_blocking(|| {
-                if cfg!(target_os = "windows") {
-                    if let Ok(out) = std::process::Command::new("cmd")
-                        .args(["/c", "for /f \"tokens=5\" %a in ('netstat -aon ^| findstr :7072') do taskkill /F /PID %a"])
-                        .output() { let _ = out; }
-                } else if let Ok(out) = std::process::Command::new("lsof")
-                    .args(["-ti", ":7072"])
-                    .output()
-                {
-                    let pids = String::from_utf8_lossy(&out.stdout);
-                    for pid in pids.split_whitespace() {
-                        let _ = std::process::Command::new("kill").args(["-9", pid]).status();
-                    }
-                }
+                crate::services::port_owner::kill_listener(7072)
             }).await.ok();
             // Wait for the port to be released
             for _ in 0..10 {

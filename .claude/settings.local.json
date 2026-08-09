@@ -211,7 +211,16 @@
       "Bash(chmod +x /tmp/mon4.sh)",
       "Bash(sysctl -n vm.swapusage)",
       "Bash(exit 0)",
-      "Bash(echo \"exit=$?\")"
+      "Bash(echo \"exit=$?\")",
+      "Bash(awk '{print $5, $9}')",
+      "Bash(timeout 180 cargo check)",
+      "Bash(timeout 120 cargo check)",
+      "Bash(codesign -v --verbose=2 /Users/mb/code/ais-runner/target/debug/ais-runner)",
+      "Bash(xattr -l /Users/mb/code/ais-runner/target/debug/ais-runner)",
+      "Bash(memory_pressure)",
+      "Bash(timeout 25 docker stats --no-stream --format \"{{.Name}}\\\\t{{.MemUsage}}\\\\t{{.MemPerc}}\")",
+      "Bash(awk '{s+=$1} END {printf \"%.1f GB\\\\n\", s/1048576}')",
+      "Bash(awk '{printf \"%6.0f MB  %s\\\\n\", $1/1024, $2}')"
     ]
   }
 }

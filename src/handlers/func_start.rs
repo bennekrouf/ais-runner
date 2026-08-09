@@ -269,11 +269,13 @@ pub fn handle_start(
 
         push(format!("$ cd {} && func start", func_cwd), LogLevel::Info);
 
-        // Kill stale process on port 7071
-        let _ = std::process::Command::new("/bin/sh")
-            .args(["-c", "lsof -ti :7071 | xargs kill -9 2>/dev/null; true"])
-            .env("PATH", crate::services::process::rich_path())
-            .output();
+        // Reclaim :7071 from a stale func host. Must target the *listener*
+        // only — a bare `lsof -ti :7071` also matches this app's own pooled
+        // keep-alive connections to the func management API, which made
+        // ais-runner SIGKILL itself mid-run.
+        let _ = tokio::task::spawn_blocking(|| {
+            crate::services::port_owner::kill_listener(7071)
+        }).await;
 
         // Pin the func host to the C locale. On machines with a comma-decimal
         // locale (fr/de/…), the Logic Apps job scheduler serializes
