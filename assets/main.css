@@ -4154,6 +4154,37 @@ body.light .wf-chip-liquid { background: #f5f3ff; color: #6d28d9; border-color: 
 .update-banner-dismiss:hover { opacity: 1; }
 
 /* ── Test scenarios tab ──────────────────────────────────────────────────── */
+/* A group is a subfolder under .ais-runner/scenarios — purely a filesystem
+   read, so this header carries no state of its own beyond the Run-group
+   button. Sits a step above .scenario-header visually (heavier background,
+   more margin) so a group of cards reads as one unit at a glance. */
+.scenario-group-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    margin: 18px 0 8px;
+    background: var(--bg2);
+    border-radius: 6px;
+}
+.scenario-group-toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    cursor: pointer;
+    user-select: none;
+}
+.scenario-group-chevron {
+    width: 10px;
+    color: var(--text3);
+    font-size: 11px;
+}
+.scenario-group-name {
+    font-weight: 600;
+    font-size: 13px;
+}
+.scenario-group-header .btn { margin-left: auto; flex: none; }
 .scenario-card {
     border: 1px solid var(--border);
     border-radius: 6px;

@@ -15,13 +15,18 @@
 //! consumed by the Console UI. `stop()` undoes the rewrite and shuts the
 //! server down.
 //!
+//! Driven from the toolbar's "Mock APIs" block — see `handlers::mock_server`.
+//! Because the rewrite lands in `local.settings.json`, which func reads only at
+//! startup, the mock has to be started *before* func for workflows to see it.
+//!
 //! Future phases (recording, side-effect chains, proxy mode for hardcoded
 //! URLs) will plug onto the same contract + event-bus interfaces — no API
 //! changes expected.
 
-// Mock subsystem is implemented but not yet wired into the UI/CLI. Silence
-// dead-code / unused-import warnings at the module root so the build is
-// clean — remove these attributes when the subsystem is hooked up.
+// The lifecycle (scan → serve → rewrite) is driven from the toolbar via
+// `handlers::mock_server`. The contract model still carries fields reserved for
+// later phases — fixtures, recording, passthrough, side effects — which nothing
+// reads yet, so dead-code warnings stay silenced at the module root.
 #![allow(dead_code, unused_imports)]
 
 pub mod contract;

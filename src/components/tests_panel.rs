@@ -59,6 +59,9 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
     // Per-scenario step results, keyed by scenario name.
     let mut results: Signal<HashMap<String, Vec<StepResult>>> = use_signal(HashMap::new);
     let mut running: Signal<Option<String>> = use_signal(|| None);
+    // Group names the user has collapsed. Not persisted — a fresh open of the
+    // Tests view always starts with every group expanded.
+    let mut collapsed_groups: Signal<std::collections::HashSet<String>> = use_signal(std::collections::HashSet::new);
 
     // Which scenario name is being typed into, for the record prompt and the
     // review screen's name field.
@@ -135,6 +138,17 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
 
     let scenario_dir = scenario::scenario_dir(&project_root);
     let list = scenarios.read().clone();
+    // `discover()` sorts group-first, so scenarios sharing a group are always
+    // adjacent — grouping by run of equal group needs no map, and preserves
+    // that order rather than re-sorting it.
+    let mut grouped: Vec<(Option<String>, Vec<Scenario>)> = Vec::new();
+    for s in &list {
+        let g = scenario::group_of(&project_root, s);
+        match grouped.last_mut() {
+            Some((last_g, items)) if *last_g == g => items.push(s.clone()),
+            _ => grouped.push((g, vec![s.clone()])),
+        }
+    }
     let busy = running.read().clone();
     let is_recording = recorder.read().is_recording();
     let in_review = recorder.read().in_review();
@@ -176,52 +190,11 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
                                 let run_ctx = run_ctx.clone();
                                 let dir = props.logic_apps_dir.clone();
                                 move |_| {
-                                    let all_scenarios = all_scenarios.clone();
-                                    let run_ctx = run_ctx.clone();
-                                    let dir = dir.clone();
-                                    let mut status = status;
-                                    spawn(async move {
-                                        let total = all_scenarios.len();
-                                        let mut passed = 0usize;
-                                        let mut failed_names: Vec<String> = Vec::new();
-
-                                        for (i, s) in all_scenarios.into_iter().enumerate() {
-                                            let key = s.name.clone();
-                                            running.set(Some(key.clone()));
-                                            status.set(Some((
-                                                format!("Running {}/{total}: {key}", i + 1),
-                                                false,
-                                            )));
-
-                                            match run_one(
-                                                s, run_ctx.clone(), dir.clone(),
-                                                ctx.sb_emu_state, ctx.sb_emu_proc,
-                                                ctx.log_lines, ctx.sb_emu_lines,
-                                                results, status,
-                                            ).await {
-                                                Some(steps) if steps.iter().any(|r| r.status == StepStatus::Failed) => {
-                                                    failed_names.push(key);
-                                                }
-                                                Some(_) => passed += 1,
-                                                // Queue setup failed — status already explains why;
-                                                // still counts against the scenario, not a crash of the sweep.
-                                                None => failed_names.push(key),
-                                            }
-                                        }
-
-                                        running.set(None);
-                                        status.set(Some(if failed_names.is_empty() {
-                                            (format!("✅ Run all: {passed}/{total} scenario(s) passed"), false)
-                                        } else {
-                                            (
-                                                format!(
-                                                    "❌ Run all: {passed}/{total} passed — failed: {}",
-                                                    failed_names.join(", ")
-                                                ),
-                                                true,
-                                            )
-                                        }));
-                                    });
+                                    spawn(run_many(
+                                        "Run all".to_string(), all_scenarios.clone(), run_ctx.clone(), dir.clone(),
+                                        ctx.sb_emu_state, ctx.sb_emu_proc, ctx.log_lines, ctx.sb_emu_lines,
+                                        results, status, running,
+                                    ));
                                 }
                             },
                             "▶▶ Run all"
@@ -504,7 +477,55 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
                 }
             }
 
-            for scenario_item in list {
+            for (group, items) in grouped {
+                {
+                let is_collapsed = group.as_ref().is_some_and(|g| collapsed_groups.read().contains(g));
+                rsx! {
+                if let Some(group_name) = group.clone() {
+                    div { class: "scenario-group-header",
+                        span {
+                            class: "scenario-group-toggle",
+                            title: if is_collapsed { "Expand" } else { "Collapse" },
+                            onclick: {
+                                let group_name = group_name.clone();
+                                move |_| {
+                                    let mut set = collapsed_groups.write();
+                                    if !set.remove(&group_name) {
+                                        set.insert(group_name.clone());
+                                    }
+                                }
+                            },
+                            span { class: "scenario-group-chevron", if is_collapsed { "▸" } else { "▾" } }
+                            span { class: "scenario-group-name", "📁 {group_name}" }
+                            span { class: "scenario-count", "{items.len()} scenario(s)" }
+                        }
+                        button {
+                            class: "btn btn-small btn-run",
+                            disabled: busy.is_some(),
+                            title: if busy.is_some() {
+                                "A scenario is already running".to_string()
+                            } else {
+                                format!("Run every scenario in '{group_name}', in order")
+                            },
+                            onclick: {
+                                let items = items.clone();
+                                let run_ctx = run_ctx.clone();
+                                let dir = props.logic_apps_dir.clone();
+                                let label = format!("Run group: {group_name}");
+                                move |_| {
+                                    spawn(run_many(
+                                        label.clone(), items.clone(), run_ctx.clone(), dir.clone(),
+                                        ctx.sb_emu_state, ctx.sb_emu_proc, ctx.log_lines, ctx.sb_emu_lines,
+                                        results, status, running,
+                                    ));
+                                }
+                            },
+                            "▶▶ Run group"
+                        }
+                    }
+                }
+                if !is_collapsed {
+                for scenario_item in items.clone() {
                 {
                     let name = scenario_item.name.clone();
                     let step_count = scenario_item.steps.len();
@@ -714,11 +735,71 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
                         }
                     }
                 }
+                } // for scenario_item in items
+                } // if !is_collapsed
+                } // rsx! (group header + cards)
+                } // let is_collapsed block
             }
             }
             } // .settings-scroll
         }
     }
+}
+
+/// Run a list of scenarios in order, one at a time — they share the local
+/// emulators, so running them concurrently would corrupt each other's queues
+/// and containers. `label` distinguishes "Run all" from a specific group's
+/// "Run group" in the final status line.
+///
+/// Doesn't stop at the first failure: a sweep is more useful as a full report
+/// (which of these still pass) than a bisection.
+#[allow(clippy::too_many_arguments)]
+async fn run_many(
+    label: String,
+    scenarios: Vec<Scenario>,
+    run_ctx: RunContext,
+    dir: String,
+    sb_emu_state: Signal<ServiceState>,
+    sb_emu_proc: Signal<std::sync::Arc<ManagedProcess>>,
+    log_lines: Signal<Vec<LogLine>>,
+    sb_emu_lines: Signal<Vec<String>>,
+    results: Signal<HashMap<String, Vec<StepResult>>>,
+    mut status: Signal<Option<(String, bool)>>,
+    mut running: Signal<Option<String>>,
+) {
+    let total = scenarios.len();
+    let mut passed = 0usize;
+    let mut failed_names: Vec<String> = Vec::new();
+
+    for (i, s) in scenarios.into_iter().enumerate() {
+        let key = s.name.clone();
+        running.set(Some(key.clone()));
+        status.set(Some((format!("{label} — {}/{total}: {key}", i + 1), false)));
+
+        match run_one(
+            s, run_ctx.clone(), dir.clone(),
+            sb_emu_state, sb_emu_proc, log_lines, sb_emu_lines,
+            results, status,
+        ).await {
+            Some(steps) if steps.iter().any(|r| r.status == StepStatus::Failed) => {
+                failed_names.push(key);
+            }
+            Some(_) => passed += 1,
+            // Queue setup failed — status already explains why; still counts
+            // against the scenario, not a crash of the sweep.
+            None => failed_names.push(key),
+        }
+    }
+
+    running.set(None);
+    status.set(Some(if failed_names.is_empty() {
+        (format!("✅ {label}: {passed}/{total} scenario(s) passed"), false)
+    } else {
+        (
+            format!("❌ {label}: {passed}/{total} passed — failed: {}", failed_names.join(", ")),
+            true,
+        )
+    }));
 }
 
 /// Run one scenario end to end: queue setup, then every step, streaming

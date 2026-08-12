@@ -21,6 +21,7 @@ pub struct MainContext {
     pub sb_emu_state: Signal<ServiceState>,
     pub cosmos_emu_state: Signal<ServiceState>,
     pub sql_dev_state: Signal<ServiceState>,
+    pub mock_state: Signal<ServiceState>,
 
     // Service processes
     pub azurite_proc: Signal<Arc<ManagedProcess>>,
@@ -29,6 +30,10 @@ pub struct MainContext {
     pub sb_emu_proc: Signal<Arc<ManagedProcess>>,
     pub cosmos_emu_proc: Signal<Arc<ManagedProcess>>,
     pub sql_dev_proc: Signal<Arc<ManagedProcess>>,
+
+    /// Live mock runtime. Not a `ManagedProcess` — the mock server is an
+    /// in-process axum task, not a child process.
+    pub mock_handle: Signal<crate::handlers::mock_server::MockHandle>,
 
     // Log lines
     pub log_lines: Signal<Vec<LogLine>>,
@@ -115,6 +120,7 @@ impl MainContext {
             sb_emu_state: Signal::new(ServiceState::Stopped),
             cosmos_emu_state: Signal::new(ServiceState::Stopped),
             sql_dev_state: Signal::new(ServiceState::Stopped),
+            mock_state: Signal::new(ServiceState::Stopped),
 
             azurite_proc: Signal::new(Arc::new(ManagedProcess::new())),
             func_proc: Signal::new(Arc::new(ManagedProcess::new())),
@@ -122,6 +128,8 @@ impl MainContext {
             sb_emu_proc: Signal::new(Arc::new(ManagedProcess::new())),
             cosmos_emu_proc: Signal::new(Arc::new(ManagedProcess::new())),
             sql_dev_proc: Signal::new(Arc::new(ManagedProcess::new())),
+
+            mock_handle: Signal::new(crate::handlers::mock_server::new_handle()),
 
             log_lines: Signal::new(Vec::new()),
             sb_emu_lines: Signal::new(Vec::new()),

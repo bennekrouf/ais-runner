@@ -26,7 +26,7 @@ use crate::services::{
     workflows,
 };
 use crate::utils::make_push;
-use crate::handlers::{azurite, cosmos_emulator, func_start, sb_emulator, sql_emulator, setup, workflow_select, workflow_run};
+use crate::handlers::{azurite, cosmos_emulator, func_start, mock_server, sb_emulator, sql_emulator, setup, workflow_select, workflow_run};
 use crate::screens::MainContext;
 
 #[derive(Props, Clone, PartialEq)]
@@ -72,6 +72,8 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let sb_emu_state     = ctx.sb_emu_state;
     let cosmos_emu_state = ctx.cosmos_emu_state;
     let sql_dev_state    = ctx.sql_dev_state;
+    let mock_state       = ctx.mock_state;
+    let mock_handle      = ctx.mock_handle;
     let azurite_proc     = ctx.azurite_proc;
     let func_proc        = ctx.func_proc;
     let java_func_proc   = ctx.java_func_proc;
@@ -604,6 +606,18 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     state: cosmos_emu_state.read().clone(),
                     on_start: move |_| cosmos_emulator::handle_start(cosmos_emu_state, cosmos_emu_proc, log_lines),
                     on_stop:  move |_| cosmos_emulator::handle_stop(cosmos_emu_state, cosmos_emu_proc, log_lines),
+                }
+                // Before func: starting the mock rewrites local.settings.json,
+                // and func only reads that file at startup.
+                ServiceBlock {
+                    label: "Mock APIs".to_string(),
+                    cmd:   "scan workflows → serve stubbed HTTP on localhost (start before func)".to_string(),
+                    state: mock_state.read().clone(),
+                    on_start: {
+                        let dir = dir.clone();
+                        move |_| mock_server::handle_start(dir.clone(), mock_state, mock_handle, log_lines)
+                    },
+                    on_stop: move |_| mock_server::handle_stop(mock_state, mock_handle, log_lines),
                 }
                 ServiceBlock {
                     label: "func start".to_string(),

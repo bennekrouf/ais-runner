@@ -4,6 +4,7 @@ pub mod sb_emulator;
 pub mod sql_emulator;
 pub mod func_start;
 pub mod java;
+pub mod mock_server;
 pub mod setup;
 pub mod workflow_select;
 pub mod workflow_run;

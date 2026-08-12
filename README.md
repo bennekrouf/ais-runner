@@ -49,8 +49,31 @@ sudo ./setup-linux.sh && ./ais-runner
 |--------|-------------|
 | **Azurite** | Start / stop / reset the local storage emulator |
 | **SB Emulator** | Start / stop / reset the Azure Service Bus Docker emulator |
+| **Mock APIs** | Scan the workspace for outbound HTTP calls, serve stubbed responses locally, and point URL app settings at them |
 | **▶ func** | `func start` for Node.js Logic Apps (with pre-flight fixes: package.json, connections.json ARM syntax, stub missing settings) |
 | **☕ Java** | `mvn package -DskipTests` then `mvn azure-functions:run` for Java function apps |
+
+### Mock APIs
+
+Starting it scans every `workflow.json`, builds a contract of the outbound HTTP
+calls (using adjacent `Parse_JSON` schemas to generate example responses), serves
+them on a local port, and rewrites the URL-shaped values in
+`local.settings.json` to point there. Stopping restores the file.
+
+Traffic appears in the Console prefixed `🎭`. A call the scan never saw comes
+back `404 (no match)` — that's the signal to add a fixture or re-scan.
+
+**Start it before func.** Logic Apps reads `local.settings.json` once at host
+startup, so a mock started afterwards is invisible to a running host.
+
+Two limits worth knowing:
+
+- Only **app settings** are rewritten. A workflow whose base URL arrives in the
+  message payload, or is built from `variables(...)`, is never redirected — use
+  a `run_process` stub for those (below).
+- When a setting doubles as the AAD `audience` (`"audience": "@{parameters('Jde_Url')}"`),
+  pointing it at localhost also changes what token is requested, and the call
+  fails at auth before reaching the mock.
 
 ### Connections tab
 
@@ -93,6 +116,33 @@ Connects to Azure DevOps via the `az pipelines` CLI:
 Config is stored in `~/.config/ais-runner/config.json` (macOS/Linux) or `%APPDATA%\ais-runner\config.json` (Windows).
 
 ---
+
+## Scenarios — helper processes
+
+A scenario in `.ais-runner/scenarios/*.json` can start a helper process for the
+duration of the run — typically a stub server standing in for an API the mock
+can't intercept:
+
+```json
+{ "action": "run_process",
+  "command": "python3",
+  "args": [".ais-runner/fixtures/my-stub.py", "8899"],
+  "wait_for_port": 8899 }
+```
+
+- `wait_for_port` blocks until something is listening, so the next step doesn't
+  race the stub's startup. If the process exits before binding, the step fails
+  immediately with its exit status rather than waiting out the timeout.
+- Relative `workdir` paths resolve against the project root (default), so a
+  scenario replays in any checkout.
+- The process is killed when the scenario ends — pass **or** fail. Set
+  `"stop_at_end": false` to opt out.
+
+The command runs as-is, with no approval prompt. That matches the rest of the
+tool: **▶ func** and **☕ Java** already execute whatever code the opened
+workspace contains, and both are a single click. What a `run_process` step does
+is at least stated in plain sight — in a reviewable JSON file, and echoed into
+the run log as `started '<command>'`.
 
 ## Service Bus Emulator — known pitfalls
 

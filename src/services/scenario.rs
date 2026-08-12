@@ -210,6 +210,47 @@ pub enum Step {
         expect_trigger_error: bool,
     },
 
+    // ── External process ──────────────────────────────────────────────────
+    /// Start a helper process for the duration of the scenario — typically a
+    /// stub server standing in for an API the workflows call.
+    ///
+    /// Needed because not every external dependency can be intercepted by the
+    /// built-in mock: that one rewrites URL-shaped *app settings*, so a
+    /// workflow whose base URL arrives in the message payload (or is built from
+    /// `variables(...)`) never routes through it. A stub the scenario starts
+    /// itself has no such constraint.
+    ///
+    /// Runs the command as-is, with no approval prompt — deliberately, because
+    /// the toolbar's own `func start` and `mvn package` already execute whatever
+    /// code the opened workspace contains. Gating only this step would add
+    /// friction to the one path that states its command in plain sight (in a
+    /// reviewable JSON file, echoed into the run log) while leaving the broader
+    /// ones open. Visibility is the control here, not a permission.
+    RunProcess {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        /// Relative paths resolve against the project root, same rule as
+        /// `UploadFile`, so a scenario replays in someone else's checkout.
+        #[serde(default)]
+        workdir: Option<String>,
+        #[serde(default)]
+        env: Vars,
+        /// Wait until something is listening here before the step succeeds.
+        /// Without it the next step races the process's startup — the usual
+        /// symptom being a first request that connection-refuses while the
+        /// stub is still binding.
+        #[serde(default)]
+        wait_for_port: Option<u16>,
+        #[serde(default = "default_port_wait")]
+        wait_timeout_ms: u64,
+        /// Kill when the scenario ends. Left on by default: a stub that
+        /// outlives the run holds its port, and the next run fails with a
+        /// bind error that points nowhere near the real cause.
+        #[serde(default = "default_true")]
+        stop_at_end: bool,
+    },
+
     // ── Local settings ────────────────────────────────────────────────────
     /// Write key/value pairs into `local.settings.json`, snapshotting whatever
     /// each key held before (or its absence) so `restore_settings` — or an
@@ -332,6 +373,11 @@ fn default_true() -> bool {
 fn default_expect_status() -> String {
     "Succeeded".to_string()
 }
+fn default_port_wait() -> u64 {
+    // A local stub binds in well under a second; this is a "something is
+    // wrong" ceiling, not an expected wait.
+    15_000
+}
 fn default_func_restart_timeout() -> u64 {
     // Cold func start plus workflow re-registration routinely takes over a
     // minute; the shared default_timeout() (30s) is tuned for emulator polls,
@@ -394,7 +440,12 @@ pub struct StepResult {
 // 2. Persistence
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Read every scenario under `<project_root>/.ais-runner/scenarios`.
+/// Read every scenario under `<project_root>/.ais-runner/scenarios`, including
+/// subfolders.
+///
+/// A subfolder is how a scenario gets grouped in the UI — see [`group_of`] —
+/// so a user organizes a suite by moving files into one with a file manager
+/// or their editor; there's no separate "group" concept to keep in sync.
 ///
 /// A malformed file is reported but doesn't hide the rest — one bad scenario
 /// shouldn't make the whole panel look empty.
@@ -402,24 +453,49 @@ pub fn discover(project_root: &Path) -> (Vec<Scenario>, Vec<String>) {
     let dir = project_root.join(SCENARIO_DIR);
     let mut scenarios = Vec::new();
     let mut errors = Vec::new();
+    walk(&dir, &mut scenarios, &mut errors);
 
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return (scenarios, errors);
+    // Group first (root scenarios — no group — sort first within that), then
+    // name, so the UI can render in this order directly without re-sorting.
+    scenarios.sort_by(|a, b| {
+        let ga = group_of(project_root, a);
+        let gb = group_of(project_root, b);
+        ga.cmp(&gb).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    (scenarios, errors)
+}
+
+fn walk(dir: &Path, scenarios: &mut Vec<Scenario>, errors: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
     };
-
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        match load(&path) {
-            Ok(s) => scenarios.push(s),
-            Err(e) => errors.push(format!("{}: {e}", path.display())),
+        if path.is_dir() {
+            walk(&path, scenarios, errors);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            match load(&path) {
+                Ok(s) => scenarios.push(s),
+                Err(e) => errors.push(format!("{}: {e}", path.display())),
+            }
         }
     }
+}
 
-    scenarios.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    (scenarios, errors)
+/// The scenario's group — its path relative to `.ais-runner/scenarios`, minus
+/// the filename — or `None` for one saved directly at the top level.
+///
+/// Purely a filesystem read: there's no group field in the scenario file
+/// itself, so renaming a folder or moving a file regroups it with no other
+/// bookkeeping to update.
+pub fn group_of(project_root: &Path, scenario: &Scenario) -> Option<String> {
+    let rel = scenario.source.strip_prefix(scenario_dir(project_root)).ok()?;
+    let parent = rel.parent()?;
+    if parent.as_os_str().is_empty() {
+        None
+    } else {
+        Some(parent.to_string_lossy().replace(std::path::MAIN_SEPARATOR, " / "))
+    }
 }
 
 pub fn load(path: &Path) -> Result<Scenario, String> {
@@ -557,6 +633,7 @@ pub async fn run(
         run_floor: chrono::Utc::now(),
         claimed_runs: std::collections::HashSet::new(),
         settings_snapshot: std::collections::HashMap::new(),
+        processes: Vec::new(),
         last_run: std::collections::HashMap::new(),
     };
     let mut results = Vec::new();
@@ -645,6 +722,23 @@ pub async fn run(
         }
     }
 
+    // Helper processes are torn down however the scenario ended — success,
+    // failure, or abort. A stub left holding its port makes the *next* run fail
+    // with a bind error that points nowhere near the real cause.
+    let stop_started = std::time::Instant::now();
+    let stopped = stop_processes(&mut state);
+    if !stopped.is_empty() {
+        let teardown = StepResult {
+            index: results.len(),
+            label: format!("stop {} helper process(es)", stopped.len()),
+            status: StepStatus::Ok,
+            detail: stopped.join(", "),
+            elapsed_ms: stop_started.elapsed().as_millis(),
+        };
+        on_step(teardown.clone());
+        results.push(teardown);
+    }
+
     results
 }
 
@@ -673,6 +767,9 @@ struct RunState {
     /// steps in a row still roll back to the true original rather than the
     /// intermediate value.
     settings_snapshot: std::collections::HashMap<String, Option<String>>,
+    /// Helper processes started by `run_process`, in start order. Torn down by
+    /// `run()` when the scenario ends — however it ends.
+    processes: Vec<SpawnedProcess>,
     /// workflow → the run name the most recent `WaitForRun` matched.
     ///
     /// `ExpectAction` inspects *that* run rather than re-resolving "the latest
@@ -681,6 +778,59 @@ struct RunState {
     /// assertion, and asserting against a different run than the one just
     /// verified is a race that only shows up intermittently.
     last_run: std::collections::HashMap<String, String>,
+}
+
+/// A process started by `run_process`, held so the run can reap it at the end.
+struct SpawnedProcess {
+    label: String,
+    child: std::process::Child,
+    stop_at_end: bool,
+}
+
+/// Kill every `stop_at_end` process, most recent first.
+///
+/// Best-effort by design: teardown runs after both success and failure, and a
+/// process that already exited on its own is the normal case, not an error
+/// worth failing an otherwise-green scenario over.
+fn stop_processes(state: &mut RunState) -> Vec<String> {
+    let mut stopped = Vec::new();
+    // Reverse order so a stub that depends on another outlives it, mirroring
+    // how the scenario started them.
+    for mut proc in state.processes.drain(..).rev() {
+        if !proc.stop_at_end {
+            continue;
+        }
+        match proc.child.try_wait() {
+            // Already gone — nothing to kill, but say so: a stub that exited
+            // early is usually why the steps after it failed.
+            Ok(Some(status)) => stopped.push(format!("{} (already exited: {status})", proc.label)),
+            _ => {
+                let _ = proc.child.kill();
+                let _ = proc.child.wait(); // reap, so it can't zombie
+                stopped.push(proc.label);
+            }
+        }
+    }
+    stopped
+}
+
+/// Poll until something accepts a TCP connection on `port`.
+async fn wait_for_port(port: u16, timeout_ms: u64, child: &mut std::process::Child) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            return Ok(());
+        }
+        // A process that died is never going to bind — fail now with its exit
+        // status rather than burning the whole timeout on a corpse.
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!("process exited before binding port {port} ({status})"));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("nothing listening on port {port} after {timeout_ms}ms"));
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
 }
 
 async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<String, String> {
@@ -914,6 +1064,60 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                     Err(e) => Err(e),
                 }
             }
+        }
+
+        // ── External process ──────────────────────────────────────────────
+        RunProcess {
+            command, args, workdir, env, wait_for_port: port, wait_timeout_ms, stop_at_end,
+        } => {
+            let resolved_dir = workdir
+                .as_deref()
+                .map(|d| resolve_path(&ctx.project_root, d))
+                .unwrap_or_else(|| ctx.project_root.display().to_string());
+
+            let program = crate::services::process::resolve_bin(command);
+            let mut cmd = std::process::Command::new(&program);
+            cmd.args(args)
+                .current_dir(&resolved_dir)
+                // A desktop-launched app inherits a minimal PATH that often
+                // lacks python3/node; rich_path() is what the service handlers
+                // already use to find their binaries.
+                .env("PATH", crate::services::process::rich_path())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            for (k, v) in env {
+                cmd.env(k, v);
+            }
+
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| format!("could not start '{program}': {e}"))?;
+
+            let label = if args.is_empty() {
+                command.clone()
+            } else {
+                format!("{command} {}", args.join(" "))
+            };
+
+            let detail = match port {
+                Some(p) => {
+                    // Register before awaiting, so a bind that never happens
+                    // still leaves the process tracked for teardown.
+                    let outcome = wait_for_port(*p, *wait_timeout_ms, &mut child).await;
+                    state.processes.push(SpawnedProcess {
+                        label: label.clone(), child, stop_at_end: *stop_at_end,
+                    });
+                    outcome?;
+                    format!("started '{label}' — listening on {p}")
+                }
+                None => {
+                    state.processes.push(SpawnedProcess {
+                        label: label.clone(), child, stop_at_end: *stop_at_end,
+                    });
+                    format!("started '{label}'")
+                }
+            };
+            Ok(detail)
         }
 
         // ── Local settings ────────────────────────────────────────────────
@@ -1340,6 +1544,7 @@ pub fn label_of(step: &Step) -> String {
         RunCosmosQuery { container, .. } => format!("query {container}"),
         RunWorkflow { workflow, capture: Some(key), .. } => format!("run {workflow} → {{{{{key}}}}}"),
         RunWorkflow { workflow, .. } => format!("run {workflow}"),
+        RunProcess { command, .. } => format!("run process {command}"),
         SetSettings { values } => format!("set {} setting(s)", values.len()),
         RestoreSettings => "restore settings".to_string(),
         RestartFunc { .. } => "restart func".to_string(),
@@ -1530,12 +1735,13 @@ mod tests {
             { "action": "wait_for_run", "workflow": "W", "expect_status": "Failed" },
             { "action": "wait_for_sql", "database": "aisdev", "sql": "SELECT 1", "min_rows": 1 },
             { "action": "expect", "queue": "q", "expected": "42", "min_count": 1 },
-            { "action": "expect_action", "workflow": "W", "action_name": "Send_notif", "contains": "42" }
+            { "action": "expect_action", "workflow": "W", "action_name": "Send_notif", "contains": "42" },
+            { "action": "run_process", "command": "python3", "args": ["stub.py", "8899"], "wait_for_port": 8899 }
           ]
         }"#;
 
         let scenario: Scenario = serde_json::from_str(json).unwrap();
-        assert_eq!(scenario.steps.len(), 30);
+        assert_eq!(scenario.steps.len(), 31);
 
         // Defaults applied where the document omitted them.
         let Some(Step::CreateCosmosContainer { partition_key, .. }) = scenario
@@ -1632,6 +1838,51 @@ mod tests {
     }
 
     #[test]
+    fn discover_recurses_into_subfolders_and_groups_by_them() {
+        let root = std::env::temp_dir().join(format!("ais-grp-{}", std::process::id()));
+        let scenarios = scenario_dir(&root);
+        std::fs::create_dir_all(scenarios.join("smoke")).unwrap();
+        std::fs::create_dir_all(scenarios.join("regression").join("kyriba")).unwrap();
+
+        let mk = |dir: &Path, name: &str| Scenario {
+            name: name.to_string(),
+            description: String::new(),
+            vars: Default::default(),
+            steps: vec![],
+            source: unique_in(dir, name),
+        };
+        save(&mk(&scenarios, "Root Level")).unwrap();
+        save(&mk(&scenarios.join("smoke"), "Smoke One")).unwrap();
+        save(&mk(&scenarios.join("regression").join("kyriba"), "Nested Two")).unwrap();
+
+        let (found, errors) = discover(&root);
+        assert!(errors.is_empty());
+        assert_eq!(found.len(), 3);
+
+        let groups: Vec<Option<String>> = found.iter().map(|s| group_of(&root, s)).collect();
+        assert_eq!(groups[0], None, "root-level scenario sorts first, ungrouped");
+        assert_eq!(groups.iter().flatten().find(|g| g.as_str() == "smoke"), Some(&"smoke".to_string()));
+        assert!(groups.iter().flatten().any(|g| g == "regression / kyriba"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn group_of_is_none_for_a_scenario_outside_the_project_entirely() {
+        // A defensive case: source paths always come from discover() or
+        // unique_path() in practice, so this can't happen organically, but
+        // group_of must not panic on a source that doesn't share a prefix.
+        let scenario = Scenario {
+            name: "Stray".into(),
+            description: String::new(),
+            vars: Default::default(),
+            steps: vec![],
+            source: PathBuf::from("/somewhere/else/stray.json"),
+        };
+        assert_eq!(group_of(Path::new("/project"), &scenario), None);
+    }
+
+    #[test]
     fn saving_and_reloading_a_scenario_preserves_every_step() {
         let dir = std::env::temp_dir().join(format!("ais-scn-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1699,6 +1950,145 @@ mod tests {
         assert_eq!(summarise("a\nb\nc"), "a (+2 more lines)");
     }
 
+    // ── run_process ─────────────────────────────────────────────────────
+
+    fn sleep_step(secs: &str) -> Step {
+        Step::RunProcess {
+            command: "sleep".to_string(),
+            args: vec![secs.to_string()],
+            workdir: None,
+            env: Vars::new(),
+            wait_for_port: None,
+            wait_timeout_ms: default_port_wait(),
+            stop_at_end: true,
+        }
+    }
+
+    #[test]
+    fn run_process_defaults_are_safe() {
+        // stop_at_end must default ON — a stub left holding its port breaks the
+        // *next* run with a bind error that points nowhere near the cause.
+        let json = r#"{ "action": "run_process", "command": "python3" }"#;
+        let Step::RunProcess { args, stop_at_end, wait_for_port, workdir, .. } =
+            serde_json::from_str(json).unwrap()
+        else {
+            panic!("wrong variant")
+        };
+        assert!(stop_at_end, "processes must be cleaned up unless opted out");
+        assert!(args.is_empty());
+        assert!(wait_for_port.is_none());
+        assert!(workdir.is_none());
+    }
+
+    #[tokio::test]
+    async fn processes_are_killed_when_the_scenario_ends() {
+        let ctx = test_ctx(Path::new("/tmp"));
+        let mut state = test_state();
+
+        // Long enough that it can only be gone because we killed it.
+        exec(&sleep_step("120"), &ctx, &mut state).await.unwrap();
+        assert_eq!(state.processes.len(), 1);
+        let pid = state.processes[0].child.id();
+
+        let stopped = stop_processes(&mut state);
+        assert_eq!(stopped.len(), 1);
+        assert!(state.processes.is_empty());
+
+        // The pid must be reaped, not merely signalled: `kill -0` succeeds on a
+        // zombie, so ask the OS whether any live process still owns it.
+        let alive = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string()])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count() > 1)
+            .unwrap_or(false);
+        assert!(!alive, "pid {pid} survived teardown");
+    }
+
+    #[tokio::test]
+    async fn stop_at_end_false_leaves_the_process_running() {
+        let ctx = test_ctx(Path::new("/tmp"));
+        let mut state = test_state();
+
+        let Step::RunProcess { command, args, workdir, env, wait_for_port, wait_timeout_ms, .. } =
+            sleep_step("120")
+        else {
+            panic!("wrong variant")
+        };
+        let step = Step::RunProcess {
+            command, args, workdir, env, wait_for_port, wait_timeout_ms,
+            stop_at_end: false,
+        };
+
+        exec(&step, &ctx, &mut state).await.unwrap();
+        let pid = state.processes[0].child.id();
+        assert!(stop_processes(&mut state).is_empty(), "opted-out process must not be killed");
+
+        // Clean up ourselves — the runner deliberately didn't.
+        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+    }
+
+    #[tokio::test]
+    async fn waiting_on_a_port_fails_fast_when_the_process_dies() {
+        let ctx = test_ctx(Path::new("/tmp"));
+        let mut state = test_state();
+
+        // `false` exits immediately without binding anything. The step must
+        // notice the exit rather than burn the whole timeout on a corpse.
+        let step = Step::RunProcess {
+            command: "false".to_string(),
+            args: vec![],
+            workdir: None,
+            env: Vars::new(),
+            wait_for_port: Some(59_999),
+            wait_timeout_ms: 30_000,
+            stop_at_end: true,
+        };
+
+        let started = std::time::Instant::now();
+        let err = exec(&step, &ctx, &mut state).await.unwrap_err();
+        assert!(err.contains("exited before binding"), "unexpected message: {err}");
+        assert!(started.elapsed() < Duration::from_secs(10), "should not wait out the timeout");
+        // Still tracked, so teardown reaps it even though the step failed.
+        assert_eq!(state.processes.len(), 1);
+        stop_processes(&mut state);
+    }
+
+    #[tokio::test]
+    async fn a_failing_scenario_still_tears_its_processes_down() {
+        let dir = std::env::temp_dir().join(format!("ais-proc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let scenario = Scenario {
+            name: "teardown".into(),
+            description: String::new(),
+            vars: Default::default(),
+            steps: vec![
+                sleep_step("120"),
+                // Fails: no func host in a unit test.
+                Step::RunWorkflow {
+                    workflow: "nope".into(),
+                    trigger: "manual".into(),
+                    body: String::new(),
+                    capture: None,
+                    expect_trigger_error: false,
+                },
+            ],
+            source: unique_in(&dir, "teardown"),
+        };
+
+        let results = run(&scenario, &test_ctx(&dir), |_| {}).await;
+
+        assert_eq!(results[0].status, StepStatus::Ok, "the process should start");
+        assert_eq!(results[1].status, StepStatus::Failed, "the workflow step should fail");
+        let teardown = results.last().unwrap();
+        assert!(
+            teardown.label.contains("helper process"),
+            "teardown must run after a failure, got: {}", teardown.label,
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     fn test_ctx(project_root: &Path) -> RunContext {
         RunContext {
             sb_host: "127.0.0.1".to_string(),
@@ -1715,6 +2105,7 @@ mod tests {
             run_floor: chrono::Utc::now(),
             claimed_runs: std::collections::HashSet::new(),
             settings_snapshot: std::collections::HashMap::new(),
+            processes: Vec::new(),
             last_run: std::collections::HashMap::new(),
         }
     }
