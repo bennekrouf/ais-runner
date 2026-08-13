@@ -84,6 +84,24 @@ Two limits worth knowing:
 - **Maps** — list `.liquid` / `.xslt` templates, see which workflows use each, test with auto-suggested input, choose DotLiquid or Liquid engine
 - **SFTP** — list detected SFTP connections
 
+### Tests tab
+
+Record and replay multi-step scenarios against the local emulators —
+integration tests without leaving the app:
+
+- **● Create scenario** captures every successful action you take (create a
+  container, send a message, trigger a workflow, …) as a step; review, edit,
+  or drop any of them before saving
+- **▶ Run** replays a saved scenario, step by step, with a live pass/fail per
+  step — including waiting for a triggered workflow's run to finish and
+  asserting on its outcome
+- **▶▶ Run all** / **▶▶ Run group** replay every scenario, or every scenario in
+  a subfolder — drop scenarios into a subfolder under `.ais-runner/scenarios/`
+  and it groups (and collapses) in the UI automatically
+- Scenarios are plain JSON, committed alongside the workflows they test — see
+  [Scenarios](#scenarios) below for the file format and the advanced
+  `run_process` step
+
 ### DevOps tab
 
 Connects to Azure DevOps via the `az pipelines` CLI:
@@ -117,11 +135,18 @@ Config is stored in `~/.config/ais-runner/config.json` (macOS/Linux) or `%APPDAT
 
 ---
 
-## Scenarios — helper processes
+## Scenarios
 
-A scenario in `.ais-runner/scenarios/*.json` can start a helper process for the
-duration of the run — typically a stub server standing in for an API the mock
-can't intercept:
+A scenario is one JSON file — `.ais-runner/scenarios/<name>.json`, or
+`.ais-runner/scenarios/<group>/<name>.json` to group it — describing a
+sequence of steps: set up state (create a container, drain a queue), act
+(send a message, trigger a workflow), then assert (wait for a run to
+succeed, check a message landed, check an action's inputs). The Tests tab
+records, edits, and replays them; see [Tests tab](#tests-tab) above.
+
+One advanced step is worth knowing about directly: `run_process` starts a
+helper process for the duration of the run — typically a stub server
+standing in for an API the mock can't intercept.
 
 ```json
 { "action": "run_process",
@@ -146,33 +171,19 @@ the run log as `started '<command>'`.
 
 ## Service Bus Emulator — known pitfalls
 
-### 1. Namespace name must be exactly `sbemulatorns`
+`Config.json` is generated for you, and a hand-edited or otherwise stale copy
+(wrong namespace name, `LoggingConfig` instead of `Logging`) is detected and
+regenerated automatically — you shouldn't need to touch this file. Two things
+that aren't config bugs and can't be auto-fixed:
 
-```json
-{ "Name": "sbemulatorns" }   ✅
-{ "Name": "my-namespace" }   ❌  NullReferenceException on startup
-```
+- **"Ready" ≠ "AMQP broker ready."** Port `:5672` opens when the container
+  starts, but the broker needs SQL Edge to finish initialising 10–30 s longer.
+  Wait for **"Service Bus emulator ready"** in the console.
+- **SB polling triggers fire on a 1-minute recurrence.** ais-runner waits up
+  to 75 s for one — don't restart before that window expires.
 
-### 2. Logging key is `Logging`, not `LoggingConfig`
-
-```json
-{ "Logging": { "Type": "Console" } }        ✅
-{ "LoggingConfig": { "Type": "console" } }   ❌
-```
-
-### 3. Do not include an empty `Topics` array — omit it entirely
-
-### 4. "Ready" ≠ "AMQP broker ready"
-
-Port `:5672` opens when the container starts, but the AMQP broker needs SQL Edge to finish initialising (10–30 s longer). Wait for **"Service Bus emulator ready"** in the console.
-
-### 5. SB polling triggers fire on a 1-minute recurrence
-
-`receiveQueueMessages` triggers poll every minute. ais-runner waits up to 75 s — don't restart before that window expires.
-
-### 6. MSI connections do not work locally
-
-Use **Settings → Connections** to switch `AzureBlob` connections from `ManagedServiceIdentity` to `connectionString` (`UseDevelopmentStorage=true`).
+MSI connections (`AzureBlob`, `ServiceBus`, …) are also patched to local
+connection-string auth automatically on every **▶ func** start.
 
 ---
 

@@ -327,8 +327,9 @@ networks:
         session = session
     )).collect::<Vec<_>>().join(",\n");
 
-    // "Topics" must be present as an empty array — omitting it leaves a null
-    // reference in the emulator's C# model, causing NullReferenceException on startup.
+    // Deliberately no "Topics" key — an empty array crashes the emulator's C#
+    // model with NullReferenceException on startup just as reliably as a
+    // missing one does. Omitting it entirely is what actually works.
     let config = format!(
         r#"{{
   "UserConfig": {{

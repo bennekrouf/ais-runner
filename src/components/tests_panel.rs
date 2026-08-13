@@ -480,7 +480,15 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
             for (group, items) in grouped {
                 {
                 let is_collapsed = group.as_ref().is_some_and(|g| collapsed_groups.read().contains(g));
+                let group_key = group.clone().unwrap_or_default();
                 rsx! {
+                // Keyed per group, header and cards together: without a stable
+                // key, toggling collapse changes how many nodes this iteration
+                // renders, and Dioxus's positional diffing can reuse a DOM node
+                // from a different group — cards then appear to land in the
+                // wrong place, or under the wrong header, instead of right
+                // below the header whose toggle was just clicked.
+                div { key: "{group_key}",
                 if let Some(group_name) = group.clone() {
                     div { class: "scenario-group-header",
                         span {
@@ -541,7 +549,7 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
                     let root = project_root.clone();
 
                     rsx! {
-                        div { class: "scenario-card",
+                        div { class: "scenario-card", key: "{source.display()}",
                             div { class: "scenario-header",
                                 span { class: "scenario-name", "{name}" }
                                 span { class: "scenario-count", "{step_count} step(s)" }
@@ -737,6 +745,7 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
                 }
                 } // for scenario_item in items
                 } // if !is_collapsed
+                } // div { key: group_key }
                 } // rsx! (group header + cards)
                 } // let is_collapsed block
             }
