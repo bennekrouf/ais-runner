@@ -1,8 +1,9 @@
 use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
 use dioxus::prelude::*;
 
 use crate::components::log_panel::{is_azurite_poll_noise, LogLevel, LogLine};
-use crate::services::{process::{ManagedProcess, ServiceState}, runtime_manager};
+use crate::services::{process::{ManagedProcess, ServiceState}, runtime_manager, workflows::WorkflowItem};
 use crate::utils::{azurite_dir, azurite_log};
 use crate::utils::make_push;
 
@@ -167,11 +168,15 @@ pub fn handle_stop(
 /// - child.kill() returns before the OS releases port 10000 → EADDRINUSE on restart
 /// - func still holds stale table connections after an Azurite data wipe
 pub fn handle_reset(
-    az_state:   Signal<ServiceState>,
-    az_proc:    Signal<Arc<ManagedProcess>>,
-    func_state: Signal<ServiceState>,
-    func_proc:  Signal<Arc<ManagedProcess>>,
-    log_lines:  Signal<Vec<LogLine>>,
+    az_state:    Signal<ServiceState>,
+    az_proc:     Signal<Arc<ManagedProcess>>,
+    func_state:  Signal<ServiceState>,
+    func_proc:   Signal<Arc<ManagedProcess>>,
+    workflows:   Signal<Vec<WorkflowItem>>,
+    traced_wfs:  Signal<HashSet<String>>,
+    cleared_wfs: Signal<HashMap<String, String>>,
+    log_lines:   Signal<Vec<LogLine>>,
+    dir:         String,
 ) {
     let mut push = make_push(log_lines);
     push("⟳ Resetting Azurite — stopping func and Azurite…".into(), LogLevel::Warn);
@@ -230,9 +235,28 @@ pub fn handle_reset(
 
         handle_start(az_state2, az_proc, log_lines);
 
-        push2(
-            "✅ Azurite restarted clean. Now click ▶ Start on func start to recreate run-history tables.".into(),
-            LogLevel::Ok,
+        // Restarting func is not optional follow-up work — the run-history
+        // tables only get recreated when func starts against the fresh
+        // Azurite. Stopping at "Azurite is clean" left the environment in the
+        // exact broken state this button exists to repair, with the fix
+        // one unmentioned click away.
+        let mut ready = false;
+        for _ in 0..40 {
+            if matches!(*az_state2.read(), ServiceState::Running) { ready = true; break; }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        if !ready {
+            push2(
+                "⚠ Azurite did not reach Running — func not restarted. \
+                 Check the log above, then click ⟳ Reset again.".into(),
+                LogLevel::Error,
+            );
+            return;
+        }
+
+        push2("Azurite clean — restarting func to recreate run-history tables…".into(), LogLevel::Ok);
+        crate::handlers::func_start::handle_start(
+            az_state2, func_state2, func_proc, workflows, traced_wfs, cleared_wfs, log_lines, dir,
         );
     });
 }

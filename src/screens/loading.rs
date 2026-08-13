@@ -15,16 +15,21 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
     let dir = props.logic_apps_dir.clone();
     let log_lines: Signal<Vec<(String, LogLevel)>> = use_signal(Vec::new);
     let checks_done: Signal<bool> = use_signal(|| false);
+    // Problems that make a run impossible. Non-empty means the project cannot
+    // be opened — see `services::preflight` for why these are not warnings.
+    let blockers: Signal<Vec<crate::services::preflight::Blocker>> = use_signal(Vec::new);
 
     // Run all startup checks on mount
     use_effect({
         let dir = dir.clone();
         let log_lines = log_lines;
         let checks_done_inner = checks_done;
+        let blockers_inner = blockers;
         move || {
             let dir = dir.clone();
             let mut log_lines = log_lines;
             let mut checks_done_inner = checks_done_inner;
+            let mut blockers_inner = blockers_inner;
             spawn(async move {
                 let mut push_log = |msg: String, level: LogLevel| {
                     let ts = chrono::Local::now().format("%H:%M:%S").to_string();
@@ -80,6 +85,52 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                     for e in &report.errors {
                         push_log(format!("⚠ localize: {}", e), LogLevel::Warn);
                     }
+                }
+
+                // 2. Local-configuration gate. Everything below is a state in
+                //    which func starts but arms no trigger, so a run produces
+                //    no history and no error — hours lost looking in the wrong
+                //    place. Repair what we can, then refuse to open the project
+                //    if anything is left.
+                push_log("Validating local configuration…".to_string(), LogLevel::Info);
+                let d = dir.clone();
+                let (found, sanitized, repairs) = tokio::task::spawn_blocking(move || {
+                    crate::services::preflight::check(&d)
+                })
+                .await
+                .unwrap_or_default();
+
+                for r in &repairs {
+                    push_log(format!("🔧 {r}"), LogLevel::Success);
+                }
+                if !sanitized.recovered.is_empty() {
+                    push_log(
+                        format!("🔧 Recovered {} setting(s) left pointing at a stopped mock server: {}",
+                            sanitized.recovered.len(), sanitized.recovered.join(", ")),
+                        LogLevel::Success,
+                    );
+                }
+                if sanitized.stash_removed > 0 {
+                    push_log(
+                        format!("🔧 Cleared {} leftover __mock_original__ key(s) from a previous run",
+                            sanitized.stash_removed),
+                        LogLevel::Info,
+                    );
+                }
+
+                if found.is_empty() {
+                    push_log("✓ Local configuration is usable".to_string(), LogLevel::Success);
+                } else {
+                    push_log(
+                        format!("✗ {} blocking problem(s) — this project cannot run locally:", found.len()),
+                        LogLevel::Error,
+                    );
+                    for (i, b) in found.iter().enumerate() {
+                        push_log(format!("  {}. {}", i + 1, b.title), LogLevel::Error);
+                        push_log(format!("     why: {}", b.detail), LogLevel::Error);
+                        push_log(format!("     fix: {}", b.fix), LogLevel::Error);
+                    }
+                    blockers_inner.set(found);
                 }
 
                 // 3. Check tools
@@ -177,6 +228,7 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
     });
 
     let has_errors = log_lines.read().iter().any(|(_, level)| *level == LogLevel::Error);
+    let is_blocked = !blockers.read().is_empty();
 
     rsx! {
         div { id: "loading-screen",
@@ -200,7 +252,11 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                 }
 
                 if *checks_done.read() {
-                    if has_errors {
+                    if is_blocked {
+                        div { class: "loading-footer loading-footer-error",
+                            p { "✗ Local configuration is incomplete — opening the project would start func against unreachable endpoints, and no workflow would ever trigger. Fix the {blockers.read().len()} problem(s) listed above, then re-check." }
+                        }
+                    } else if has_errors {
                         div { class: "loading-footer loading-footer-warning",
                             p { "⚠ Some checks failed. See details above. You can still proceed." }
                         }
@@ -218,6 +274,17 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
 
             div { class: "loading-actions",
                 match checks_done() {
+                    // Blocked runs are not offered at all: the button would only
+                    // lead to a func host with no armed trigger, which is the
+                    // failure mode these checks exist to prevent.
+                    true if is_blocked => rsx! {
+                        button {
+                            class: "btn btn-run",
+                            disabled: true,
+                            title: "Resolve the blocking problems listed above first",
+                            "▶ Open Project"
+                        }
+                    },
                     true => rsx! {
                         button {
                             class: "btn btn-run",

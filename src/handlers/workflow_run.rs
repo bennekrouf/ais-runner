@@ -484,8 +484,9 @@ pub async fn poll_for_run(
                                     "❌ No run appeared after {} s. Possible causes: \
                                      (1) workflow health error — check the workflow list for ⚠; \
                                      (2) blob trigger didn't fire — re-upload the file to make it fresh; \
-                                     (3) Azurite table storage not initialised — click ⟳ Reset Azurite and restart func.",
-                                    patience_secs
+                                     (3) Azurite table storage not initialised — {}",
+                                    patience_secs,
+                                    crate::services::workflows::AZURITE_RESET_HINT
                                 ),
                                 LogLevel::Error,
                             );

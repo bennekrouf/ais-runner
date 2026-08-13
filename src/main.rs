@@ -166,6 +166,20 @@ fn main() {
         )
         .init();
 
+    // ── Azurite integrity gate ────────────────────────────────────────────
+    // Before the window opens, not after: a workspace left corrupted by a
+    // previous session otherwise comes up looking fine and only reveals itself
+    // much later, as a test that times out with no run and a "runtime state is
+    // missing" message. Repairing here costs milliseconds (local files only —
+    // nothing is running yet to probe) and the findings are surfaced in the
+    // log panel once the UI mounts.
+    for line in services::azurite_health::startup_check(&utils::azurite_dir()) {
+        let _ = std::fs::write(&crash_log, format!(
+            "[{}] {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), line
+        ));
+        services::azurite_health::record_startup_note(line);
+    }
+
     let webview_data_dir = log_dir.clone();
 
     let _ = std::fs::write(&crash_log, format!(

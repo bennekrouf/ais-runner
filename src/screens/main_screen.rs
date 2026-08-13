@@ -347,6 +347,16 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
         });
     });
 
+    // Surface what the pre-window Azurite check did. It runs before Dioxus
+    // launches, so this is the first moment there is a log panel to say it in.
+    // take_ drains, so a re-render cannot repeat the lines.
+    use_effect(move || {
+        let mut push = make_push(log_lines);
+        for line in crate::services::azurite_health::take_startup_notes() {
+            push(line, LogLevel::Warn);
+        }
+    });
+
     // Probe sproc existence in the local SQL emulator whenever the selected
     // workflow's analysis changes. Uses the first configured SQL connection's
     // resolved database name. Silent on failure (e.g. SQL emulator down).
@@ -556,13 +566,19 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     on_start: move |_| azurite::handle_start(azurite_state, azurite_proc, log_lines),
                     on_stop:  move |_| azurite::handle_stop(azurite_state, azurite_proc, log_lines),
                 }
-                button {
-                    class: "btn btn-warn btn-svc",
-                    title: "Stop func + Azurite, wipe storage, restart Azurite — fixes 'run not recording'",
-                    onclick: move |_| azurite::handle_reset(
-                        azurite_state, azurite_proc, func_state, func_proc, log_lines,
-                    ),
-                    "⟳ Reset"
+                {
+                    let dir_az = dir.clone();
+                    rsx! {
+                        button {
+                            class: "btn btn-warn btn-svc",
+                            title: "Stop func + Azurite, wipe storage, restart both — fixes 'run not recording' and 'runtime state is missing'",
+                            onclick: move |_| azurite::handle_reset(
+                                azurite_state, azurite_proc, func_state, func_proc,
+                                workflows, traced_wfs, cleared_wfs, log_lines, dir_az.clone(),
+                            ),
+                            "⟳ Reset"
+                        }
+                    }
                 }
                 ServiceBlock {
                     label: "SB Emulator".to_string(),
@@ -630,7 +646,10 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                             traced_wfs, cleared_wfs, log_lines, dir.clone(),
                         )
                     },
-                    on_stop: move |_| func_start::handle_stop(func_state, func_proc, log_lines),
+                    on_stop: {
+                        let dir = dir.clone();
+                        move |_| func_start::handle_stop(func_state, func_proc, log_lines, dir.clone())
+                    },
                 }
                 // Clear extension-bundle cache (repairs corrupt-bundle func start failures)
                 button {

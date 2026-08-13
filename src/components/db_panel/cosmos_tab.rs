@@ -321,12 +321,12 @@ pub fn CosmosTab(props: CosmosTabProps) -> Element {
                 button {
                     class: "btn btn-small",
                     style: "flex-shrink:0",
-                    title: "Reset to emulator default (port 1234 is UI only — API is 8081)",
+                    title: "Fill in the emulator default (port 1234 is UI only — API is 8081)",
                     onclick: move |_| {
                         cosmos_adhoc_endpoint.set(cosmos_check::EMULATOR_ENDPOINT.to_string());
                         cosmos_adhoc_result.set(None);
                     },
-                    "↺ Reset"
+                    "↺ Default"
                 }
             }
 
@@ -345,12 +345,12 @@ pub fn CosmosTab(props: CosmosTabProps) -> Element {
                 button {
                     class: "btn btn-small",
                     style: "flex-shrink:0",
-                    title: "Reset to well-known emulator key",
+                    title: "Fill in the well-known emulator key",
                     onclick: move |_| {
                         cosmos_adhoc_key.set(cosmos_check::EMULATOR_KEY.to_string());
                         cosmos_adhoc_result.set(None);
                     },
-                    "↺ Reset"
+                    "↺ Default"
                 }
             }
 

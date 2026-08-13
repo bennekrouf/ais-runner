@@ -220,7 +220,13 @@
       "Bash(memory_pressure)",
       "Bash(timeout 25 docker stats --no-stream --format \"{{.Name}}\\\\t{{.MemUsage}}\\\\t{{.MemPerc}}\")",
       "Bash(awk '{s+=$1} END {printf \"%.1f GB\\\\n\", s/1048576}')",
-      "Bash(awk '{printf \"%6.0f MB  %s\\\\n\", $1/1024, $2}')"
+      "Bash(awk '{printf \"%6.0f MB  %s\\\\n\", $1/1024, $2}')",
+      "Bash(cargo build *)",
+      "Bash(curl -s --max-time 10 'http://localhost:7071/runtime/webhooks/workflow/api/management/workflows/Check-Ignite-Payment-File/runs/08584149627282054987001787093CU00/actions?$expand=outputLinks' -o /private/tmp/claude-501/-Users-mb-code-ais-runner/5074d955-d79e-44e0-bcef-6bd987c66756/scratchpad/p1.json)",
+      "Bash(lsof -iTCP:7072 -sTCP:LISTEN -P)",
+      "Bash(curl -s -o /dev/null -w \"POST /api/ConvertXlsxToTxt -> HTTP %{http_code}\\\\n\" --max-time 5 -X POST http://localhost:7072/api/ConvertXlsxToTxt -H 'Content-Type: application/json' -d '{}')",
+      "Bash(curl -s --max-time 5 http://localhost:7072/admin/functions)",
+      "Bash(curl -s --max-time 10 http://localhost:7071/runtime/webhooks/workflow/api/management/workflows/Check-Kyriba-Consumption/runs/08584149623556954347494934172CU00/actions/Post_AcknowledgementLog_Consumed/repetitions -o /private/tmp/claude-501/-Users-mb-code-ais-runner/5074d955-d79e-44e0-bcef-6bd987c66756/scratchpad/ack.json)"
     ]
   }
 }

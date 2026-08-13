@@ -71,10 +71,22 @@ pub fn handle_start(
 
             // 2. connections.json — fix ARM syntax + patch MSI → local equivalents,
             //    then apply connections.local.json (gitignored per-developer override).
-            //    Done on every func start so the user never has to run Setup manually
-            //    and the file is never committed in patched form (it reverts on git checkout).
+            //    Done on every func start so the user never has to run Setup manually.
+            //
+            //    The runtime reads this file and nothing else, so the patched
+            //    content has to land here. It must not stay: the pristine file is
+            //    snapshotted first and put back by handle_stop, so the working
+            //    tree is only dirty while func is running.
             let conn_path = std::path::Path::new(&d).join("connections.json");
             if conn_path.exists() {
+                match crate::services::connections_snapshot::snapshot(std::path::Path::new(&d)) {
+                    Ok(true)  => push("  ✓ Saved pristine connections.json — restored on stop".into(), LogLevel::Info),
+                    Ok(false) => {}
+                    Err(e)    => push(
+                        format!("  ⚠ Could not snapshot connections.json ({e}) — it will stay patched after stop"),
+                        LogLevel::Warn,
+                    ),
+                }
                 if let Ok(raw) = std::fs::read_to_string(&conn_path) {
                     let syntax_fixed = setup_manager::fix_connections_json(&raw);
                     let fully_fixed  = setup_manager::patch_connections_for_local(&syntax_fixed);
@@ -365,6 +377,8 @@ pub fn handle_start(
                 });
 
                 let mut push4 = make_push(log_lines);
+                // connections.json and the workflow definitions live beside host.json.
+                let health_cwd = func_cwd.clone();
                 spawn(async move {
                     match workflows::wait_for_workflows(120).await {
                         Ok(mut list) => {
@@ -404,14 +418,60 @@ pub fn handle_start(
                                     LogLevel::Warn,
                                 );
                             }
+                            // A workflow bound to a managed API connection (Teams,
+                            // SharePoint, Log Analytics …) is unhealthy on every local
+                            // start and always will be — those connectors are fronted by
+                            // Azure APIM with no emulator to stand in. Telling the user to
+                            // "check endpoints" there sends them after something they
+                            // cannot fix, and buries the warnings that are real.
+                            let managed = crate::services::managed_api::managed_api_names_in(&health_cwd);
                             for wf in list.iter().filter(|w| !w.healthy) {
-                                push4(
-                                    format!("⚠ '{}' loaded but unhealthy: {} — Open Connections and check endpoints, then restart func.",
-                                        wf.name, wf.health_error.as_deref().unwrap_or("connection failed to initialise")),
-                                    LogLevel::Warn,
+                                let apis = crate::services::managed_api::workflow_managed_apis(
+                                    &health_cwd, &wf.name, &managed,
                                 );
+                                if apis.is_empty() {
+                                    push4(
+                                        format!("⚠ '{}' loaded but unhealthy: {} — Open Connections and check endpoints, then restart func.",
+                                            wf.name, wf.health_error.as_deref().unwrap_or("connection failed to initialise")),
+                                        LogLevel::Warn,
+                                    );
+                                } else {
+                                    push4(
+                                        format!("'{}' unhealthy offline — uses managed API connection(s): {}. No local emulator exists for these; expected outside Azure.",
+                                            wf.name, apis.join(", ")),
+                                        LogLevel::Info,
+                                    );
+                                }
                             }
                             let names: Vec<String> = list.iter().map(|w| w.name.clone()).collect();
+
+                            // Registered ≠ provisioned. When the runtime stops
+                            // provisioning part-way through a start it never resumes on
+                            // its own, and the affected workflows look completely normal
+                            // from the management API while being unable to run at all.
+                            // Surfacing it here means the user learns it at startup
+                            // rather than from a test that waits two minutes for a run
+                            // that was never going to happen.
+                            if let Some(gap) = crate::services::azurite_health::provisioning_gap(
+                                &crate::utils::azurite_dir(), &names,
+                            ) {
+                                push4(
+                                    format!("⚠ {} of {} workflow(s) are registered but have no runtime state in Azurite — they cannot run. {}",
+                                        gap.missing.len(), gap.registered,
+                                        crate::services::workflows::AZURITE_RESET_HINT),
+                                    LogLevel::Error,
+                                );
+                                let preview: Vec<&str> = gap.missing.iter()
+                                    .take(5).map(|s| s.as_str()).collect();
+                                push4(
+                                    format!("   not provisioned: {}{}", preview.join(", "),
+                                        if gap.missing.len() > preview.len() {
+                                            format!(", … (+{} more)", gap.missing.len() - preview.len())
+                                        } else { String::new() }),
+                                    LogLevel::Error,
+                                );
+                            }
+
                             workflows_sig.set(list);
                             sweep_run_history(names, &mut traced_wfs, &cleared_wfs).await;
                         }
@@ -444,10 +504,24 @@ pub fn handle_stop(
     mut state: Signal<ServiceState>,
     proc: Signal<Arc<ManagedProcess>>,
     log_lines: Signal<Vec<LogLine>>,
+    dir: String,
 ) {
     let mut push = make_push(log_lines);
     match proc.read().stop() {
         Ok(_)  => { state.set(ServiceState::Stopped); push("func start stopped.".into(), LogLevel::Warn); }
         Err(e) => push(format!("Error: {}", e), LogLevel::Error),
+    }
+
+    // Hand connections.json back the way the developer had it. It is the
+    // committed, cloud-facing file — leaving it patched means a permanently
+    // dirty working tree they never edited and must remember not to commit.
+    let workspace = crate::services::workflows::resolve_logic_apps_dir(&dir);
+    match crate::services::connections_snapshot::restore(&workspace) {
+        Ok(true)  => push("  ✓ Restored connections.json to its committed state".into(), LogLevel::Info),
+        Ok(false) => {}
+        Err(e)    => push(
+            format!("  ⚠ Could not restore connections.json ({e}) — it is still patched for local use"),
+            LogLevel::Warn,
+        ),
     }
 }

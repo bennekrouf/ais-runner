@@ -3,6 +3,17 @@ use std::sync::OnceLock;
 
 const BASE: &str = "http://localhost:7071/runtime/webhooks/workflow/api/management";
 
+/// The one remediation sentence for "Azurite's storage tables are unusable".
+///
+/// Deliberately a single shared constant: this advice used to be written out
+/// three times in three different ways, and one of them sent the user to
+/// "Connections → Blob → Reset Azurite Data" — a control that does not exist.
+/// The real button is ⟳ Reset in the toolbar, and it now performs the whole
+/// sequence itself, so the instruction is one click with no follow-up.
+pub const AZURITE_RESET_HINT: &str =
+    "Click ⟳ Reset next to Azurite in the toolbar — it stops func and Azurite, \
+     wipes the storage, and restarts both.";
+
 /// Shared async HTTP client — constructed once, reused for every request.
 ///
 /// `reqwest::Client` is `Clone`-cheap (Arc under the hood) and connection-pools
@@ -469,8 +480,7 @@ pub async fn list_runs(workflow: &str) -> Result<Vec<RunItem>, String> {
             return Err(format!(
                 "Workflow is defined but its runtime state is missing — \
                  the Logic Apps runtime could not initialise its storage tables in Azurite. \
-                 Stop func, stop Azurite, clear Azurite data (Connections → Blob → Reset Azurite Data), \
-                 then restart both."
+                 {AZURITE_RESET_HINT}"
             ));
         } else {
             return Err(format!(
@@ -506,9 +516,10 @@ pub async fn not_found_hints(workflow: &str) -> Vec<String> {
 
     match in_runtime {
         Some(true) => vec![
-            "  hint: workflow IS registered in the runtime but run history is inaccessible — \
-             Azurite table storage may be corrupted. \
-             Stop func, stop Azurite, clear Azurite data (Connections → Blob → Reset Azurite Data), then restart both.".to_string(),
+            format!(
+                "  hint: workflow IS registered in the runtime but run history is inaccessible — \
+                 Azurite table storage may be corrupted. {AZURITE_RESET_HINT}"
+            ),
         ],
         Some(false) => vec![
             "  hint: workflow is NOT in the runtime registry — a failing connection likely \

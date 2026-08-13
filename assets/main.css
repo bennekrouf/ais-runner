@@ -1,56 +1,76 @@
 /* ══════════════════════════════════════════════
    CSS VARIABLES — dark (default) / light
 ══════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════
+   CSS VARIABLES — dark (default) / light
+
+   Mood: deep purple. Running workflows is a deliberate, high-stakes
+   action, so the surfaces are plum-toned and the accent is violet.
+   Structure is shared with ais-monitor and ais-tracing; only these
+   values differ between the three apps.
+══════════════════════════════════════════════ */
 :root {
-    --bg0:        #0d1117;
-    --bg1:        #161b22;
-    --bg2:        #21262d;
-    --bg3:        #1c2128;
-    --border:     #30363d;
-    --border2:    #21262d;
-    --text1:      #c9d1d9;
-    --text2:      #8b949e;
-    --text3:      #6e7681;
-    --green:      #3fb950;
-    --green-bg:   #238636;
-    --red:        #f85149;
-    --red-bg:     #da3633;
-    --blue:       #58a6ff;
-    --blue-bg:    #1f6feb;
-    --blue-dark:  #1f3a5f;
-    --yellow:     #d29922;
-    --orange:     #e07b39;
-    --live-row:   #0d1f0d;
+    --bg0:        #140a1a;
+    --bg1:        #1f1530;
+    --bg2:        #2d1f42;
+    --bg3:        #271a3a;
+    --border:     #3d2f52;
+    --border2:    #2d1f42;
+    --text1:      #e6d4f5;
+    --text2:      #a88fb8;
+    --text3:      #7d6d8a;
+    --green:      #52d97c;
+    --green-bg:   #2a9d52;
+    --red:        #ff6b8a;
+    --red-bg:     #c93a5a;
+    --blue:       #9d7aff;
+    --blue-bg:    #6b3fb8;
+    --blue-dark:  #2f2050;
+    /* Alias for --blue. Tab underlines and focus rings reference --accent;
+       without this they resolve to nothing and silently drop out. */
+    --accent:     #9d7aff;
+    --yellow:     #e0b040;
+    --warn:       #e0b040;
+    --orange:     #e08a4a;
+    /* Secondary accent, used for Event Grid labels so they read as a
+       different axis from the primary violet. */
+    --cyan:       #4fd0e0;
+    --mono:       'SF Mono', 'Menlo', 'Monaco', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    --font-mono:  var(--mono);
+    --live-row:   #14231a;
     /* env-compare diff colours */
-    --diff-bg:    #1a1500;   /* subtle amber tint on differing rows — dark */
+    --diff-bg:    #241a08;   /* subtle amber tint on differing rows — dark */
     --diff-val:   #e3b341;   /* amber — value present but different */
-    --miss-val:   #6e7681;   /* muted — key missing in that env */
+    --miss-val:   #7d6d8a;   /* muted — key missing in that env */
 }
 
 body.light {
-    --bg0:        #fdf6e3;
-    --bg1:        #eee8d5;
-    --bg2:        #e5dfcc;
-    --bg3:        #dcd6c3;
-    --border:     #d5cebc;
-    --border2:    #e0d9c6;
-    --text1:      #586e75;
-    --text2:      #657b83;
-    --text3:      #93a1a1;
-    --green:      #859900;
-    --green-bg:   #738500;
-    --red:        #dc322f;
-    --red-bg:     #c62d2a;
-    --blue:       #268bd2;
-    --blue-bg:    #2179b8;
-    --blue-dark:  #e0eaf0;
-    --yellow:     #b58900;
-    --orange:     #cb4b16;
-    --live-row:   #eef2db;
+    --bg0:        #faf7ff;
+    --bg1:        #f1ebf9;
+    --bg2:        #e7ddf3;
+    --bg3:        #dcceec;
+    --border:     #cbb9e0;
+    --border2:    #e7ddf3;
+    --text1:      #33244a;
+    --text2:      #574473;
+    --text3:      #8b7aa3;
+    --green:      #1f7a45;
+    --green-bg:   #1b6d3d;
+    --red:        #c02f52;
+    --red-bg:     #a82846;
+    --blue:       #6b3fb8;
+    --blue-bg:    #5c34a0;
+    --blue-dark:  #e6dcf7;
+    --accent:     #6b3fb8;
+    --yellow:     #96700f;
+    --warn:       #96700f;
+    --orange:     #b5602a;
+    --cyan:       #0d7684;
+    --live-row:   #e4f2e6;
     /* env-compare diff colours */
     --diff-bg:    #fdf5d0;   /* pale yellow tint on differing rows — light */
     --diff-val:   #986801;   /* darker amber readable on light bg */
-    --miss-val:   #93a1a1;   /* muted — key missing in that env */
+    --miss-val:   #8b7aa3;   /* muted — key missing in that env */
 }
 
 * {
@@ -212,7 +232,7 @@ body {
 .onboarding-item-name { font-size: 14px; font-weight: 600; color: var(--text1); }
 .onboarding-item-rg { font-size: 11px; color: var(--text3); }
 .onboarding-loading { padding: 40px; text-align: center; color: var(--text3); font-size: 14px; }
-.onboarding-error { padding: 16px; background: rgba(248, 81, 73, 0.1); border: 1px solid var(--red); color: var(--red); border-radius: 6px; font-size: 13px; }
+.onboarding-error { padding: 16px; background: rgba(255,107,138,0.1); border: 1px solid var(--red); color: var(--red); border-radius: 6px; font-size: 13px; }
 .onboarding-actions { margin-top: 10px; display: flex; justify-content: flex-start; }
 .btn-back { background: transparent; border: 1px solid var(--border); color: var(--text2); padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .btn-back:hover { background: var(--bg2); }
@@ -336,7 +356,7 @@ body {
 .loading-footer {
     text-align: center;
     padding: 12px;
-    background: rgba(63, 185, 80, 0.1);
+    background: rgba(82,217,124,0.1);
     border: 1px solid var(--green);
     border-radius: 4px;
     color: var(--green);
@@ -344,9 +364,20 @@ body {
 }
 
 .loading-footer-warning {
-    background: rgba(210, 153, 34, 0.1);
+    background: rgba(224,176,64,0.1);
     border-color: var(--yellow);
     color: var(--yellow);
+}
+
+.loading-footer-error {
+    background: rgba(224,108,117,0.1);
+    border-color: var(--red);
+    color: var(--red);
+}
+
+.btn-run:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
 }
 
 .loading-actions {
@@ -504,8 +535,8 @@ body.light .tool-banner-item code { background: #f0f3f6; color: #9a6700; }
     transition: background 0.12s, border-color 0.12s, opacity 0.12s;
 }
 .service-block-btn:hover { opacity: 0.8; }
-.service-block-btn.svc-stopped:hover  { background: rgba(35,134,54,0.08); border-color: var(--green); }
-.service-block-btn.svc-running  { border-color: var(--green); background: rgba(35,134,54,0.08); }
+.service-block-btn.svc-stopped:hover  { background: rgba(42,157,82,0.08); border-color: var(--green); }
+.service-block-btn.svc-running  { border-color: var(--green); background: rgba(42,157,82,0.08); }
 .service-block-btn.svc-running:hover  { background: rgba(200,50,50,0.1); border-color: var(--red-bg); }
 .service-block-btn.svc-starting { cursor: default; opacity: 0.6; }
 .service-label {
@@ -570,7 +601,7 @@ body.light .tool-banner-item code { background: #f0f3f6; color: #9a6700; }
     transition: background 0.15s, color 0.15s;
 }
 .auto-watch-btn.on {
-    background: rgba(35, 134, 54, 0.18);
+    background: rgba(42,157,82,0.18);
     color: var(--green);
     border-color: var(--green);
     animation: auto-pulse 2s ease-in-out infinite;
@@ -581,8 +612,8 @@ body.light .tool-banner-item code { background: #f0f3f6; color: #9a6700; }
     border-color: var(--border2);
 }
 @keyframes auto-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(35,134,54,0); }
-    50%       { box-shadow: 0 0 0 3px rgba(35,134,54,0.25); }
+    0%, 100% { box-shadow: 0 0 0 0 rgba(42,157,82,0); }
+    50%       { box-shadow: 0 0 0 3px rgba(42,157,82,0.25); }
 }
 
 .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
@@ -1559,7 +1590,7 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
     transition: background 0.12s, border-color 0.12s;
 }
 #outline-resize:hover {
-    background: rgba(88,166,255,0.18);
+    background: rgba(157,122,255,0.18);
     border-left-color: var(--blue);
 }
 
@@ -1764,7 +1795,7 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
 .log-pause-btn.paused {
     color: var(--yellow);
     border-color: var(--yellow);
-    background: rgba(210, 153, 34, 0.08);
+    background: rgba(224,176,64,0.08);
 }
 .log-new-count {
     font-size: 10px;
@@ -1791,7 +1822,7 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
     transition: border-color .15s, width .2s;
 }
 .log-filter-input:focus {
-    border-color: var(--accent, #60a5fa);
+    border-color: var(--accent);
     width: 220px;
 }
 .log-filter-input::placeholder { color: var(--text3); }
@@ -1868,7 +1899,7 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
 .btn-toggle.on {
     color: var(--red);
     border-color: var(--red);
-    background: rgba(248,81,73,0.08);
+    background: rgba(255,107,138,0.08);
     font-weight: 600;
 }
 
@@ -1885,13 +1916,13 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
 .missing-settings-ok {
     padding: 8px 12px; margin: 8px 0;
     color: var(--text3); font-size: 11px;
-    background: rgba(63,185,80,0.05);
-    border: 1px solid rgba(63,185,80,0.20);
+    background: rgba(82,217,124,0.05);
+    border: 1px solid rgba(82,217,124,0.20);
     border-radius: 5px;
 }
 .missing-settings-panel {
-    border: 1px solid rgba(248,81,73,0.40);
-    background: rgba(248,81,73,0.04);
+    border: 1px solid rgba(255,107,138,0.40);
+    background: rgba(255,107,138,0.04);
     border-radius: 6px; padding: 8px 10px; margin: 8px 0;
 }
 .missing-settings-header {
@@ -1952,8 +1983,8 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
 .inline-svc-icon { font-size: 11px; line-height: 1; }
 .inline-svc-stopped {
     color: var(--blue);
-    border-color: rgba(88,166,255,0.5);
-    background: rgba(88,166,255,0.10);
+    border-color: rgba(157,122,255,0.5);
+    background: rgba(157,122,255,0.10);
     cursor: pointer;
 }
 .inline-svc-stopped:hover {
@@ -1963,13 +1994,13 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
 }
 .inline-svc-starting {
     color: var(--yellow);
-    border-color: rgba(210,153,34,0.5);
-    background: rgba(210,153,34,0.10);
+    border-color: rgba(224,176,64,0.5);
+    background: rgba(224,176,64,0.10);
 }
 .inline-svc-running {
     color: var(--green);
-    border-color: rgba(63,185,80,0.5);
-    background: rgba(63,185,80,0.10);
+    border-color: rgba(82,217,124,0.5);
+    background: rgba(82,217,124,0.10);
 }
 
 /* ══════════════════════════════════════════════
@@ -2122,7 +2153,7 @@ body.light .workflow-item.selected .workflow-name { color: var(--blue); }
     font: inherit;
 }
 .appcfg-store:hover  { border-color: var(--text2); }
-.appcfg-store.active { border-color: var(--blue); background: rgba(88,166,255,0.08); }
+.appcfg-store.active { border-color: var(--blue); background: rgba(157,122,255,0.08); }
 .appcfg-store-name     { font-weight: 600; font-size: 13px; }
 .appcfg-store-endpoint { font-size: 10px; color: var(--text3); margin-top: 1px; word-break: break-all; }
 .appcfg-store-refs     { margin-top: 4px; font-size: 10px; color: var(--text2); }
@@ -2897,13 +2928,13 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
 }
 .db-dc-warn {
     color: var(--yellow);
-    border-color: rgba(210,153,34,0.5);
-    background: rgba(210,153,34,0.10);
+    border-color: rgba(224,176,64,0.5);
+    background: rgba(224,176,64,0.10);
 }
 .db-dc-poison {
     color: var(--red);
-    border-color: rgba(248,81,73,0.5);
-    background: rgba(248,81,73,0.10);
+    border-color: rgba(255,107,138,0.5);
+    background: rgba(255,107,138,0.10);
 }
 
 /* ── Azure queue sync badges ────────────────────────────────────────────── */
@@ -3316,7 +3347,7 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
 }
 .status-logs-scroll {
     flex: 1;
-    background: #0d1117;
+    background: var(--bg0);
     border-top: 1px solid var(--border);
     padding: 16px;
     overflow-y: auto;
@@ -3643,8 +3674,8 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
 }
 .devops-pipeline-row.selected {
     background: var(--bg2);
-    color: var(--accent, #60a5fa);
-    border-left-color: var(--accent, #60a5fa);
+    color: var(--accent);
+    border-left-color: var(--accent);
 }
 
 .devops-runs-header {
@@ -3842,7 +3873,7 @@ body.light .dv-running { color: #1a5a9a; }
 .dv-env-running { background: #1a2a3a; color: #60a5fa; border: 1px solid #2a4a6a; }
 .dv-env-pending { background: var(--bg2); color: var(--text3); border: 1px solid var(--border); }
 .dv-env-none    { color: var(--text3); cursor: pointer; font-size: 13px; }
-.dv-env-none:hover { color: var(--accent, #60a5fa); }
+.dv-env-none:hover { color: var(--accent); }
 /* superseded but re-deployable — subtle hover hint */
 .dv-env-redeploy { cursor: pointer; }
 .dv-env-redeploy:hover {
@@ -4122,7 +4153,7 @@ body.light .wf-chip-liquid { background: #f5f3ff; color: #6d28d9; border-color: 
     position: fixed;
     top: 0; left: 0; right: 0;
     z-index: 999;
-    background: var(--blue-bg, #1f6feb);
+    background: var(--blue-bg);
     color: #fff;
     padding: 8px 16px;
     display: flex;

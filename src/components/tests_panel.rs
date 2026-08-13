@@ -112,7 +112,7 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
         std::sync::Arc::new(move || {
             let dir = dir.clone();
             Box::pin(async move {
-                crate::handlers::func_start::handle_stop(func_state, func_proc, log_lines);
+                crate::handlers::func_start::handle_stop(func_state, func_proc, log_lines, dir.clone());
                 crate::handlers::func_start::handle_start(
                     azurite_state, func_state, func_proc, workflows_sig, traced_wfs, cleared_wfs,
                     log_lines, dir,

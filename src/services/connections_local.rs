@@ -64,6 +64,13 @@ fn merge_in(base: &mut serde_json::Value, ov: &serde_json::Value, touched: &mut 
     match (base, ov) {
         (serde_json::Value::Object(b), serde_json::Value::Object(o)) => {
             for (k, ov_val) in o {
+                // `_`-prefixed keys are documentation, not overrides — the
+                // scaffolded file carries `_readme` and `_examples`, and
+                // merging those would write commentary into the project's
+                // connections.json.
+                if k.starts_with('_') {
+                    continue;
+                }
                 if ov_val.is_null() {
                     // Sentinel: delete this key from the result.
                     if b.remove(k).is_some() { *touched += 1; }
@@ -123,9 +130,9 @@ impl OverrideSummary {
 /// one doesn't already exist, and make sure `.gitignore` mentions it. Returns
 /// the path of the file (created or pre-existing). The template enumerates
 /// every connection in the committed `connections.json` so the user can pick
-/// and choose what to override without having to re-discover the shape — but
-/// every entry is wrapped in a `/* */`-style JSON comment via `__comment` keys
-/// the runtime ignores. The user uncomments by deleting the wrapping key.
+/// and choose what to override without having to re-discover the shape. Those
+/// placeholders sit under `_examples`; `_`-prefixed keys are documentation and
+/// are skipped by the merge, so the user activates one by lifting it out.
 pub fn scaffold_override_file(logic_apps_dir: &Path) -> Result<std::path::PathBuf, String> {
     let target = logic_apps_dir.join(FILENAME);
     if !target.exists() {
@@ -149,15 +156,11 @@ fn build_template(logic_apps_dir: &Path) -> String {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
 
-    let mut header = String::from(concat!(
-        "// connections.local.json — developer-local overrides for connections.json.\n",
-        "// Applied at func start. Gitignored. Same shape as connections.json,\n",
-        "// every key optional. `null` means \"delete this entry from the merged result\".\n",
-        "//\n",
-        "// JSON does not allow comments, so the wrapper below uses a `_examples`\n",
-        "// key the runtime ignores. Lift entries OUT of `_examples` to activate them.\n\n",
-    ));
-
+    // No `//` comment header: `load_overrides` parses this file with strict
+    // serde_json, so a commented template scaffolds a file the loader then
+    // rejects as invalid JSON — the scaffold has to produce something that
+    // round-trips through our own reader. The guidance lives in `_readme`
+    // instead, which is data and survives parsing.
     let mut examples = serde_json::Map::new();
     if let Some(existing) = existing {
         if let Some(sp) = existing.get("serviceProviderConnections").and_then(|v| v.as_object()) {
@@ -185,12 +188,18 @@ fn build_template(logic_apps_dir: &Path) -> String {
     }
 
     let body = serde_json::json!({
+        "_readme": [
+            "connections.local.json — developer-local overrides for connections.json.",
+            "Applied at func start. Gitignored. Same shape as connections.json, every key optional.",
+            "null means \"delete this entry from the merged result\".",
+            "Lift an entry OUT of _examples to activate it. Keys starting with _ are ignored."
+        ],
         "serviceProviderConnections": {},
         "_examples": examples,
     });
-    header.push_str(&serde_json::to_string_pretty(&body).unwrap_or_default());
-    header.push('\n');
-    header
+    let mut out = serde_json::to_string_pretty(&body).unwrap_or_default();
+    out.push('\n');
+    out
 }
 
 /// Append the override filename to `.gitignore` if it isn't already there.
@@ -314,11 +323,11 @@ mod tests {
         let path = scaffold_override_file(dir).unwrap();
         assert!(path.exists());
         let text = std::fs::read_to_string(&path).unwrap();
-        // Comments before the JSON body
-        assert!(text.starts_with("//"));
-        // Strip the leading // comments so we can parse the rest
-        let json_start = text.find('{').unwrap();
-        let body: serde_json::Value = serde_json::from_str(&text[json_start..]).unwrap();
+        // Parses as-is: no comment header to strip. The previous template led
+        // with `//` lines, which made the file unreadable to load_overrides.
+        let body: serde_json::Value = serde_json::from_str(&text)
+            .expect("scaffolded template must be valid JSON");
+        assert!(body.get("_readme").is_some(), "guidance should ship as data");
         // Examples list both seeded connections
         let examples = &body["_examples"]["serviceProviderConnections"];
         assert!(examples.get("ais_sql").is_some());
@@ -352,5 +361,41 @@ mod tests {
         assert_eq!(s.service_provider, 2);
         assert_eq!(s.managed_api,      1);
         assert_eq!(s.total(),          3);
+    }
+
+    #[test]
+    fn the_scaffolded_file_round_trips_through_our_own_loader() {
+        // Regression: the template used to start with `//` comment lines while
+        // load_overrides parses with strict serde_json — so scaffolding
+        // produced a file the very next check rejected as invalid JSON.
+        let dir = std::env::temp_dir().join(format!("ais-cl-rt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("connections.json"),
+            r#"{ "serviceProviderConnections": { "ais_sql": {}, "ais_blob": {} } }"#,
+        )
+        .unwrap();
+
+        scaffold_override_file(&dir).unwrap();
+        let loaded = load_overrides(&dir).expect("scaffolded file must parse");
+        assert!(loaded.is_some(), "scaffolded file must not read as absent");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn documentation_keys_are_never_merged_into_connections_json() {
+        // The scaffold ships `_readme` / `_examples`; merging them would write
+        // commentary into the project's own connections.json.
+        let mut base = serde_json::json!({ "serviceProviderConnections": { "ais_sql": { "a": 1 } } });
+        let ov = serde_json::json!({
+            "_readme":  ["ignore me"],
+            "_examples": { "serviceProviderConnections": { "ais_sql": { "a": 999 } } },
+            "serviceProviderConnections": { "ais_sql": { "a": 2 } }
+        });
+        apply_overrides(&mut base, &ov);
+
+        assert!(base.get("_readme").is_none());
+        assert!(base.get("_examples").is_none());
+        assert_eq!(base["serviceProviderConnections"]["ais_sql"]["a"], 2);
     }
 }
