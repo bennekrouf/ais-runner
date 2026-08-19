@@ -1,9 +1,6 @@
-mod components;
-mod handlers;
-mod screens;
-mod services;
-mod update_check;
-mod utils;
+// The module tree lives in `src/lib.rs` so the headless runner
+// (`src/bin/ais-test.rs`) shares one copy of the service layer.
+use ais_runner::{screens, services, update_check, utils};
 
 use dioxus::prelude::*;
 use dioxus::desktop::LogicalSize;

@@ -17,8 +17,16 @@
 //!     to their local target, and the connection-string keys the patch now
 //!     references are stubbed with local defaults.
 //!
-//! `connections.json` is left patched on disk exactly as `func start` already
-//! does (it reverts on `git checkout`); `local.settings.json` is gitignored.
+//! This runs on the loading screen, on every project open — so it is
+//! **read-only with respect to `connections.json`**. That file is committed
+//! and cloud-facing; patching it here would leave a dirty working tree the
+//! moment a project is opened, even if the user never starts anything. The
+//! MSI analysis is done on an in-memory patch, and `func start` applies the
+//! real one (bracketed by `connections_snapshot` save/restore) when the
+//! runtime actually needs it.
+//!
+//! `local.settings.json` *is* written here — it is gitignored, so stubbing
+//! local defaults into it costs the user nothing.
 
 use std::collections::HashMap;
 
@@ -99,14 +107,15 @@ pub fn localize(logic_apps_dir: &str) -> LocalizeReport {
         let before: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
         let msi_before = msi_connections(&before);
 
+        // Computed in memory only — never written here. This runs on the
+        // loading screen, whose job is to report, not to mutate: writing would
+        // dirty a committed, cloud-facing file the moment a project is opened,
+        // even if the user never starts func. `func start` applies the same
+        // patch itself (with snapshot/restore around it), so the file on disk
+        // is correct by the time the runtime actually reads it.
         let patched = setup_manager::patch_connections_for_local(
             &setup_manager::fix_connections_json(&raw),
         );
-        if patched != raw {
-            if let Err(e) = std::fs::write(&conn_path, &patched) {
-                report.errors.push(format!("write connections.json: {e}"));
-            }
-        }
 
         let after: serde_json::Value = serde_json::from_str(&patched).unwrap_or_default();
         let msi_after = msi_connections(&after);
@@ -261,6 +270,8 @@ mod localize_e2e {
             }
         })).unwrap()).unwrap();
 
+        let conn_before = std::fs::read_to_string(dir.join("connections.json")).unwrap();
+
         let r = localize(base);
 
         // MSI blob + sql localized; keyvault can't be and is flagged.
@@ -275,17 +286,24 @@ mod localize_e2e {
         let cs = settings["Values"]["SomeDb_cs"].as_str().unwrap();
         assert!(cs.contains("localhost,1433"), "cloud SQL should be redirected local, got: {cs}");
 
-        // connections.json on disk: blob + sql are no longer MSI.
-        let conn: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("connections.json")).unwrap()).unwrap();
-        assert_eq!(conn["serviceProviderConnections"]["IgniteBlob"]["parameterSetName"], "connectionString");
-        assert_eq!(conn["serviceProviderConnections"]["ais-sql"]["parameterSetName"], "connectionString");
-        // keyvault stays MSI (nothing we can safely do) — surfaced in the report.
+        // connections.json on disk is UNTOUCHED. It is committed and
+        // cloud-facing; opening a project must never dirty it. The MSI
+        // analysis above came from an in-memory patch, and `func start`
+        // applies the real one under snapshot/restore.
+        let on_disk = std::fs::read_to_string(dir.join("connections.json")).unwrap();
+        assert_eq!(on_disk, conn_before, "localize() must not write connections.json");
+        let conn: serde_json::Value = serde_json::from_str(&on_disk).unwrap();
+        assert_eq!(conn["serviceProviderConnections"]["IgniteBlob"]["parameterSetName"], "ManagedServiceIdentity");
+        assert_eq!(conn["serviceProviderConnections"]["ais-sql"]["parameterSetName"], "ManagedServiceIdentity");
         assert_eq!(conn["serviceProviderConnections"]["vault"]["parameterSetName"], "ManagedServiceIdentity");
 
-        // Idempotent: a second pass finds nothing to do.
+        // Pure analysis: a second pass reports the same thing rather than
+        // going quiet, because nothing was mutated to make it quiet.
         let r2 = localize(base);
-        assert!(r2.msi_localized.is_empty());
+        assert_eq!(r2.msi_localized, r.msi_localized);
+        assert_eq!(r2.msi_unresolved, r.msi_unresolved);
+        // local.settings.json *was* written, so its cloud value is now local
+        // and there is nothing left to redirect.
         assert!(r2.settings_localized.is_empty());
     }
 

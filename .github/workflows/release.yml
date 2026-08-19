@@ -103,7 +103,7 @@ jobs:
           key: release-macos-arm64-cargo-${{ hashFiles('Cargo.lock') }}
 
       # ── Sanity-check required signing secrets up front ─────────────────────
-      - name: Verify macOS signing secrets are present
+      - name: Check macOS signing secrets
         env:
           MACOS_CERTIFICATE:     ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
@@ -117,15 +117,23 @@ jobs:
           [ -z "${MACOS_CERTIFICATE:-}"     ] && missing+=("MACOS_CERTIFICATE")
           [ -z "${MACOS_CERTIFICATE_PWD:-}" ] && missing+=("MACOS_CERTIFICATE_PWD")
           [ -z "${KEYCHAIN_PASSWORD:-}"     ] && missing+=("KEYCHAIN_PASSWORD")
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::Missing GitHub Actions secrets: ${missing[*]}"
-            echo "Add them in: Settings → Secrets and variables → Actions"
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "All 7 macOS signing secrets present."
+            echo "HAVE_MAC_SECRETS=true" >> "$GITHUB_ENV"
+          elif [ ${#missing[@]} -eq 7 ]; then
+            echo "::warning::No macOS signing secrets configured — skipping the macOS \
+          build. The release will still ship the other platforms. Add the 7 secrets \
+          in Settings → Secrets and variables → Actions to include a signed .dmg."
+            echo "HAVE_MAC_SECRETS=false" >> "$GITHUB_ENV"
+          else
+            echo "::error::Incomplete macOS signing configuration. Missing: ${missing[*]}"
+            echo "Set all seven, or none at all to skip the macOS build."
             exit 1
           fi
-          echo "All 7 macOS signing secrets present."
 
       # ── Import Developer ID cert into a temporary keychain ─────────────────
       - name: Set up signing keychain
+        if: env.HAVE_MAC_SECRETS == 'true'
         env:
           MACOS_CERTIFICATE:     ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
@@ -156,6 +164,7 @@ jobs:
 
       # ── Sign the CLI binary with hardened runtime ──────────────────────────
       - name: Codesign binary
+        if: env.HAVE_MAC_SECRETS == 'true'
         run: |
           set -euo pipefail
           BIN=target/aarch64-apple-darwin/release/ais-runner
@@ -168,6 +177,7 @@ jobs:
       # ── Generate icon.icns from assets/icon.png (1024x1024 source) ─────────
       # No-op if the PNG is absent; bundle just ships icon-less in that case.
       - name: Generate macOS .icns
+        if: env.HAVE_MAC_SECRETS == 'true'
         run: |
           set -euo pipefail
           if [ ! -f assets/icon.png ]; then
@@ -191,6 +201,7 @@ jobs:
 
       # ── Wrap binary in .app bundle, build signed + notarized + stapled DMG ─
       - name: Build .app + .dmg
+        if: env.HAVE_MAC_SECRETS == 'true'
         run: |
           set -euo pipefail
           BIN=target/aarch64-apple-darwin/release/ais-runner
@@ -257,11 +268,12 @@ jobs:
             > dist/ais-runner-macos-arm64.dmg.sha256
 
       - name: Clean up keychain
-        if: always()
+        if: always() && env.HAVE_MAC_SECRETS == 'true'
         run: |
           security delete-keychain "$KEYCHAIN_PATH" || true
 
       - name: Upload artifact
+        if: env.HAVE_MAC_SECRETS == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ais-runner-macos-arm64
@@ -426,6 +438,27 @@ jobs:
           sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
           echo "Package: $NAME.tar.gz ($(du -sh "$NAME.tar.gz" | cut -f1))"
 
+      # The headless scenario runner ships as a bare binary alongside the GUI
+      # tarball: CI pipelines curl exactly one file, and unpacking a tarball to
+      # reach it would be pure ceremony.
+      #
+      # NOTE: it currently links libwebkit2gtk, because it shares the crate's
+      # lib target with the GUI. Agents running it need
+      # `libwebkit2gtk-4.1-0` installed. Feature-gating the UI modules out of
+      # the lib would remove that requirement.
+      - name: Package ais-test runner
+        run: |
+          BIN="target/x86_64-unknown-linux-gnu/release/ais-test"
+          if [ ! -f "$BIN" ]; then
+            echo "::error::$BIN not found — did the ais-test bin target build?"
+            exit 1
+          fi
+          cp "$BIN" ais-test-linux-x64
+          chmod +x ais-test-linux-x64
+          sha256sum ais-test-linux-x64 > ais-test-linux-x64.sha256
+          echo "ais-test: $(du -sh ais-test-linux-x64 | cut -f1)"
+          ldd ais-test-linux-x64 | grep -i webkit || echo "(no webkit linkage)"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -433,10 +466,14 @@ jobs:
           path: |
             ais-runner-linux-x86_64.tar.gz
             ais-runner-linux-x86_64.tar.gz.sha256
+            ais-test-linux-x64
+            ais-test-linux-x64.sha256
 
   release:
     needs: [build-mac, build-windows, build-linux]
-    if: always() && !failure() && !cancelled()
+    # Publish whatever built: one platform failing must not withhold the
+    # others. A run with no artifacts at all is caught below.
+    if: always() && !cancelled()
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -448,6 +485,18 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      # Every build failed: a release with no downloads is worse than a red
+      # run, so stop rather than publishing an empty tag.
+      - name: Require at least one artifact
+        run: |
+          set -euo pipefail
+          count=$(find artifacts -type f | wc -l | tr -d ' ')
+          echo "Artifacts staged: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No platform artifacts were produced — nothing to release."
+            exit 1
+          fi
 
       - name: Flatten artifacts + generate latest.json
         env:

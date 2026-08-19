@@ -25,7 +25,7 @@ const MSSQL_PASSWORD: &str = "AisRunner_Emulator1!";
 /// The config is a *merge* of workflow-detected queues and whatever is already in
 /// Config.json, so the list grows monotonically across runs and across projects —
 /// it will silently cross this limit sooner or later. Cap it here instead.
-const SB_EMULATOR_MAX_ENTITIES: usize = 50;
+pub const SB_EMULATOR_MAX_ENTITIES: usize = 50;
 
 /// Returns the working directory for compose + config files.
 ///
@@ -157,7 +157,7 @@ enum DedupAction {
 /// enforces internally: `^[A-Za-z0-9]$|^[A-Za-z0-9][\w-\.\/]*[A-Za-z0-9]$`.
 /// Must start and end with an alphanumeric; interior chars may be letters, digits,
 /// underscores, hyphens, periods, or slashes.
-fn is_valid_sb_queue_name(name: &str) -> bool {
+pub fn is_valid_sb_queue_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     if bytes.is_empty() { return false; }
     let is_alnum = |b: u8| b.is_ascii_alphanumeric();
