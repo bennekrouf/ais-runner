@@ -6,10 +6,22 @@ use crate::components::log_panel::{LogLevel, LogLine};
 use crate::services::{
     connection_diag,
     process::{ManagedProcess, ServiceState},
+    runtime_manager,
     setup_manager,
+    system_check::FUNC_INSTALL_HINT,
     workflows::{self, WorkflowItem},
 };
 use crate::utils::{make_push, sweep_run_history};
+
+/// The npm package for the Core Tools is a stub whose postinstall downloads and
+/// unzips the real CLI. When that download is interrupted, npm still links a
+/// `func` onto PATH — so the tool resolves fine and then dies on every
+/// invocation trying to unpack a zip that was never written. Nothing about the
+/// message points at the install, hence the translation.
+fn is_broken_core_tools_install(line: &str) -> bool {
+    line.contains("Error extracting zip file")
+        || (line.contains("Azure.Functions.Cli") && line.contains("no such file or directory"))
+}
 
 pub fn handle_start(
     azurite_state: Signal<ServiceState>,
@@ -43,6 +55,22 @@ pub fn handle_start(
         push(
             format!("⚠ local.settings.json not found in {} — func start requires it.", func_cwd),
             LogLevel::Warn,
+        );
+        return;
+    }
+
+    // `resolve_tool` falls back to the bare name only after probing the sidecar
+    // bin/, every well-known install dir, and `which` — so a bare "func" back
+    // means it genuinely is not installed, not that a Finder-launched app got a
+    // thin PATH. Say so here; otherwise the only feedback is the spawn's
+    // `No such file or directory (os error 2)` several seconds later.
+    if runtime_manager::resolve_tool("func") == "func" {
+        push(
+            format!(
+                "❌ Azure Functions Core Tools (`func`) not found. Install it with: {}",
+                FUNC_INSTALL_HINT,
+            ),
+            LogLevel::Error,
         );
         return;
     }
@@ -315,7 +343,25 @@ pub fn handle_start(
                     let mut bundle_warned = false;
                     let mut prebuild_warned = false;
                     let mut js_warned = false;
+                    let mut core_tools_warned = false;
                     while let Some((line, is_err)) = rx.recv().await {
+                        // `func` is on PATH but its payload never downloaded —
+                        // a half-finished npm install, not a workflow problem.
+                        if is_broken_core_tools_install(&line) {
+                            push3(line.clone(), LogLevel::Error);
+                            if !core_tools_warned {
+                                core_tools_warned = true;
+                                push3(
+                                    format!(
+                                        "❌ The Core Tools install is incomplete — `func` is on PATH but the CLI it \
+                                         downloads at install time is missing. Reinstall with: {}",
+                                        FUNC_INSTALL_HINT,
+                                    ),
+                                    LogLevel::Error,
+                                );
+                            }
+                            continue;
+                        }
                         if line.contains("functionConnections") && line.contains("cannot be parsed") {
                             if !function_conn_warned {
                                 function_conn_warned = true;
@@ -493,7 +539,16 @@ pub fn handle_start(
             }
             Err(e) => {
                 func_state.set(ServiceState::Stopped);
-                push(format!("func start error: {}", e), LogLevel::Error);
+                // A NotFound here means func vanished between the check above and
+                // the spawn (uninstalled mid-session, or a broken npm shim).
+                let hint = if e.contains("No such file or directory")
+                    || e.contains("cannot find the file")
+                {
+                    format!(" — reinstall it with: {}", FUNC_INSTALL_HINT)
+                } else {
+                    String::new()
+                };
+                push(format!("func start error: {}{}", e, hint), LogLevel::Error);
             }
         }
     } // end port-check block
@@ -523,5 +578,40 @@ pub fn handle_stop(
             format!("  ⚠ Could not restore connections.json ({e}) — it is still patched for local use"),
             LogLevel::Warn,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verbatim output of a `func` whose npm postinstall download was
+    /// interrupted — the CLI zip was never written to disk.
+    const BROKEN_INSTALL: &str = "Error extracting zip file: ENOENT: no such file or directory, open '/opt/homebrew/lib/node_modules/azure-functions-core-tools/bin/Azure.Functions.Cli.osx-arm64.4.13.0.zip'";
+
+    #[test]
+    fn half_installed_core_tools_is_recognised() {
+        assert!(is_broken_core_tools_install(BROKEN_INSTALL));
+    }
+
+    #[test]
+    fn ordinary_func_output_is_not_mistaken_for_a_broken_install() {
+        assert!(!is_broken_core_tools_install(
+            "Functions runtime version: 4.1036.1.23224"
+        ));
+        assert!(!is_broken_core_tools_install(
+            "Worker process started and initialized."
+        ));
+        // A missing *workflow* file must stay a workflow error.
+        assert!(!is_broken_core_tools_install(
+            "Could not open workflow.json: no such file or directory"
+        ));
+    }
+
+    #[test]
+    fn install_hint_does_not_carry_the_removed_npm_flag() {
+        // npm 9 removed `--unsafe-perm`; npm 11 warns on it. Printing it tells
+        // users to run something their npm rejects.
+        assert!(!FUNC_INSTALL_HINT.contains("unsafe-perm"));
     }
 }

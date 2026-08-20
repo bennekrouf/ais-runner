@@ -2,6 +2,21 @@ use std::process::Command;
 
 use crate::services::runtime_manager;
 
+/// How to install the Azure Functions Core Tools, per platform.
+///
+/// macOS gets the Homebrew tap rather than npm: the npm package ships a stub
+/// that downloads and unzips the real CLI in a postinstall step, and when that
+/// download fails it still leaves a `func` on PATH that errors on every run
+/// (`Error extracting zip file: ENOENT …`). The tap installs a real binary.
+///
+/// Note there is no `--unsafe-perm`: npm 9 removed it, and npm 11 now warns
+/// `Unknown cli config "--unsafe-perm"`.
+#[cfg(target_os = "macos")]
+pub const FUNC_INSTALL_HINT: &str =
+    "brew tap azure/functions && brew install azure-functions-core-tools@4";
+#[cfg(not(target_os = "macos"))]
+pub const FUNC_INSTALL_HINT: &str = "npm install -g azure-functions-core-tools@4";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolStatus {
     pub name:         &'static str,
@@ -16,7 +31,7 @@ pub struct ToolStatus {
 
 pub fn check_tools() -> Vec<ToolStatus> {
     let results = vec![
-        probe("func",    &["--version"], "npm install -g azure-functions-core-tools@4"),
+        probe("func",    &["--version"], FUNC_INSTALL_HINT),
         probe("azurite", &["--version"], "npm install -g azurite"),
         probe("az",      &["--version"], "https://aka.ms/installazurecli"),
         probe("node",    &["--version"], "https://nodejs.org"),
