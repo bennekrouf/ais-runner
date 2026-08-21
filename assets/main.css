@@ -3456,6 +3456,25 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
     color: #f2cc60;
     border-bottom-color: rgba(242, 204, 96, 0.1);
 }
+/* The configuration banner carries one row per problem category (blank values,
+   absent keys), each with its own fix buttons. Stack them: the base
+   .setup-banner is a horizontal flex row, which would otherwise sit the two
+   categories side by side. */
+.setup-banner-stack {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+}
+.setup-banner-row {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+/* Let the message take the slack so both rows' buttons line up on the right,
+   rather than landing wherever each message happens to end. */
+.setup-banner-row > span {
+    flex: 1;
+}
 .setup-banner-btn {
     background: #9a6700;
     color: white;
@@ -4230,8 +4249,28 @@ body.light .wf-chip-liquid { background: #f5f3ff; color: #6d28d9; border-color: 
     background: var(--bg1);
     border-bottom: 1px solid var(--border);
 }
+/* Name + counts act as the collapse target, mirroring .scenario-group-toggle.
+   flex:1 keeps the action buttons pinned right whatever the name's length. */
+.scenario-toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    cursor: pointer;
+    user-select: none;
+}
+.scenario-chevron {
+    width: 10px;
+    color: var(--text3);
+    font-size: 11px;
+}
 .scenario-name {
     font-weight: 600;
+}
+/* Collapsed, the header is the whole card — its bottom border would otherwise
+   double up against the card's own border. */
+.scenario-card.collapsed .scenario-header {
+    border-bottom: none;
 }
 .scenario-count {
     color: var(--text3);

@@ -62,6 +62,10 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
     // Group names the user has collapsed. Not persisted — a fresh open of the
     // Tests view always starts with every group expanded.
     let mut collapsed_groups: Signal<std::collections::HashSet<String>> = use_signal(std::collections::HashSet::new);
+    // Scenario names the user has collapsed, keyed the same way as `results`.
+    // Like the group set this is not persisted: reopening the Tests view starts
+    // with everything expanded.
+    let mut collapsed_scenarios: Signal<std::collections::HashSet<String>> = use_signal(std::collections::HashSet::new);
 
     // Which scenario name is being typed into, for the record prompt and the
     // review screen's name field.
@@ -463,6 +467,35 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
             div { class: "db-section-title-row",
                 span { class: "db-section-title", "Scenarios" }
                 span { class: "scenario-count", "{scenario_dir.display()}" }
+                // Reading a failed run means finding it among the passes, so
+                // offer the one-click version of "collapse everything that's
+                // fine". Only meaningful once something has actually run.
+                if !results.read().is_empty() {
+                    button {
+                        class: "btn btn-small",
+                        style: "margin-left:auto",
+                        title: "Collapse every scenario whose last run passed, leaving failures open",
+                        onclick: move |_| {
+                            let mut set = collapsed_scenarios.write();
+                            for (name, steps) in results.read().iter() {
+                                if has_failure(steps) {
+                                    set.remove(name);
+                                } else {
+                                    set.insert(name.clone());
+                                }
+                            }
+                        },
+                        "Collapse passed"
+                    }
+                }
+                if !collapsed_scenarios.read().is_empty() {
+                    button {
+                        class: "btn btn-small",
+                        title: "Expand every collapsed scenario",
+                        onclick: move |_| collapsed_scenarios.write().clear(),
+                        "Expand all"
+                    }
+                }
             }
 
             for err in load_errors.read().iter() {
@@ -544,15 +577,36 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
                     // other's queues and containers.
                     let blocked = busy.is_some() && !is_running;
                     let steps = results.read().get(&name).cloned().unwrap_or_default();
+                    let is_open = !collapsed_scenarios.read().contains(&name);
                     let is_renaming = renaming.read().as_deref() == Some(name.as_str());
                     let confirming = delete_confirm.read().as_deref() == Some(name.as_str());
                     let root = project_root.clone();
 
                     rsx! {
-                        div { class: "scenario-card", key: "{source.display()}",
+                        div {
+                            class: if is_open { "scenario-card" } else { "scenario-card collapsed" },
+                            key: "{source.display()}",
                             div { class: "scenario-header",
-                                span { class: "scenario-name", "{name}" }
-                                span { class: "scenario-count", "{step_count} step(s)" }
+                                // Name + counts are the click target, matching how
+                                // a group header toggles. The buttons to the right
+                                // keep their own handlers, so a scenario can still
+                                // be run or renamed while collapsed.
+                                span {
+                                    class: "scenario-toggle",
+                                    title: if is_open { "Collapse this scenario" } else { "Expand this scenario" },
+                                    onclick: {
+                                        let name = name.clone();
+                                        move |_| {
+                                            let mut set = collapsed_scenarios.write();
+                                            if !set.remove(&name) {
+                                                set.insert(name.clone());
+                                            }
+                                        }
+                                    },
+                                    span { class: "scenario-chevron", if is_open { "▾" } else { "▸" } }
+                                    span { class: "scenario-name", "{name}" }
+                                    span { class: "scenario-count", "{step_count} step(s)" }
+                                }
                                 {summary_badge(&steps, is_running)}
                                 div { style: "display:flex;gap:6px;margin-left:auto",
                                     button {
@@ -721,11 +775,11 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
                                 }
                             }
 
-                            if !scenario_item.description.is_empty() {
+                            if is_open && !scenario_item.description.is_empty() {
                                 div { class: "scenario-desc", "{scenario_item.description}" }
                             }
 
-                            if !steps.is_empty() {
+                            if is_open && !steps.is_empty() {
                                 div { class: "scenario-steps",
                                     for step in steps.iter() {
                                         div { class: step_row_class(step.status),
@@ -969,6 +1023,13 @@ fn summary_badge(steps: &[StepResult], is_running: bool) -> Element {
     }
 }
 
+/// True when a scenario's most recent run had at least one failed step.
+/// A scenario that has not run yet reports false — there is nothing to read,
+/// so "collapse passed" leaves it alone rather than hiding it.
+fn has_failure(steps: &[StepResult]) -> bool {
+    steps.iter().any(|s| s.status == StepStatus::Failed)
+}
+
 fn step_row_class(status: StepStatus) -> &'static str {
     match status {
         StepStatus::Ok => "scenario-step ok",
@@ -1094,6 +1155,34 @@ mod tests {
     fn a_bad_edit_is_reported_rather_than_applied() {
         assert!(parse_step("{ not json").is_err());
         assert!(parse_step(r#"{ "action": "no_such_action" }"#).is_err());
+    }
+
+    fn results(statuses: &[StepStatus]) -> Vec<StepResult> {
+        statuses.iter().enumerate().map(|(i, st)| StepResult {
+            index:      i,
+            label:      format!("step {i}"),
+            detail:     String::new(),
+            status:     *st,
+            elapsed_ms: 0,
+        }).collect()
+    }
+
+    #[test]
+    fn a_run_with_any_failed_step_counts_as_failed() {
+        assert!(has_failure(&results(&[StepStatus::Ok, StepStatus::Failed])));
+        assert!(has_failure(&results(&[StepStatus::Failed])));
+    }
+
+    #[test]
+    fn passes_and_skips_alone_are_not_a_failure() {
+        assert!(!has_failure(&results(&[StepStatus::Ok, StepStatus::Skipped])));
+    }
+
+    #[test]
+    fn a_scenario_that_never_ran_is_not_reported_as_failed() {
+        // "Collapse passed" walks the results map; an empty result set must not
+        // read as a failure, or a never-run scenario would be forced open.
+        assert!(!has_failure(&[]));
     }
 
     #[test]

@@ -1338,52 +1338,60 @@ fn setup_banner(
                 }
             }
         },
-        setup_manager::SetupStatus::NeedsConfiguration(count) => rsx! {
-            div { class: "setup-banner",
-                span { "⚠ {count} settings require attention (SQL passwords, Azure endpoints)." }
-                if link.is_some() {
-                    button {
-                        class: "setup-banner-btn",
-                        style: "background: var(--blue); margin-right: 8px;",
-                        onclick: {
-                            let dir = dir.clone(); let link = link.clone();
-                            move |_| setup::handle_auto_detect(&dir, setup_status, log_lines, link.clone())
-                        },
-                        "Auto-Detect from Azure"
+        // Blank values and absent keys arrive together and get a row each —
+        // they need different fixes, so they keep their own buttons. Each row
+        // names the keys: "3 settings require attention" on its own left the
+        // user grepping local.settings.json to find out which three.
+        setup_manager::SetupStatus::NeedsConfiguration { blank, absent } => rsx! {
+            div { class: "setup-banner setup-banner-stack",
+                if !blank.is_empty() {
+                    div { class: "setup-banner-row",
+                        span { "⚠ {blank.len()} setting(s) need a value: {setup_manager::summarize_keys(&blank)}" }
+                        if link.is_some() {
+                            button {
+                                class: "setup-banner-btn",
+                                style: "background: var(--blue); margin-right: 8px;",
+                                onclick: {
+                                    let dir = dir.clone(); let link = link.clone();
+                                    move |_| setup::handle_auto_detect(&dir, setup_status, log_lines, link.clone())
+                                },
+                                "Auto-Detect from Azure"
+                            }
+                        }
+                        button {
+                            class: "setup-banner-btn",
+                            onclick: move |_| {
+                                visited_views.write().insert("Settings".into());
+                                current_view.set("Settings".into());
+                            },
+                            "Configure Manually"
+                        }
                     }
                 }
-                button {
-                    class: "setup-banner-btn",
-                    onclick: move |_| {
-                        visited_views.write().insert("Settings".into());
-                        current_view.set("Settings".into());
-                    },
-                    "Configure Manually"
-                }
-            }
-        },
-        setup_manager::SetupStatus::MissingKeys(keys) => rsx! {
-            div { class: "setup-banner",
-                span { "⚠ {keys.len()} key(s) referenced in connections.json are missing from local.settings.json." }
-                button {
-                    class: "setup-banner-btn",
-                    style: "background: var(--blue); margin-right: 8px;",
-                    onclick: {
-                        let keys = keys.clone(); let dir = dir.clone();
-                        move |_| {
-                            let _ = setup_manager::stub_missing_keys(&dir, &keys);
-                            ss.set(setup_manager::check_setup(&dir));
+                if !absent.is_empty() {
+                    div { class: "setup-banner-row",
+                        span { "⚠ {absent.len()} key(s) referenced in connections.json are missing from local.settings.json: {setup_manager::summarize_keys(&absent)}" }
+                        button {
+                            class: "setup-banner-btn",
+                            style: "background: var(--blue); margin-right: 8px;",
+                            onclick: {
+                                let absent = absent.clone(); let dir = dir.clone();
+                                move |_| {
+                                    let _ = setup_manager::stub_missing_keys(&dir, &absent);
+                                    ss.set(setup_manager::check_setup(&dir));
+                                }
+                            },
+                            "Auto-stub Missing Keys"
                         }
-                    },
-                    "Auto-stub Missing Keys"
-                }
-                button {
-                    class: "setup-banner-btn",
-                    onclick: move |_| {
-                        visited_views.write().insert("Settings".into());
-                        current_view.set("Settings".into());
-                    },
-                    "Edit Manually"
+                        button {
+                            class: "setup-banner-btn",
+                            onclick: move |_| {
+                                visited_views.write().insert("Settings".into());
+                                current_view.set("Settings".into());
+                            },
+                            "Edit Manually"
+                        }
+                    }
                 }
             }
         },

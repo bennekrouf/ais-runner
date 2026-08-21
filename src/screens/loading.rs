@@ -178,11 +178,21 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                     setup_manager::SetupStatus::RemoteStorage => {
                         push_log("⚠ AzureWebJobsStorage points to remote Azure — local func may fail".to_string(), LogLevel::Warn);
                     }
-                    setup_manager::SetupStatus::NeedsConfiguration(_) => {
-                        push_log("⚠ Project needs configuration".to_string(), LogLevel::Warn);
-                    }
-                    setup_manager::SetupStatus::MissingKeys(_) => {
-                        push_log("⚠ Some required keys are missing from configuration".to_string(), LogLevel::Warn);
+                    setup_manager::SetupStatus::NeedsConfiguration { ref blank, ref absent } => {
+                        if !blank.is_empty() {
+                            push_log(
+                                format!("⚠ {} setting(s) need a value: {}",
+                                    blank.len(), setup_manager::summarize_keys(blank)),
+                                LogLevel::Warn,
+                            );
+                        }
+                        if !absent.is_empty() {
+                            push_log(
+                                format!("⚠ {} key(s) in connections.json are missing from local.settings.json: {}",
+                                    absent.len(), setup_manager::summarize_keys(absent)),
+                                LogLevel::Warn,
+                            );
+                        }
                     }
                 }
 

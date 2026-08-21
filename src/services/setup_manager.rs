@@ -12,8 +12,19 @@ pub enum SetupStatus {
     /// AzureWebJobsStorage points to a remote Azure storage account instead of
     /// UseDevelopmentStorage=true — func will fail to start locally.
     RemoteStorage,
-    NeedsConfiguration(usize),
-    MissingKeys(Vec<String>),
+    /// Settings that need attention before local runs behave correctly.
+    ///
+    /// Both categories are reported together even though they have different
+    /// fixes: they were previously two sequential early returns, so a project
+    /// with blank values never heard about its absent keys until the blanks
+    /// were filled and the banner advanced. Finding out about the second set
+    /// one round-trip later is a bad way to learn about it.
+    NeedsConfiguration {
+        /// Present in local.settings.json but empty, or still holding a TODO.
+        blank:  Vec<String>,
+        /// Referenced by connections.json with no local.settings.json entry at all.
+        absent: Vec<String>,
+    },
     Ready,
 }
 
@@ -49,7 +60,9 @@ pub fn check_setup(dir: &str) -> SetupStatus {
         }
     }
 
-    let mut missing_count = 0;
+    // Named, not counted: a bare count sends the user hunting through the whole
+    // file for which settings the banner means.
+    let mut blank: Vec<String> = Vec::new();
     if let Some(v) = vals {
         for (key, val) in v {
             if let Some(s) = val.as_str() {
@@ -64,15 +77,12 @@ pub fn check_setup(dir: &str) -> SetupStatus {
                     key == "WEBSITE_SITE_NAME"
                 ));
                 if is_missing {
-                    missing_count += 1;
+                    blank.push(key.clone());
                 }
             }
         }
     }
-
-    if missing_count > 0 {
-        return SetupStatus::NeedsConfiguration(missing_count);
-    }
+    blank.sort();
 
     // Check for missing keys required by connections.json
     let conn_path = p.join("connections.json");
@@ -94,12 +104,27 @@ pub fn check_setup(dir: &str) -> SetupStatus {
             }
         }
         
-        if !missing_keys.is_empty() {
-            return SetupStatus::MissingKeys(missing_keys);
+        if !missing_keys.is_empty() || !blank.is_empty() {
+            missing_keys.sort();
+            return SetupStatus::NeedsConfiguration { blank, absent: missing_keys };
         }
+    } else if !blank.is_empty() {
+        return SetupStatus::NeedsConfiguration { blank, absent: Vec::new() };
     }
 
     SetupStatus::Ready
+}
+
+/// Render a key list for a one-line banner. Shows every key while the list is
+/// short, and truncates past that so one badly configured project can't push
+/// the banner's buttons off the edge of the window.
+pub fn summarize_keys(keys: &[String]) -> String {
+    const SHOWN: usize = 4;
+    if keys.len() <= SHOWN {
+        keys.join(", ")
+    } else {
+        format!("{}, +{} more", keys[..SHOWN].join(", "), keys.len() - SHOWN)
+    }
 }
 
 /// Switch AzureWebJobsStorage from a remote connection string to UseDevelopmentStorage=true.
@@ -631,6 +656,119 @@ pub fn apply_settings(dir: &str, updates: HashMap<String, String>) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a throwaway project. `settings` are the `Values` entries;
+    /// `connections` is the raw connections.json, or None to omit the file.
+    fn project(settings: &[(&str, &str)], connections: Option<&str>) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let vals: serde_json::Map<String, serde_json::Value> = settings
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
+            .collect();
+        let root = serde_json::json!({ "IsEncrypted": false, "Values": vals });
+        std::fs::write(
+            tmp.path().join("local.settings.json"),
+            serde_json::to_string_pretty(&root).unwrap(),
+        ).unwrap();
+        if let Some(c) = connections {
+            std::fs::write(tmp.path().join("connections.json"), c).unwrap();
+        }
+        tmp
+    }
+
+    #[test]
+    fn blank_settings_are_named_not_just_counted() {
+        let tmp = project(&[
+            ("WEBSITE_SITE_NAME", ""),
+            ("WORKFLOWS_SUBSCRIPTION_ID", ""),
+            ("FUNCTIONS_WORKER_RUNTIME", "node"),
+            ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
+        ], None);
+
+        match check_setup(tmp.path().to_str().unwrap()) {
+            SetupStatus::NeedsConfiguration { blank, absent } => {
+                assert_eq!(blank, vec!["WEBSITE_SITE_NAME", "WORKFLOWS_SUBSCRIPTION_ID"]);
+                assert!(absent.is_empty());
+            }
+            other => panic!("expected NeedsConfiguration, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn blank_values_and_absent_keys_are_reported_in_one_pass() {
+        // The regression this guards: these used to be two sequential early
+        // returns, so the absent keys stayed invisible until the blanks were
+        // filled in and the check was re-run.
+        let conns = r#"{
+            "managedApiConnections": {
+                "teams": {
+                    "connection": { "id": "/subscriptions/@appsetting('WORKFLOWS_SUBSCRIPTION_ID')/x" },
+                    "connectionRuntimeUrl": "@appsetting('Teams_connectionUrl')"
+                }
+            }
+        }"#;
+        let tmp = project(&[
+            ("WORKFLOWS_SUBSCRIPTION_ID", ""),
+            ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
+        ], Some(conns));
+
+        match check_setup(tmp.path().to_str().unwrap()) {
+            SetupStatus::NeedsConfiguration { blank, absent } => {
+                assert_eq!(blank,  vec!["WORKFLOWS_SUBSCRIPTION_ID"]);
+                // Referenced by connections.json, no entry in Values at all.
+                assert_eq!(absent, vec!["Teams_connectionUrl"]);
+            }
+            other => panic!("expected both categories, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn a_fully_configured_project_is_ready() {
+        let conns = r#"{ "managedApiConnections": { "teams": {
+            "connectionRuntimeUrl": "@appsetting('Teams_connectionUrl')" } } }"#;
+        let tmp = project(&[
+            ("WEBSITE_SITE_NAME", "ais-tom"),
+            ("Teams_connectionUrl", "https://example.invalid/teams"),
+            ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
+        ], Some(conns));
+        assert!(matches!(check_setup(tmp.path().to_str().unwrap()), SetupStatus::Ready));
+    }
+
+    #[test]
+    fn a_todo_placeholder_counts_as_blank_whatever_the_key_is_called() {
+        let tmp = project(&[
+            ("SomeRandomSetting", "TODO: fill me in"),
+            ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
+        ], None);
+        match check_setup(tmp.path().to_str().unwrap()) {
+            SetupStatus::NeedsConfiguration { blank, .. } => {
+                assert_eq!(blank, vec!["SomeRandomSetting"]);
+            }
+            other => panic!("expected NeedsConfiguration, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn empty_values_only_count_for_keys_that_must_be_set() {
+        // An empty setting whose name matches none of the patterns is a
+        // deliberate blank, not a misconfiguration.
+        let tmp = project(&[
+            ("SomeOptionalFlag", ""),
+            ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
+        ], None);
+        assert!(matches!(check_setup(tmp.path().to_str().unwrap()), SetupStatus::Ready));
+    }
+
+    #[test]
+    fn key_summary_lists_short_runs_and_truncates_long_ones() {
+        let three: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(summarize_keys(&three), "a, b, c");
+
+        let six: Vec<String> = ["a", "b", "c", "d", "e", "f"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(summarize_keys(&six), "a, b, c, d, +2 more");
+
+        assert_eq!(summarize_keys(&[]), "");
+    }
 
     const MSI_CONNECTIONS: &str = r#"{
         "serviceProviderConnections": {
