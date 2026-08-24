@@ -1,23 +1,31 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   ais-runner app icon.
-  Sibling of ais-monitor: same Azure-blue squircle palette, but the
-  central mark is a "play / run" triangle to signal a local execution
+  Sibling of ais-monitor: same squircle, same white mark, same structure —
+  but carrying this app's own hue, violet, the way its window chrome does.
+  The central mark is a "play / run" triangle to signal a local execution
   engine rather than a monitor. Designed at 1024 to read at 16x16.
+
+  Family rule: shape says which app, colour says which app — the squircle
+  and the white mark are the family, the hue and the glyph both identify.
+  With four apps in the set, one signal was no longer enough to tell them
+  apart in a Dock at 32px.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <defs>
-    <!-- Background: deep navy → Azure cyan, diagonal. Identical to ais-monitor
-         so the two apps clearly belong to the same family in the Dock. -->
+    <!-- Background: violet, matching the accent (#9d7aff) in main.css.
+         Held a couple of steps darker than the UI accent so the white mark
+         keeps roughly the same contrast the ais-monitor icon has against
+         its blue; a lighter ground would wash the play triangle out. -->
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%"  stop-color="#0078D4"/>
-      <stop offset="55%" stop-color="#0062AD"/>
-      <stop offset="100%" stop-color="#003B73"/>
+      <stop offset="0%"  stop-color="#7D4EE8"/>
+      <stop offset="55%" stop-color="#5C33A8"/>
+      <stop offset="100%" stop-color="#331C63"/>
     </linearGradient>
-    <!-- Play mark: white with a hint of cyan at the trailing edge -->
+    <!-- Play mark: white with a hint of violet at the trailing edge -->
     <linearGradient id="mark" x1="0" y1="0.5" x2="1" y2="0.5">
       <stop offset="0%"  stop-color="#FFFFFF"/>
-      <stop offset="100%" stop-color="#D6F0FF"/>
+      <stop offset="100%" stop-color="#E6DAFF"/>
     </linearGradient>
     <!-- Soft glow on the mark -->
     <filter id="glow" x="-10%" y="-10%" width="120%" height="120%">
@@ -49,7 +57,7 @@
 
   <!-- Two small "speed" ticks behind the triangle, hinting at motion.
        Faint enough that the play silhouette stays the dominant read. -->
-  <g stroke="#7FD7FF" stroke-width="22" stroke-linecap="round" fill="none" opacity="0.55">
+  <g stroke="#C0A6FF" stroke-width="22" stroke-linecap="round" fill="none" opacity="0.55">
     <line x1="180" y1="420" x2="280" y2="420"/>
     <line x1="180" y1="604" x2="280" y2="604"/>
   </g>
