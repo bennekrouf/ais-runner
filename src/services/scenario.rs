@@ -1315,7 +1315,21 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                     Some((run_name, status)) => {
                         Err(format!("run {run_name} finished {status}, expected {expect_status}"))
                     }
-                    None => Ok((false, "no terminal run yet".to_string())),
+                    // "no terminal run yet" reads as a timing problem. When the
+                    // workflow has never run at all, the usual cause is that
+                    // func attached no Service Bus listeners — it started before
+                    // the emulator — and no amount of waiting fixes that.
+                    None => Ok((
+                        false,
+                        match workflows::list_runs(workflow).await {
+                            Ok(runs) if runs.is_empty() => format!(
+                                "'{workflow}' has no runs at all — if it is queue-triggered, \
+                                 func likely started before the Service Bus emulator and \
+                                 attached no listeners; restart func"
+                            ),
+                            _ => "no terminal run yet".to_string(),
+                        },
+                    )),
                 }
             })
             .await?;

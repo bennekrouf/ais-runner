@@ -2,10 +2,12 @@
 //!
 //! Used by the Console UI:
 //!
-//!     let bus     = EventBus::new();
-//!     let runtime = MockRuntime::start(&workspace, bus.clone()).await?;
-//!     // ... user does work, run func, see traffic in Console ...
-//!     runtime.stop().await;
+//! ```ignore
+//! let bus     = EventBus::new();
+//! let runtime = MockRuntime::start(&workspace, bus.clone()).await?;
+//! // ... user does work, run func, see traffic in Console ...
+//! runtime.stop().await;
+//! ```
 //!
 //! The runtime owns:
 //!   - the scanned contract (used as the response source)
