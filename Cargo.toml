@@ -1,6 +1,6 @@
 [package]
 name = "ais-runner"
-version = "0.5.13"
+version = "0.5.14"
 edition = "2021"
 # The crate ships two binaries — the GUI and the headless `ais-test` scenario
 # runner. Without this, `cargo run` is ambiguous and errors out.
