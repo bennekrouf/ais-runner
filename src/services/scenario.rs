@@ -17,6 +17,7 @@
 //! Same rationale as `msg_template`: a team's fixtures belong next to the
 //! workflows they exercise, versioned together and reviewable in a PR.
 
+use std::net::ToSocketAddrs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -614,6 +615,118 @@ pub fn queues_to_create(scenario: &Scenario) -> Vec<String> {
         .collect()
 }
 
+/// Which local services a scenario actually needs, derived from its steps.
+///
+/// Probed before the run so a stopped emulator reports itself, instead of the
+/// first step that needs it failing with a raw transport error.
+fn required_services(scenario: &Scenario, ctx: &RunContext) -> Vec<(&'static str, String, String)> {
+    let (mut blob, mut queue, mut sql, mut func, mut cosmos) = (false, false, false, false, false);
+    for step in &scenario.steps {
+        match step {
+            Step::CreateContainer { .. } | Step::ClearContainer { .. }
+            | Step::UploadFile { .. } | Step::UploadInline { .. }
+            | Step::DownloadBlob { .. } | Step::CheckBlobExists { .. }
+            | Step::RenameFolder { .. } => blob = true,
+            Step::CreateQueue { .. } | Step::SendMessage { .. } | Step::DrainQueue { .. }
+            | Step::Expect { .. } | Step::WaitForMessage { .. } => queue = true,
+            Step::CreateSqlDatabase { .. } | Step::DropSqlDatabase { .. } | Step::RunSql { .. }
+            | Step::WaitForSql { .. } | Step::DropTable { .. } | Step::TruncateTable { .. } => sql = true,
+            Step::RunWorkflow { .. } | Step::WaitForRun { .. } | Step::ExpectAction { .. } => func = true,
+            Step::CreateCosmosDatabase { .. } | Step::CreateCosmosContainer { .. }
+            | Step::UpsertCosmosDocument { .. } | Step::RunCosmosQuery { .. } => cosmos = true,
+            _ => {}
+        }
+    }
+    let mut needed = Vec::new();
+    if blob {
+        needed.push(("Azurite (blob)", "127.0.0.1:10000".to_string(),
+            workflows::AZURITE_RESET_HINT.to_string()));
+    }
+    if func {
+        // func keeps run history in Storage Tables; without 10002 it answers 503
+        // for 30s and then dies, which looks like every later step failing.
+        needed.push(("Azurite (table)", "127.0.0.1:10002".to_string(),
+            workflows::AZURITE_RESET_HINT.to_string()));
+    }
+    if queue {
+        needed.push(("Service Bus emulator", format!("{}:5672", host_only(&ctx.sb_host)),
+            "Start the Service Bus emulator from the toolbar.".to_string()));
+    }
+    if func {
+        needed.push(("Logic Apps runtime (func)", "127.0.0.1:7071".to_string(),
+            "Start func from the toolbar — no workflow can run without it.".to_string()));
+    }
+    if sql {
+        needed.push(("SQL Server", "127.0.0.1:1433".to_string(),
+            "Start the SQL Server container from the toolbar.".to_string()));
+    }
+    if cosmos {
+        needed.push(("Cosmos emulator", host_port(&ctx.cosmos_endpoint, 8081),
+            "Start the Cosmos emulator.".to_string()));
+    }
+    needed
+}
+
+fn host_only(host: &str) -> String {
+    host.trim_start_matches("http://").trim_start_matches("https://")
+        .split('/').next().unwrap_or(host)
+        .split(':').next().unwrap_or(host).to_string()
+}
+
+fn host_port(endpoint: &str, default_port: u16) -> String {
+    let bare = endpoint.trim_start_matches("http://").trim_start_matches("https://");
+    let bare = bare.split('/').next().unwrap_or(bare);
+    if bare.contains(':') { bare.to_string() } else { format!("{bare}:{default_port}") }
+}
+
+/// Services the scenario needs that are not accepting connections.
+pub fn unavailable_services(scenario: &Scenario, ctx: &RunContext) -> Vec<String> {
+    let mut down = Vec::new();
+    for (label, addr, hint) in required_services(scenario, ctx) {
+        let reachable = addr
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut a| a.next())
+            .is_some_and(|a| {
+                std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_millis(700))
+                    .is_ok()
+            });
+        if !reachable {
+            down.push(format!("{label} is not reachable on {addr} — {hint}"));
+        }
+    }
+    down
+}
+
+/// Assertions that can never pass, found before any setup runs.
+///
+/// An `expect_action` naming an action the workflow does not define fails only
+/// after its timeout, and blames "has not run yet" — so a scenario left stale by
+/// a refactor burns the whole setup first and then points at the wrong thing.
+/// Reported together so one pass fixes them all.
+pub fn stale_assertions(scenario: &Scenario, project_root: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    for step in &scenario.steps {
+        let Step::ExpectAction { workflow, action_name, .. } = step else { continue };
+        let workflow = expand(workflow, &scenario.vars);
+        let action = expand(action_name, &scenario.vars);
+        let Some(defined) = workflows::definition_action_names(project_root, &workflow) else {
+            continue; // no readable definition — cannot tell, so do not guess
+        };
+        if !defined.contains(action.as_str()) {
+            let elsewhere = workflows::workflows_containing_action(project_root, &action);
+            let hint = match elsewhere.as_slice() {
+                [] => String::new(),
+                others => format!(" — it exists in {}", others.join(", ")),
+            };
+            problems.push(format!("workflow '{workflow}' has no action named '{action}'{hint}"));
+        }
+    }
+    problems.sort();
+    problems.dedup();
+    problems
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. Runner
 // ─────────────────────────────────────────────────────────────────────────────
@@ -638,6 +751,37 @@ pub async fn run(
     };
     let mut results = Vec::new();
     let mut aborted = false;
+
+    // Fail before any container, queue or database is touched.
+    let down = unavailable_services(scenario, ctx);
+    if !down.is_empty() {
+        let result = StepResult {
+            index: 0,
+            label: "check local services".to_string(),
+            status: StepStatus::Failed,
+            detail: format!("{} service(s) down:\n  - {}", down.len(), down.join("\n  - ")),
+            elapsed_ms: 0,
+        };
+        on_step(result.clone());
+        return vec![result];
+    }
+
+    let stale = stale_assertions(scenario, &ctx.project_root.to_string_lossy());
+    if !stale.is_empty() {
+        let result = StepResult {
+            index: 0,
+            label: "validate scenario assertions".to_string(),
+            status: StepStatus::Failed,
+            detail: format!(
+                "{} assertion(s) can never pass:\n  - {}",
+                stale.len(),
+                stale.join("\n  - ")
+            ),
+            elapsed_ms: 0,
+        };
+        on_step(result.clone());
+        return vec![result];
+    }
 
     for (index, step) in scenario.steps.iter().enumerate() {
         if aborted {
@@ -1231,14 +1375,43 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                     .ok_or_else(|| format!("no run of '{workflow}' found since the scenario started"))?,
             };
 
-            // Poll: the action may not have executed yet when the run is still
-            // in flight, and a missing action is indistinguishable from one
-            // that hasn't started.
+            // An action absent from the definition will never run, so polling for
+            // it just burns the timeout and blames "has not run yet". Check the
+            // definition first and say what is actually wrong.
+            let root = ctx.project_root.to_string_lossy().into_owned();
+            if let Some(defined) = workflows::definition_action_names(&root, workflow) {
+                if !defined.contains(action.as_str()) {
+                    let elsewhere = workflows::workflows_containing_action(&root, action);
+                    let hint = match elsewhere.as_slice() {
+                        [] => String::new(),
+                        others => format!(" — it exists in {}", others.join(", ")),
+                    };
+                    return Err(format!(
+                        "workflow '{workflow}' has no action named '{action}'{hint}"
+                    ));
+                }
+            }
+
+            // Poll: the action may not have executed yet while the run is still
+            // in flight.
             let found: std::cell::RefCell<Option<workflows::ActionPayload>> = Default::default();
             poll_until(*timeout_ms, || async {
                 match workflows::action_payload(workflow, &run_id, action).await {
                     Ok(p) if p.status == "Unknown" => {
-                        Ok((false, format!("action '{action}' has not run yet")))
+                        // "not yet" is only true while the run is in flight. Once
+                        // it has finished, the action was skipped or never reached,
+                        // and saying "not yet" sends people to the wrong place.
+                        let detail = match workflows::run_status(workflow, &run_id).await {
+                            Some(s) if s == "Running" || s == "Waiting" => {
+                                format!("action '{action}' has not run yet (run {run_id} is {s})")
+                            }
+                            Some(s) => format!(
+                                "run {run_id} finished as {s} without reaching action '{action}' \
+                                 — it was skipped, or its branch was not taken"
+                            ),
+                            None => format!("action '{action}' has not run yet"),
+                        };
+                        Ok((false, detail))
                     }
                     Ok(p) => {
                         let detail = format!("action '{action}' is {}", p.status);
@@ -2064,14 +2237,10 @@ mod tests {
             vars: Default::default(),
             steps: vec![
                 sleep_step("120"),
-                // Fails: no func host in a unit test.
-                Step::RunWorkflow {
-                    workflow: "nope".into(),
-                    trigger: "manual".into(),
-                    body: String::new(),
-                    capture: None,
-                    expect_trigger_error: false,
-                },
+                // Fails deterministically: test_ctx has no restart_func. Chosen
+                // over RunWorkflow so the failure is the step's own, not the
+                // pre-run service probe short-circuiting the whole scenario.
+                Step::RestartFunc { timeout_ms: 1 },
             ],
             source: unique_in(&dir, "teardown"),
         };
@@ -2385,3 +2554,164 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod stale_assertion_tests {
+    use super::*;
+
+    fn workspace() -> std::path::PathBuf {
+        let tmp = std::env::temp_dir().join(format!("ais-runner-stale-{}", std::process::id()));
+        let la = tmp.join("logic_apps");
+        for (wf, body) in [
+            ("Check-Ignite-Payment-File", r#"{"definition":{"actions":{
+                "Scope_Processing":{"type":"Scope","actions":{
+                    "Send_message_to_queue":{"type":"ServiceProvider"}}}}}}"#),
+            ("Send-Kyriba-files", r#"{"definition":{"actions":{
+                "Send_success_notification":{"type":"ServiceProvider"}}}}"#),
+        ] {
+            std::fs::create_dir_all(la.join(wf)).unwrap();
+            std::fs::write(la.join(wf).join("workflow.json"), body).unwrap();
+        }
+        tmp
+    }
+
+    fn scenario_with(steps: Vec<Step>) -> Scenario {
+        Scenario {
+            name: "test".to_string(),
+            description: String::new(),
+            vars: Vars::new(),
+            steps,
+            source: PathBuf::new(),
+        }
+    }
+
+    fn expect_action(workflow: &str, action: &str) -> Step {
+        Step::ExpectAction {
+            workflow: workflow.to_string(),
+            action_name: action.to_string(),
+            status: "Succeeded".to_string(),
+            contains: None,
+            timeout_ms: 15000,
+        }
+    }
+
+    #[test]
+    fn moved_action_is_reported_with_its_new_home() {
+        let tmp = workspace();
+        let scenario = scenario_with(vec![expect_action(
+            "Check-Ignite-Payment-File",
+            "Send_success_notification",
+        )]);
+        let problems = stale_assertions(&scenario, &tmp.to_string_lossy());
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("has no action named 'Send_success_notification'"));
+        assert!(problems[0].contains("it exists in Send-Kyriba-files"), "{}", problems[0]);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn valid_assertions_and_unknown_workflows_are_left_alone() {
+        let tmp = workspace();
+        let scenario = scenario_with(vec![
+            expect_action("Send-Kyriba-files", "Send_success_notification"),
+            expect_action("Check-Ignite-Payment-File", "Send_message_to_queue"),
+            // no workflow.json on disk: cannot tell, so must not be flagged
+            expect_action("Deployed-Only-Workflow", "Whatever"),
+        ]);
+        assert!(stale_assertions(&scenario, &tmp.to_string_lossy()).is_empty());
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+}
+
+#[cfg(test)]
+mod service_probe_tests {
+    use super::*;
+
+    fn ctx() -> RunContext {
+        RunContext {
+            sb_host: "127.0.0.1".to_string(),
+            cosmos_endpoint: "https://127.0.0.1:8081".to_string(),
+            cosmos_key: String::new(),
+            project_root: PathBuf::from("/nonexistent"),
+            restart_func: None,
+        }
+    }
+
+    fn scenario_of(steps: Vec<Step>) -> Scenario {
+        Scenario { name: "t".into(), description: String::new(), vars: Vars::new(), steps, source: PathBuf::new() }
+    }
+
+    fn labels(steps: Vec<Step>) -> Vec<&'static str> {
+        required_services(&scenario_of(steps), &ctx()).into_iter().map(|(l, _, _)| l).collect()
+    }
+
+    /// Pure: what a scenario declares it needs, with no probing, so the result
+    /// does not change when a developer starts or stops an emulator.
+    #[test]
+    fn only_requires_what_the_scenario_uses() {
+        assert!(labels(vec![Step::Sleep { ms: 1 }]).is_empty());
+
+        assert_eq!(
+            labels(vec![Step::CreateContainer { container: "c".into() }]),
+            vec!["Azurite (blob)"]
+        );
+
+        // func needs the table service too, which is what actually crashed it
+        let with_func = labels(vec![Step::WaitForRun {
+            workflow: "W".into(), timeout_ms: 1, expect_status: "Succeeded".into(),
+        }]);
+        assert!(with_func.contains(&"Logic Apps runtime (func)"), "{with_func:?}");
+        assert!(with_func.contains(&"Azurite (table)"), "{with_func:?}");
+    }
+
+    #[test]
+    fn the_azurite_hint_is_actionable() {
+        let needed = required_services(
+            &scenario_of(vec![Step::CreateContainer { container: "c".into() }]), &ctx());
+        let (_, addr, hint) = &needed[0];
+        assert_eq!(addr, "127.0.0.1:10000");
+        assert!(hint.contains("⟳ Reset"), "{hint}");
+    }
+
+    #[test]
+    fn host_parsing_handles_urls_and_bare_hosts() {
+        assert_eq!(host_only("http://127.0.0.1:5672/x"), "127.0.0.1");
+        assert_eq!(host_only("localhost"), "localhost");
+        assert_eq!(host_port("https://127.0.0.1:8081/", 8081), "127.0.0.1:8081");
+        assert_eq!(host_port("cosmos.local", 8081), "cosmos.local:8081");
+    }
+}
+
+#[cfg(test)]
+mod service_gate_tests {
+    use super::*;
+
+    /// The gate must stop the run before any step executes — creating
+    /// containers against a dead emulator is what produced raw transport
+    /// errors ten steps in. Port 9 (discard) is never listening.
+    #[tokio::test]
+    async fn a_down_service_aborts_before_the_first_step() {
+        let dir = std::env::temp_dir().join(format!("ais-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let scenario = Scenario {
+            name: "gate".into(),
+            description: String::new(),
+            vars: Default::default(),
+            steps: vec![Step::CreateCosmosDatabase { database: "d".into() }],
+            source: unique_in(&dir, "gate"),
+        };
+        let ctx = RunContext {
+            sb_host: "127.0.0.1".to_string(),
+            cosmos_endpoint: "https://127.0.0.1:9".to_string(),
+            cosmos_key: String::new(),
+            project_root: dir.clone(),
+            restart_func: None,
+        };
+        let results = run(&scenario, &ctx, |_| {}).await;
+        assert_eq!(results.len(), 1, "must not run any step: {results:?}");
+        assert_eq!(results[0].status, StepStatus::Failed);
+        assert!(results[0].label.contains("check local services"));
+        assert!(results[0].detail.contains("Cosmos"), "{}", results[0].detail);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

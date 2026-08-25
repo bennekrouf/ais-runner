@@ -9,6 +9,21 @@
 ///   key (b64): Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use chrono::Utc;
+
+/// reqwest reports a dead emulator as "error sending request for url (...)",
+/// which names neither the cause nor the fix. Azurite dying mid-run is common
+/// enough that the bare message costs real debugging time.
+fn transport_error(e: reqwest::Error) -> String {
+    if e.is_connect() || e.is_timeout() {
+        format!(
+            "Azurite is not responding on 127.0.0.1:10000 (it was reachable earlier if \
+             previous steps passed, so it stopped mid-run) — {}",
+            crate::services::workflows::AZURITE_RESET_HINT
+        )
+    } else {
+        e.to_string()
+    }
+}
 use hmac::{Hmac, Mac};
 use reqwest::blocking::Client;
 use sha2::Sha256;
@@ -126,7 +141,7 @@ pub fn list_containers() -> Result<Vec<String>, String> {
         .header("x-ms-version", API_VERSION)
         .header("Authorization", auth)
         .send()
-        .map_err(|e| e.to_string())?;
+        .map_err(transport_error)?;
 
     let status = resp.status();
     let body = resp.text().unwrap_or_default();
@@ -153,7 +168,7 @@ pub fn list_blobs(container: &str) -> Result<Vec<BlobInfo>, String> {
         .header("x-ms-version", API_VERSION)
         .header("Authorization", auth)
         .send()
-        .map_err(|e| e.to_string())?;
+        .map_err(transport_error)?;
 
     let status = resp.status();
     let body = resp.text().unwrap_or_default();
@@ -248,7 +263,7 @@ pub fn create_container(name: &str) -> Result<(), String> {
         .header("Authorization", auth)
         .header("Content-Length", "0")
         .send()
-        .map_err(|e| e.to_string())?;
+        .map_err(transport_error)?;
 
     let status = resp.status();
     if status.is_success() || status.as_u16() == 409 {
@@ -290,7 +305,7 @@ fn copy_blob(container: &str, src: &str, dst: &str) -> Result<(), String> {
         .header("Authorization",    auth)
         .header("Content-Length",   "0")
         .send()
-        .map_err(|e| e.to_string())?;
+        .map_err(transport_error)?;
 
     if resp.status().is_success() {
         return Ok(());
@@ -399,7 +414,7 @@ pub fn download_blob(container: &str, blob_name: &str, dest_path: &str) -> Resul
         .header("x-ms-version",  API_VERSION)
         .header("Authorization", auth)
         .send()
-        .map_err(|e| e.to_string())?;
+        .map_err(transport_error)?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -440,7 +455,7 @@ pub fn upload_blob_bytes_sync(container: &str, blob_name: &str, data: Vec<u8>) -
         .header("Content-Length",  content_length)
         .body(data)
         .send()
-        .map_err(|e| e.to_string())?;
+        .map_err(transport_error)?;
 
     let status = resp.status();
     if status.is_success() { return Ok(()); }
@@ -467,7 +482,7 @@ fn delete_blob(container: &str, blob_name: &str) -> Result<(), String> {
         .header("x-ms-version",  API_VERSION)
         .header("Authorization", auth)
         .send()
-        .map_err(|e| e.to_string())?;
+        .map_err(transport_error)?;
 
     let status = resp.status();
     if status.is_success() || status.as_u16() == 404 { return Ok(()); }
@@ -633,5 +648,24 @@ mod container_name_tests {
         assert!(validate_container_name("UPPER").unwrap_err().contains("lowercase"));
         assert!(validate_container_name("-lead").unwrap_err().contains("start and end"));
         assert!(validate_container_name("a--b").unwrap_err().contains("consecutive"));
+    }
+}
+
+#[cfg(test)]
+mod transport_error_tests {
+    /// Azurite is down right now in this environment or it is not — either way
+    /// the message for a refused connection must name the cause and the fix,
+    /// which the bare reqwest string does not.
+    #[test]
+    fn a_refused_connection_names_azurite_and_the_fix() {
+        // port 9 (discard) is never listening
+        let err = reqwest::blocking::Client::new()
+            .get("http://127.0.0.1:9/devstoreaccount1/x")
+            .timeout(std::time::Duration::from_millis(500))
+            .send()
+            .unwrap_err();
+        let msg = super::transport_error(err);
+        assert!(msg.contains("Azurite is not responding"), "{msg}");
+        assert!(msg.contains("⟳ Reset"), "{msg}");
     }
 }

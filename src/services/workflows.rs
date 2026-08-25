@@ -320,6 +320,59 @@ pub fn scan_broken_workflows(logic_apps_dir: &str) -> Vec<(String, String)> {
     broken
 }
 
+/// Every action name in a workflow.json, including nested scope/if/switch bodies.
+/// None when the file is absent or unreadable — the caller must then fall back
+/// to polling rather than assume the action is missing.
+pub fn definition_action_names(
+    logic_apps_dir: &str,
+    workflow: &str,
+) -> Option<std::collections::HashSet<String>> {
+    let path = resolve_logic_apps_dir(logic_apps_dir)
+        .join(workflow)
+        .join("workflow.json");
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let root = value.get("definition").unwrap_or(&value).get("actions")?;
+    let mut names = std::collections::HashSet::new();
+    collect_action_names(root, &mut names);
+    Some(names)
+}
+
+fn collect_action_names(block: &serde_json::Value, out: &mut std::collections::HashSet<String>) {
+    let Some(map) = block.as_object() else { return };
+    for (name, action) in map {
+        out.insert(name.clone());
+        collect_action_names(&action["actions"], out);
+        collect_action_names(&action["else"]["actions"], out);
+        if let Some(cases) = action["cases"].as_object() {
+            for case in cases.values() {
+                collect_action_names(&case["actions"], out);
+            }
+        }
+    }
+}
+
+/// Workflows whose definition contains `action`. Used to point at the right one
+/// when an assertion names an action that has moved.
+pub fn workflows_containing_action(logic_apps_dir: &str, action: &str) -> Vec<String> {
+    let dir = resolve_logic_apps_dir(logic_apps_dir);
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else { return found };
+    for entry in entries.flatten() {
+        if !entry.path().join("workflow.json").exists() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if definition_action_names(logic_apps_dir, &name)
+            .is_some_and(|names| names.contains(action))
+        {
+            found.push(name);
+        }
+    }
+    found.sort();
+    found
+}
+
 // ── Trigger ────────────────────────────────────────────────────────────────
 
 fn extract_api_error(body: &serde_json::Value) -> Option<String> {
@@ -458,6 +511,17 @@ fn parse_value_array<T: for<'de> Deserialize<'de>>(body: serde_json::Value) -> R
             format!("Unexpected response shape: {}", &s[..s.len().min(300)])
         })?;
     Ok(arr.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
+}
+
+/// Status of one run, or None when it cannot be read. Used to tell "the action
+/// has not run yet" apart from "the run finished without ever reaching it".
+pub async fn run_status(workflow: &str, run_id: &str) -> Option<String> {
+    let url = format!("{}/workflows/{}/runs/{}", BASE, workflow, run_id);
+    let body: serde_json::Value = reqwest::get(&url).await.ok()?.json().await.ok()?;
+    body["properties"]["status"]
+        .as_str()
+        .or_else(|| body["status"].as_str())
+        .map(|s| s.to_string())
 }
 
 pub async fn list_runs(workflow: &str) -> Result<Vec<RunItem>, String> {
@@ -829,4 +893,47 @@ pub fn read_blob_trigger_info(workflow_json: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     include!("workflows/tests.rs");
+}
+
+#[cfg(test)]
+mod definition_scan_tests {
+    use super::*;
+
+    fn fixture(dir: &std::path::Path, workflow: &str, body: &str) {
+        let wf = dir.join(workflow);
+        std::fs::create_dir_all(&wf).unwrap();
+        std::fs::write(wf.join("workflow.json"), body).unwrap();
+    }
+
+    #[test]
+    fn finds_nested_actions_and_locates_a_moved_one() {
+        let tmp = std::env::temp_dir().join(format!("ais-runner-defscan-{}", std::process::id()));
+        let la = tmp.join("logic_apps");
+        std::fs::create_dir_all(&la).unwrap();
+
+        // caller no longer posts the card; it moved into the callee
+        fixture(&la, "Check-Ignite-Payment-File", r#"{"definition":{"actions":{
+            "Scope_Processing":{"type":"Scope","actions":{
+                "Verify":{"type":"If","actions":{"Fail":{"type":"Terminate"}},
+                          "else":{"actions":{"Send_message_to_queue":{"type":"ServiceProvider"}}}}}}}}}"#);
+        fixture(&la, "Send-Kyriba-files", r#"{"definition":{"actions":{
+            "Scope_Processing":{"type":"Scope","actions":{
+                "Send_success_notification":{"type":"ServiceProvider"}}}}}}"#);
+
+        let root = tmp.to_string_lossy().into_owned();
+        let names = definition_action_names(&root, "Check-Ignite-Payment-File").unwrap();
+        assert!(names.contains("Send_message_to_queue"), "must see into else-branches");
+        assert!(names.contains("Fail"), "must see into if-branches");
+        assert!(!names.contains("Send_success_notification"));
+
+        assert_eq!(
+            workflows_containing_action(&root, "Send_success_notification"),
+            vec!["Send-Kyriba-files".to_string()]
+        );
+
+        // absent workflow.json must be indistinguishable from "cannot tell"
+        assert!(definition_action_names(&root, "Not-A-Workflow").is_none());
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 }
