@@ -5,11 +5,15 @@
 //! --------
 //! For each setting classified as `SettingKind::Url`, we replace
 //!
-//!     Jde_Url = "https://jde.example.com"
+//! ```text
+//! Jde_Url = "https://jde.example.com"
+//! ```
 //!
 //! with
 //!
-//!     Jde_Url = "http://localhost:<mock-port>/__mock__/Jde_Url"
+//! ```text
+//! Jde_Url = "http://localhost:<mock-port>/__mock__/Jde_Url"
+//! ```
 //!
 //! The mock server strips the `/__mock__/<name>` prefix at request time, so it
 //! knows which logical service the request was meant for. The remaining path

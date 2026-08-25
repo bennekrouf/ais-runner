@@ -93,7 +93,12 @@ else
     sed -i    "s/^version = \"$CURRENT\"/version = \"$NEW\"/" "$CARGO"
 fi
 
-git add "$CARGO"
+# Refresh Cargo.lock so its recorded version matches the bump, and commit it
+# with the manifest — otherwise CI's `cargo test --locked` fails on master
+# for every release.
+cargo metadata --format-version 1 --quiet >/dev/null
+
+git add "$CARGO" Cargo.lock
 git commit -m "chore: release $TAG"
 git tag "$TAG"
 

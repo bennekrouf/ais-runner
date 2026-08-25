@@ -2,9 +2,11 @@
 //!
 //! Lifecycle
 //! ---------
-//!     let server = MockServer::start(contract, workspace, bus.clone()).await?;
-//!     // workflows hit http://localhost:<server.port>/__mock__/<setting>/...
-//!     server.stop().await;
+//! ```ignore
+//! let server = MockServer::start(contract, workspace, bus.clone()).await?;
+//! // workflows hit http://localhost:<server.port>/__mock__/<setting>/...
+//! server.stop().await;
+//! ```
 //!
 //! Behaviour
 //! ---------
