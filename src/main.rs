@@ -199,7 +199,12 @@ fn main() {
         ),
     );
 
-    let cfg = dioxus::desktop::Config::new()
+    let cfg = window_config(webview_data_dir);
+    LaunchBuilder::desktop().with_cfg(cfg).launch(App);
+}
+
+fn window_config(webview_data_dir: std::path::PathBuf) -> dioxus::desktop::Config {
+    dioxus::desktop::Config::new()
         .with_data_directory(webview_data_dir)
         .with_window(
             dioxus::desktop::WindowBuilder::new()
@@ -208,8 +213,21 @@ fn main() {
                 .with_maximized(true)
                 .with_always_on_top(false)
                 .with_window_icon(make_icon()),
-        );
-    LaunchBuilder::desktop().with_cfg(cfg).launch(App);
+        )
+}
+
+/// Opens another window on `dir`, in this same process, going straight past
+/// the welcome picker into Loading — the picker window that spawned it stays
+/// on the welcome screen as a permanent launcher.
+///
+/// One process, many windows — not many processes, which would race each
+/// other over `config.json` and fight for the WebView2 data directory.
+pub fn open_in_new_window(dir: String) {
+    let log_dir = dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("AIS Runner");
+    let dom = VirtualDom::new_with_props(AppWindow, AppWindowProps { initial: Some(dir) });
+    dioxus::desktop::window().new_window(dom, window_config(log_dir));
 }
 
 fn make_icon() -> Option<dioxus::desktop::tao::window::Icon> {
@@ -302,10 +320,20 @@ enum Screen {
 
 // ── Root component ────────────────────────────────────────────────────────────
 
+/// The first window's root. Every other window is an `AppWindow` too — this
+/// exists only because the launcher needs a component that takes no props.
 #[component]
 fn App() -> Element {
+    rsx! { AppWindow { initial: Option::<String>::None } }
+}
+
+#[component]
+fn AppWindow(initial: Option<String>) -> Element {
     let saved = config::load();
-    let screen = use_signal(|| Screen::Welcome);
+    let screen = use_signal(|| match &initial {
+        Some(dir) => Screen::Loading(dir.clone()),
+        None => Screen::Welcome,
+    });
     let app_cfg = use_signal(|| saved);
 
     // Apply system theme once at startup, then keep in sync — but stop
@@ -365,15 +393,16 @@ fn App() -> Element {
     });
     */
 
+    // Opening a project always spawns a new window and leaves this one on the
+    // welcome screen — it's a launcher, not a workspace you leave.
     let on_open = {
-        let mut screen = screen;
         let mut app_cfg = app_cfg;
         move |dir: String| {
             let mut cfg = app_cfg.read().clone();
             cfg.push_dir(dir.clone());
             config::save(&cfg);
             app_cfg.set(cfg);
-            screen.set(Screen::Loading(dir));
+            open_in_new_window(dir);
         }
     };
 
