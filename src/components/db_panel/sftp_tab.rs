@@ -1,19 +1,17 @@
+use crate::services::sftp_check::{self, SftpConnection, SftpTestResult};
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
-use crate::services::sftp_check::{self, SftpConnection, SftpTestResult};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SftpTabProps {
-    pub connections:    Vec<SftpConnection>,
+    pub connections: Vec<SftpConnection>,
     pub logic_apps_dir: String,
 }
 
 #[component]
 pub fn SftpTab(props: SftpTabProps) -> Element {
-    let mut test_results: Signal<HashMap<String, SftpTestResult>> =
-        use_signal(HashMap::new);
-    let mut testing: Signal<HashSet<String>> =
-        use_signal(HashSet::new);
+    let mut test_results: Signal<HashMap<String, SftpTestResult>> = use_signal(HashMap::new);
+    let mut testing: Signal<HashSet<String>> = use_signal(HashSet::new);
 
     if props.connections.is_empty() {
         return rsx! {

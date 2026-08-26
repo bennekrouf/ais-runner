@@ -1,5 +1,5 @@
-use tiberius::{AuthMethod, Client, Config, EncryptionLevel, Query};
 use std::sync::OnceLock;
+use tiberius::{AuthMethod, Client, Config, EncryptionLevel, Query};
 
 // Global channel: sql_runner pushes log lines here; the UI drains them into the SQL Dev tab.
 static SQL_LOG_TX: OnceLock<tokio::sync::mpsc::UnboundedSender<String>> = OnceLock::new();
@@ -82,10 +82,24 @@ pub async fn run_sql(database: &str, sql: &str) -> Result<String, String> {
 
     let mut output = String::new();
 
-    for SqlBatch { text: raw_batch, start_line } in &batches {
+    for SqlBatch {
+        text: raw_batch,
+        start_line,
+    } in &batches
+    {
         let batch = make_idempotent(raw_batch);
-        sql_log(format!("  ▸ (L{}) {}", start_line,
-            batch.trim().lines().next().unwrap_or("").chars().take(80).collect::<String>()));
+        sql_log(format!(
+            "  ▸ (L{}) {}",
+            start_line,
+            batch
+                .trim()
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(80)
+                .collect::<String>()
+        ));
         let trimmed = batch.trim_start().to_ascii_uppercase();
 
         // Use `simple_query` for every batch — it sends the SQL as a real
@@ -128,18 +142,21 @@ pub async fn run_sql(database: &str, sql: &str) -> Result<String, String> {
                     Ok(rows) => {
                         for result_set in rows {
                             for row in result_set {
-                                let cols: Vec<String> = (0..row.len())
-                                    .map(|i| cell_to_string(&row, i))
-                                    .collect();
+                                let cols: Vec<String> =
+                                    (0..row.len()).map(|i| cell_to_string(&row, i)).collect();
                                 output.push_str(&cols.join(" | "));
                                 output.push('\n');
                             }
                         }
                         continue;
                     }
-                    Err(e) => Err(format!("Result error in batch starting at line {start_line}: {e}")),
+                    Err(e) => Err(format!(
+                        "Result error in batch starting at line {start_line}: {e}"
+                    )),
                 },
-                Err(e) => Err(format!("SQL error in batch starting at line {start_line}: {e}")),
+                Err(e) => Err(format!(
+                    "SQL error in batch starting at line {start_line}: {e}"
+                )),
             }
         } else {
             run_batch_via_simple_query(&mut client, &batch, &mut output).await
@@ -155,35 +172,49 @@ pub async fn run_sql(database: &str, sql: &str) -> Result<String, String> {
                 if is_already_exists(&msg) {
                     sql_log(format!("  ↷ already exists — skipped"));
                     output.push_str("(already exists — skipped)\n");
-                } else if msg.contains("2760") || msg.contains("does not exist or you do not have permission") {
+                } else if msg.contains("2760")
+                    || msg.contains("does not exist or you do not have permission")
+                {
                     // Schema not found — extract schema name, auto-create it, retry once.
                     // Both calls go through `simple_query` to stay consistent with
                     // the main exec path (CREATE PROCEDURE / USE / multi-statement
                     // all need real SQL batches, not sp_executesql wrapping).
                     if let Some(schema) = extract_schema_from_batch(&batch) {
-                        let create = format!("IF SCHEMA_ID('{schema}') IS NULL EXEC('CREATE SCHEMA [{schema}]')");
+                        let create = format!(
+                            "IF SCHEMA_ID('{schema}') IS NULL EXEC('CREATE SCHEMA [{schema}]')"
+                        );
                         if let Ok(s) = client.simple_query(create.as_str()).await {
                             let _ = s.into_results().await;
                         }
                         // Retry the original batch
                         match run_batch_via_simple_query(&mut client, &batch, &mut output).await {
                             Ok(affected) => {
-                                output.push_str(&format!("(auto-created schema [{schema}], then OK)\n"));
-                                if affected > 0 { output.push_str(&format!("({affected} row(s) affected)\n")); }
+                                output.push_str(&format!(
+                                    "(auto-created schema [{schema}], then OK)\n"
+                                ));
+                                if affected > 0 {
+                                    output.push_str(&format!("({affected} row(s) affected)\n"));
+                                }
                             }
                             Err(e2) => {
                                 if is_already_exists(&e2) {
                                     output.push_str("(already exists — skipped)\n");
                                 } else {
-                                    return Err(format!("SQL error in batch starting at line {start_line}: {e2}"));
+                                    return Err(format!(
+                                        "SQL error in batch starting at line {start_line}: {e2}"
+                                    ));
                                 }
                             }
                         }
                     } else {
-                        return Err(format!("SQL error in batch starting at line {start_line}: {msg}"));
+                        return Err(format!(
+                            "SQL error in batch starting at line {start_line}: {msg}"
+                        ));
                     }
                 } else {
-                    return Err(format!("SQL error in batch starting at line {start_line}: {msg}"));
+                    return Err(format!(
+                        "SQL error in batch starting at line {start_line}: {msg}"
+                    ));
                 }
             }
         }
@@ -193,7 +224,10 @@ pub async fn run_sql(database: &str, sql: &str) -> Result<String, String> {
         sql_log("  ✓ OK".to_string());
         output = NO_ROWS.into();
     } else {
-        sql_log(format!("  ✓ {}", output.trim().lines().next().unwrap_or("")));
+        sql_log(format!(
+            "  ✓ {}",
+            output.trim().lines().next().unwrap_or("")
+        ));
     }
 
     Ok(output)
@@ -206,9 +240,7 @@ fn is_already_exists(msg: &str) -> bool {
     // 1801 = "Database '...' already exists."
     // NOTE: 2760 ("schema not found") is intentionally NOT here — it means
     // a real error (CREATE TABLE in a non-existent schema) and must surface.
-    msg.contains("already exists")
-        || msg.contains("2714")
-        || msg.contains("1801")
+    msg.contains("already exists") || msg.contains("2714") || msg.contains("1801")
 }
 
 /// Send a single batch via `simple_query` and accumulate any rows it
@@ -231,19 +263,19 @@ type TdsClient = tiberius::Client<tokio_util::compat::Compat<TcpStream>>;
 
 async fn run_batch_via_simple_query(
     client: &mut TdsClient,
-    batch:  &str,
+    batch: &str,
     output: &mut String,
-) -> Result<u64, String>
-{
-    let stream = client.simple_query(batch).await.map_err(|e| e.to_string())?;
+) -> Result<u64, String> {
+    let stream = client
+        .simple_query(batch)
+        .await
+        .map_err(|e| e.to_string())?;
     let result_sets = stream.into_results().await.map_err(|e| e.to_string())?;
     let mut total: u64 = 0;
     for result_set in result_sets {
         for row in result_set {
             total += 1;
-            let cols: Vec<String> = (0..row.len())
-                .map(|i| cell_to_string(&row, i))
-                .collect();
+            let cols: Vec<String> = (0..row.len()).map(|i| cell_to_string(&row, i)).collect();
             output.push_str(&cols.join(" | "));
             output.push('\n');
         }
@@ -278,21 +310,37 @@ fn extract_schema_from_batch(batch: &str) -> Option<String> {
 /// user knows the row arrived but we couldn't render that cell).
 fn cell_to_string(row: &tiberius::Row, i: usize) -> String {
     // Strings — covers VARCHAR, NVARCHAR, CHAR, NCHAR, TEXT, NTEXT.
-    if let Ok(Some(s)) = row.try_get::<&str, _>(i) { return s.to_string(); }
+    if let Ok(Some(s)) = row.try_get::<&str, _>(i) {
+        return s.to_string();
+    }
 
     // Integer family. Order matters only for "compact display" — the type
     // tag is exact so we'll only match the right arm.
-    if let Ok(Some(v)) = row.try_get::<i64, _>(i) { return v.to_string(); }
-    if let Ok(Some(v)) = row.try_get::<i32, _>(i) { return v.to_string(); }
-    if let Ok(Some(v)) = row.try_get::<i16, _>(i) { return v.to_string(); }
-    if let Ok(Some(v)) = row.try_get::<u8,  _>(i) { return v.to_string(); }
+    if let Ok(Some(v)) = row.try_get::<i64, _>(i) {
+        return v.to_string();
+    }
+    if let Ok(Some(v)) = row.try_get::<i32, _>(i) {
+        return v.to_string();
+    }
+    if let Ok(Some(v)) = row.try_get::<i16, _>(i) {
+        return v.to_string();
+    }
+    if let Ok(Some(v)) = row.try_get::<u8, _>(i) {
+        return v.to_string();
+    }
 
     // Floats / decimals — tiberius decodes DECIMAL/NUMERIC as f64 by default.
-    if let Ok(Some(v)) = row.try_get::<f64, _>(i) { return v.to_string(); }
-    if let Ok(Some(v)) = row.try_get::<f32, _>(i) { return v.to_string(); }
+    if let Ok(Some(v)) = row.try_get::<f64, _>(i) {
+        return v.to_string();
+    }
+    if let Ok(Some(v)) = row.try_get::<f32, _>(i) {
+        return v.to_string();
+    }
 
     // BIT.
-    if let Ok(Some(v)) = row.try_get::<bool, _>(i) { return (if v { "1" } else { "0" }).to_string(); }
+    if let Ok(Some(v)) = row.try_get::<bool, _>(i) {
+        return (if v { "1" } else { "0" }).to_string();
+    }
 
     // DATETIME / DATETIME2 / SMALLDATETIME — rendered as ISO-8601.
     // Tiberius 0.12 only exposes NaiveDateTime under the `chrono` feature;
@@ -318,7 +366,7 @@ fn cell_to_string(row: &tiberius::Row, i: usize) -> String {
     // to differentiate.
     match row.try_get::<&str, _>(i) {
         Ok(None) => "NULL".to_string(),
-        _        => "<unsupported type>".to_string(),
+        _ => "<unsupported type>".to_string(),
     }
 }
 
@@ -347,19 +395,29 @@ pub async fn sproc_exists(database: &str, sproc: &str) -> Result<bool, String> {
         format!("dbo.{cleaned}")
     };
     let escaped = qualified.replace('\'', "''");
-    let sql = format!("SELECT CAST(CASE WHEN OBJECT_ID(N'{escaped}', N'P') IS NULL THEN 0 ELSE 1 END AS INT)");
+    let sql = format!(
+        "SELECT CAST(CASE WHEN OBJECT_ID(N'{escaped}', N'P') IS NULL THEN 0 ELSE 1 END AS INT)"
+    );
 
     let config = base_config(database);
-    let tcp = TcpStream::connect(config.get_addr()).await
+    let tcp = TcpStream::connect(config.get_addr())
+        .await
         .map_err(|e| format!("Cannot connect: {e}"))?;
     tcp.set_nodelay(true).ok();
-    let mut client = Client::connect(config, tcp.compat_write()).await
+    let mut client = Client::connect(config, tcp.compat_write())
+        .await
         .map_err(|e| format!("Login failed: {e}"))?;
-    let rows = Query::new(sql).query(&mut client).await
+    let rows = Query::new(sql)
+        .query(&mut client)
+        .await
         .map_err(|e| e.to_string())?
-        .into_results().await
+        .into_results()
+        .await
         .map_err(|e| e.to_string())?;
-    let exists = rows.into_iter().flatten().next()
+    let exists = rows
+        .into_iter()
+        .flatten()
+        .next()
         .and_then(|r| r.get::<i32, _>(0))
         .map(|n| n != 0)
         .unwrap_or(false);
@@ -372,16 +430,23 @@ pub async fn list_databases() -> Result<Vec<String>, String> {
                WHERE name NOT IN ('master','tempdb','model','msdb') \
                ORDER BY name";
     let config = base_config("master");
-    let tcp = TcpStream::connect(config.get_addr()).await
+    let tcp = TcpStream::connect(config.get_addr())
+        .await
         .map_err(|e| format!("Cannot connect: {e}"))?;
     tcp.set_nodelay(true).ok();
-    let mut client = Client::connect(config, tcp.compat_write()).await
+    let mut client = Client::connect(config, tcp.compat_write())
+        .await
         .map_err(|e| format!("Login failed: {e}"))?;
-    let rows = Query::new(sql).query(&mut client).await
+    let rows = Query::new(sql)
+        .query(&mut client)
+        .await
         .map_err(|e| e.to_string())?
-        .into_results().await
+        .into_results()
+        .await
         .map_err(|e| e.to_string())?;
-    Ok(rows.into_iter().flatten()
+    Ok(rows
+        .into_iter()
+        .flatten()
         .filter_map(|r| r.get::<&str, _>(0).map(|s| s.to_string()))
         .collect())
 }
@@ -395,19 +460,26 @@ pub async fn list_tables(database: &str) -> Result<Vec<(String, String, u64)>, S
                GROUP BY s.name, t.name \
                ORDER BY s.name, t.name";
     let config = base_config(database);
-    let tcp = TcpStream::connect(config.get_addr()).await
+    let tcp = TcpStream::connect(config.get_addr())
+        .await
         .map_err(|e| format!("Cannot connect: {e}"))?;
     tcp.set_nodelay(true).ok();
-    let mut client = Client::connect(config, tcp.compat_write()).await
+    let mut client = Client::connect(config, tcp.compat_write())
+        .await
         .map_err(|e| format!("Login failed: {e}"))?;
-    let rows = Query::new(sql).query(&mut client).await
+    let rows = Query::new(sql)
+        .query(&mut client)
+        .await
         .map_err(|e| e.to_string())?
-        .into_results().await
+        .into_results()
+        .await
         .map_err(|e| e.to_string())?;
-    Ok(rows.into_iter().flatten()
+    Ok(rows
+        .into_iter()
+        .flatten()
         .filter_map(|r| {
             let schema = r.get::<&str, _>(0)?.to_string();
-            let table  = r.get::<&str, _>(1)?.to_string();
+            let table = r.get::<&str, _>(1)?.to_string();
             let count: i64 = r.get::<i64, _>(2).unwrap_or(0);
             Some((schema, table, count.max(0) as u64))
         })
@@ -426,12 +498,16 @@ pub async fn drop_database(name: &str) -> Result<(), String> {
 
 /// Truncate a table (remove all rows, keep structure).
 pub async fn truncate_table(database: &str, schema: &str, table: &str) -> Result<(), String> {
-    run_sql(database, &format!("TRUNCATE TABLE [{schema}].[{table}]")).await.map(|_| ())
+    run_sql(database, &format!("TRUNCATE TABLE [{schema}].[{table}]"))
+        .await
+        .map(|_| ())
 }
 
 /// Drop a table entirely.
 pub async fn drop_table(database: &str, schema: &str, table: &str) -> Result<(), String> {
-    run_sql(database, &format!("DROP TABLE [{schema}].[{table}]")).await.map(|_| ())
+    run_sql(database, &format!("DROP TABLE [{schema}].[{table}]"))
+        .await
+        .map(|_| ())
 }
 
 /// Create a database if it doesn't already exist.
@@ -440,7 +516,7 @@ pub async fn create_database(name: &str) -> Result<String, String> {
     // CREATE DATABASE must be the only statement in its batch (SQL Server rule).
     let sql = format!("IF DB_ID(N'{name}') IS NULL CREATE DATABASE [{name}]");
     match run_sql("master", &sql).await {
-        Ok(_)  => Ok(format!("✅ Database [{name}] ready.")),
+        Ok(_) => Ok(format!("✅ Database [{name}] ready.")),
         Err(e) => Err(e),
     }
 }
@@ -468,12 +544,17 @@ pub async fn detect_sqlcmd_path() -> Option<(String, bool)> {
     // exist (unlikely but harmless).
     for (path, needs_c) in &[
         ("/opt/mssql-tools18/bin/sqlcmd", true),
-        ("/opt/mssql-tools/bin/sqlcmd",   false),
+        ("/opt/mssql-tools/bin/sqlcmd", false),
     ] {
         let docker = crate::services::runtime_manager::resolve_tool("docker");
         let out = Command::new(&docker)
-            .args(["exec", crate::handlers::sql_emulator::CONTAINER_NAME,
-                   "test", "-x", path])
+            .args([
+                "exec",
+                crate::handlers::sql_emulator::CONTAINER_NAME,
+                "test",
+                "-x",
+                path,
+            ])
             .output()
             .await;
         if let Ok(out) = out {
@@ -507,7 +588,7 @@ pub fn shell_command_line(sqlcmd_path: &str, needs_dash_c: bool) -> String {
 /// to the offending statement (vs. a line inside an opaque split chunk).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqlBatch {
-    pub text:       String,
+    pub text: String,
     pub start_line: u32,
 }
 
@@ -563,7 +644,10 @@ pub fn split_sql_batches(sql: &str) -> Vec<SqlBatch> {
     let push_batch = |buf: &mut String, start: u32, out: &mut Vec<SqlBatch>| {
         let text = buf.trim().to_string();
         if !text.is_empty() {
-            out.push(SqlBatch { text, start_line: start });
+            out.push(SqlBatch {
+                text,
+                start_line: start,
+            });
         }
         buf.clear();
     };
@@ -633,7 +717,9 @@ pub fn split_sql_batches(sql: &str) -> Vec<SqlBatch> {
                         buf_started = false;
                         // Advance past the GO line including its newline.
                         for j in i..advanced {
-                            if bytes[j] == b'\n' { current_line += 1; }
+                            if bytes[j] == b'\n' {
+                                current_line += 1;
+                            }
                         }
                         i = advanced;
                         continue;
@@ -677,7 +763,9 @@ pub fn split_sql_batches(sql: &str) -> Vec<SqlBatch> {
             }
             State::LineComment => {
                 buf.push(c);
-                if c == '\n' { state = State::Code; }
+                if c == '\n' {
+                    state = State::Code;
+                }
             }
             State::BlockComment => {
                 buf.push(c);
@@ -690,7 +778,9 @@ pub fn split_sql_batches(sql: &str) -> Vec<SqlBatch> {
             }
         }
 
-        if c == '\n' { current_line += 1; }
+        if c == '\n' {
+            current_line += 1;
+        }
         i += 1;
     }
 
@@ -706,35 +796,58 @@ pub fn split_sql_batches(sql: &str) -> Vec<SqlBatch> {
 fn match_go_line(bytes: &[u8], i: usize) -> Option<usize> {
     // Skip leading whitespace (but not newline — we're testing this single line).
     let mut j = i;
-    while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') { j += 1; }
+    while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+        j += 1;
+    }
     // Must start with G/g then O/o, not followed by an identifier-continuing char.
-    if j + 1 >= bytes.len() { return None; }
-    if !(bytes[j] == b'G' || bytes[j] == b'g') { return None; }
-    if !(bytes[j + 1] == b'O' || bytes[j + 1] == b'o') { return None; }
+    if j + 1 >= bytes.len() {
+        return None;
+    }
+    if !(bytes[j] == b'G' || bytes[j] == b'g') {
+        return None;
+    }
+    if !(bytes[j + 1] == b'O' || bytes[j + 1] == b'o') {
+        return None;
+    }
     let after = j + 2;
     // The next char must be a word boundary (whitespace, newline, EOF, or comment).
-    let next_is_word = after < bytes.len()
-        && (bytes[after] as char).is_ascii_alphanumeric();
-    if next_is_word { return None; }
+    let next_is_word = after < bytes.len() && (bytes[after] as char).is_ascii_alphanumeric();
+    if next_is_word {
+        return None;
+    }
     // Optional whitespace then optional digits (repetition count).
     let mut k = after;
-    while k < bytes.len() && (bytes[k] == b' ' || bytes[k] == b'\t') { k += 1; }
-    while k < bytes.len() && (bytes[k] as char).is_ascii_digit() { k += 1; }
+    while k < bytes.len() && (bytes[k] == b' ' || bytes[k] == b'\t') {
+        k += 1;
+    }
+    while k < bytes.len() && (bytes[k] as char).is_ascii_digit() {
+        k += 1;
+    }
     // Optional trailing whitespace.
-    while k < bytes.len() && (bytes[k] == b' ' || bytes[k] == b'\t') { k += 1; }
+    while k < bytes.len() && (bytes[k] == b' ' || bytes[k] == b'\t') {
+        k += 1;
+    }
     // Optional line comment to end of line.
     if k + 1 < bytes.len() && bytes[k] == b'-' && bytes[k + 1] == b'-' {
-        while k < bytes.len() && bytes[k] != b'\n' { k += 1; }
+        while k < bytes.len() && bytes[k] != b'\n' {
+            k += 1;
+        }
     }
     // Tolerate Windows CRLF line endings — `\r` between the trailing
     // whitespace and the `\n` is part of the line terminator and must be
     // consumed alongside the newline. Without this, a script saved with
     // CRLF would slip every GO past the matcher and end up shipped to the
     // server as part of the previous batch, producing nonsense errors.
-    if k < bytes.len() && bytes[k] == b'\r' { k += 1; }
+    if k < bytes.len() && bytes[k] == b'\r' {
+        k += 1;
+    }
     // Must end at newline or EOF.
-    if k >= bytes.len() { return Some(bytes.len()); }
-    if bytes[k] == b'\n' { return Some(k + 1); }
+    if k >= bytes.len() {
+        return Some(bytes.len());
+    }
+    if bytes[k] == b'\n' {
+        return Some(k + 1);
+    }
     None
 }
 
@@ -845,8 +958,14 @@ mod tests {
         let batches = split_sql_batches(sql);
         assert_eq!(batches.len(), 3);
         assert_eq!(batches[0].start_line, 1, "first batch starts at line 1");
-        assert_eq!(batches[1].start_line, 4, "second batch starts after the blank line at line 4");
-        assert_eq!(batches[2].start_line, 6, "third batch starts after the GO at line 6");
+        assert_eq!(
+            batches[1].start_line, 4,
+            "second batch starts after the blank line at line 4"
+        );
+        assert_eq!(
+            batches[2].start_line, 6,
+            "third batch starts after the GO at line 6"
+        );
     }
 
     #[test]
@@ -882,12 +1001,20 @@ mod tests {
         // trimmed text starts with `--` (comment-only batches send fine to
         // SQL Server — they're no-ops). After that, the CREATE PROCEDURE
         // batch must start clean.
-        let proc_batch = batches.iter().find(|b| b.text.contains("CREATE PROCEDURE")).unwrap();
+        let proc_batch = batches
+            .iter()
+            .find(|b| b.text.contains("CREATE PROCEDURE"))
+            .unwrap();
         assert!(
             proc_batch.text.trim_start().starts_with("CREATE PROCEDURE"),
-            "CREATE PROCEDURE batch was: {:?}", proc_batch.text
+            "CREATE PROCEDURE batch was: {:?}",
+            proc_batch.text
         );
-        assert_eq!(proc_batch.start_line, 4, "expected line 4, got {}", proc_batch.start_line);
+        assert_eq!(
+            proc_batch.start_line, 4,
+            "expected line 4, got {}",
+            proc_batch.start_line
+        );
     }
 
     #[test]
@@ -948,14 +1075,22 @@ GO"#;
                 assert!(
                     trimmed.starts_with("CREATE PROCEDURE"),
                     "batch at line {} contains CREATE PROCEDURE not at the start — full text:\n{}",
-                    b.start_line, b.text,
+                    b.start_line,
+                    b.text,
                 );
             }
         }
         // And we should have at least the two procedure batches plus the
         // header batches.
-        let create_proc_batches = batches.iter().filter(|b| b.text.trim_start().starts_with("CREATE PROCEDURE")).count();
-        assert_eq!(create_proc_batches, 2, "expected exactly two CREATE PROCEDURE batches; batches:\n{:#?}", batches);
+        let create_proc_batches = batches
+            .iter()
+            .filter(|b| b.text.trim_start().starts_with("CREATE PROCEDURE"))
+            .count();
+        assert_eq!(
+            create_proc_batches, 2,
+            "expected exactly two CREATE PROCEDURE batches; batches:\n{:#?}",
+            batches
+        );
     }
 
     #[test]

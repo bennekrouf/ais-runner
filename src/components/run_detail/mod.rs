@@ -12,65 +12,70 @@ mod run_block;
 mod sql_chips;
 mod storage_events;
 
-use run_block::RunBlock;
 use error_extract::build_action_error_map;
+use run_block::RunBlock;
 use sql_chips::SqlSprocChip;
 
-use dioxus::prelude::*;
-use std::collections::{HashMap, HashSet};
-use crate::services::workflows::{ActionItem, RunItem, duration_ms};
-use crate::services::workflow_analysis::{WorkflowAnalysis, TriggerKind};
-use crate::services::workflow_outline::{self, SectionKind};
-use crate::services::process::ServiceState;
 use crate::components::log_panel::LogLine;
 use crate::components::tooltip::Tooltip;
+use crate::services::process::ServiceState;
+use crate::services::workflow_analysis::{TriggerKind, WorkflowAnalysis};
+use crate::services::workflow_outline::{self, SectionKind};
+use crate::services::workflows::{duration_ms, ActionItem, RunItem};
+use dioxus::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 use crate::utils::open_in_editor;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct RunDetailProps {
-    pub workflow:           Option<String>,
-    pub source_text:        Signal<String>,
-    pub runs:               Vec<RunItem>,
-    pub actions:            Vec<ActionItem>,
-    pub is_live:            bool,
-    pub active_tab:         Signal<String>,
-    pub health_error:       Option<String>,
-    pub logs:               Vec<LogLine>,
+    pub workflow: Option<String>,
+    pub source_text: Signal<String>,
+    pub runs: Vec<RunItem>,
+    pub actions: Vec<ActionItem>,
+    pub is_live: bool,
+    pub active_tab: Signal<String>,
+    pub health_error: Option<String>,
+    pub logs: Vec<LogLine>,
     /// Live Azurite debug.log buffer (owned by main_screen). Used per-run to
     /// surface storage events that happened during each run's time window.
-    pub az_lines:           Signal<Vec<String>>,
-    pub analysis:           WorkflowAnalysis,
+    pub az_lines: Signal<Vec<String>>,
+    pub analysis: WorkflowAnalysis,
     /// sproc qualified name → Some(true|false) once probed, None while loading.
-    pub sproc_status:       Signal<HashMap<String, Option<bool>>>,
-    pub source_path:        Option<String>,
-    pub suggested_payload:  String,
-    pub on_run:             EventHandler<()>,
-    pub on_refresh:         EventHandler<()>,
-    pub on_clear_runs:      EventHandler<()>,
-    pub on_select_run:      EventHandler<String>,
+    pub sproc_status: Signal<HashMap<String, Option<bool>>>,
+    pub source_path: Option<String>,
+    pub suggested_payload: String,
+    pub on_run: EventHandler<()>,
+    pub on_refresh: EventHandler<()>,
+    pub on_clear_runs: EventHandler<()>,
+    pub on_select_run: EventHandler<String>,
     /// True when Azurite + Functions host are both running, so workflows can be listed.
-    pub services_ready:     bool,
+    pub services_ready: bool,
     /// True while either Azurite or the Functions host is in the process of starting.
-    pub services_starting:  bool,
+    pub services_starting: bool,
     /// Number of workflows currently in the discovered list. When services
     /// are running but this is zero, the list is still being scanned —
     /// surface a spinner instead of the "Select a workflow…" prompt.
-    pub workflow_count:     usize,
+    pub workflow_count: usize,
     /// Per-service state, so the empty-state hint can embed inline action
     /// buttons that start each service directly from the message.
-    pub azurite_state:      ServiceState,
-    pub func_state:         ServiceState,
-    pub on_start_azurite:   EventHandler<()>,
-    pub on_start_func:      EventHandler<()>,
+    pub azurite_state: ServiceState,
+    pub func_state: ServiceState,
+    pub on_start_azurite: EventHandler<()>,
+    pub on_start_func: EventHandler<()>,
 }
 
 #[component]
 pub fn RunDetail(props: RunDetailProps) -> Element {
-    let title = props.workflow.clone().unwrap_or_else(|| "Select a workflow".to_string());
+    let title = props
+        .workflow
+        .clone()
+        .unwrap_or_else(|| "Select a workflow".to_string());
     let mut active_tab = props.active_tab;
 
-    let max_ms = props.actions.iter()
+    let max_ms = props
+        .actions
+        .iter()
         .filter_map(|a| duration_ms(&a.properties.start_time, &a.properties.end_time))
         .max()
         .unwrap_or(1)
@@ -85,8 +90,7 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
     // run's end-time window can exclude late-flushed lines — both make the
     // strip vanish after the run. Once a run has shown events, keep them here
     // (keyed by run id) so the user can still see them when investigating.
-    let storage_events_cache: Signal<HashMap<String, Vec<String>>> =
-        use_signal(HashMap::new);
+    let storage_events_cache: Signal<HashMap<String, Vec<String>>> = use_signal(HashMap::new);
     // "Failures only" toggle on the Run tab. When on, each run block hides
     // every action except the first one with a failed/timedout/cancelled
     // status — which is the action that actually caused the run to fail.
@@ -95,22 +99,22 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
     let mut failures_only = use_signal(|| false);
 
     // ── Payload popover ────────────────────────────────────────────────────
-    let mut payload_open   = use_signal(|| false);
-    let mut copied         = use_signal(|| false);
-    let suggested          = props.suggested_payload.clone();
+    let mut payload_open = use_signal(|| false);
+    let mut copied = use_signal(|| false);
+    let suggested = props.suggested_payload.clone();
 
     // ── Source tab actions ─────────────────────────────────────────────────
-    let mut source_copied  = use_signal(|| false);
-    let mut opening        = use_signal(|| false);
-    let mut source_hl      = use_signal(String::new);
-    let source_text        = props.source_text;
+    let mut source_copied = use_signal(|| false);
+    let mut opening = use_signal(|| false);
+    let mut source_hl = use_signal(String::new);
+    let source_text = props.source_text;
 
     // Pre-derive per-service state booleans so the inline service buttons in
     // the empty-state hint can show the right icon (▶ idle / ⟳ starting /
     // ✓ running) without repeating the match in both call sites.
-    let az_state   = props.azurite_state.clone();
+    let az_state = props.azurite_state.clone();
     let func_state = props.func_state.clone();
-    let on_start_az   = props.on_start_azurite;
+    let on_start_az = props.on_start_azurite;
     let on_start_func = props.on_start_func;
 
     // Normalise the source to a stable pretty-printed form before doing
@@ -123,7 +127,7 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
     let pretty_source = use_memo(move || {
         let raw = source_text.read().clone();
         match serde_json::from_str::<serde_json::Value>(&raw) {
-            Ok(v)  => serde_json::to_string_pretty(&v).unwrap_or(raw),
+            Ok(v) => serde_json::to_string_pretty(&v).unwrap_or(raw),
             Err(_) => raw, // not JSON (e.g. read error fallback) — leave as-is
         }
     });
@@ -144,12 +148,13 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
     use_effect(move || {
         let _ = source_hl.read(); // re-run when HTML is replaced
         let sections = outline.read().clone();
-        if sections.is_empty() { return; }
-        let starts: Vec<u32> = sections.iter()
-            .map(|s| s.start_line.unwrap_or(0))
-            .collect();
+        if sections.is_empty() {
+            return;
+        }
+        let starts: Vec<u32> = sections.iter().map(|s| s.start_line.unwrap_or(0)).collect();
         let starts_json = serde_json::to_string(&starts).unwrap_or_else(|_| "[]".to_string());
-        let script = format!(r#"
+        let script = format!(
+            r#"
 (function() {{
   var pre = document.getElementById('source-pre');
   if (!pre) return;
@@ -192,7 +197,8 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
   // Initial fire so the first section is highlighted before any scroll.
   setTimeout(tick, 0);
 }})();
-"#);
+"#
+        );
         spawn(async move {
             let mut eval = document::eval(&script);
             while let Ok(val) = eval.recv::<serde_json::Value>().await {
@@ -278,7 +284,8 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
 
     // Click on a rail item → scroll the source pane to that line.
     let scroll_to_line = move |line: u32| {
-        let script = format!(r#"
+        let script = format!(
+            r#"
 (function() {{
   var pre = document.getElementById('source-pre');
   if (!pre) return;
@@ -288,7 +295,8 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
   // the top of the viewport.
   pre.scrollTo({{ top: Math.max(0, ({line} - 2) * lh), behavior: 'smooth' }});
 }})();
-"#);
+"#
+        );
         spawn(async move {
             let _ = document::eval(&script);
         });
@@ -300,9 +308,13 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
     // scroll-sync highlight aligned with the section under the cursor.
     use_effect(move || {
         let raw = pretty_source.read().clone();
-        if raw.is_empty() { source_hl.set(String::new()); return; }
+        if raw.is_empty() {
+            source_hl.set(String::new());
+            return;
+        }
         let raw_json = serde_json::to_string(&raw).unwrap_or_default();
-        let script = format!(r#"
+        let script = format!(
+            r#"
 (function() {{
     var raw = {raw_json};
     function doHighlight() {{
@@ -331,7 +343,8 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
         document.head.appendChild(s);
     }}
 }})();
-"#);
+"#
+        );
         spawn(async move {
             let mut eval = document::eval(&script);
             if let Ok(val) = eval.recv().await {
@@ -856,8 +869,6 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
     }
 }
 
-
-
 /// Empty-state hint with inline service buttons.
 ///
 /// Renders the right sentence for the current readiness state and, when one
@@ -868,13 +879,13 @@ pub fn RunDetail(props: RunDetailProps) -> Element {
 /// `tab` is "logs" or "source" — only used to vary the trailing fragment
 /// ("view its source." vs "view its logs.") so the message reads naturally.
 fn render_service_hint(
-    azurite_state:   &ServiceState,
-    func_state:      &ServiceState,
-    on_start_az:     EventHandler<()>,
-    on_start_func:   EventHandler<()>,
-    services_ready:  bool,
-    workflow_count:  usize,
-    tab:             &'static str,
+    azurite_state: &ServiceState,
+    func_state: &ServiceState,
+    on_start_az: EventHandler<()>,
+    on_start_func: EventHandler<()>,
+    services_ready: bool,
+    workflow_count: usize,
+    tab: &'static str,
 ) -> Element {
     // Services up: either the workflow list has loaded (prompt user to pick
     // one) or the scan is still running (show a spinner — far more obvious
@@ -896,11 +907,7 @@ fn render_service_hint(
 
     // Per-service button factory — picks label + class + disabled state
     // from the live service state and lets the caller wire the click.
-    fn svc_button(
-        state:    &ServiceState,
-        name:     &'static str,
-        on_start: EventHandler<()>,
-    ) -> Element {
+    fn svc_button(state: &ServiceState, name: &'static str, on_start: EventHandler<()>) -> Element {
         match state {
             ServiceState::Running => rsx! {
                 span { class: "inline-svc inline-svc-running",

@@ -18,11 +18,11 @@ use crate::services::mock::rewrite;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Blocker {
     /// One line naming what is wrong.
-    pub title:  String,
+    pub title: String,
     /// Why it breaks the run — the symptom the user would otherwise chase.
     pub detail: String,
     /// The concrete action that resolves it.
-    pub fix:    String,
+    pub fix: String,
 }
 
 /// Managed-API connection runtime URLs live on `*_connectionUrl` settings.
@@ -105,10 +105,10 @@ fn lookup_sibling_settings_files(logic_apps_dir: &Path, name: &str) -> Option<St
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
-            let Some(f) = p.file_name().and_then(|f| f.to_str()) else { return false };
-            f.starts_with("local.settings.")
-                && f.ends_with(".json")
-                && f != "local.settings.json"
+            let Some(f) = p.file_name().and_then(|f| f.to_str()) else {
+                return false;
+            };
+            f.starts_with("local.settings.") && f.ends_with(".json") && f != "local.settings.json"
         })
         .collect();
     candidates.sort_by_key(|p| environment_rank(p));
@@ -135,7 +135,9 @@ fn collect_json_files(dir: &Path, depth: usize, out: &mut Vec<std::path::PathBuf
     if depth > 3 {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -188,7 +190,9 @@ fn derive_from_sibling_setting(logic_apps_dir: &Path, name: &str) -> Option<Stri
             continue;
         }
         for token in text.split(';') {
-            let Some((tk, tv)) = token.split_once('=') else { continue };
+            let Some((tk, tv)) = token.split_once('=') else {
+                continue;
+            };
             if tk.trim().eq_ignore_ascii_case(suffix) && !tv.trim().is_empty() {
                 return Some(tv.trim().to_string());
             }
@@ -205,7 +209,11 @@ fn known_local_target(name: &str) -> Option<String> {
         // These are function-app callback URLs invoked as service-provider
         // connections; the local mock server is the correct local target, not
         // a stand-in for one we couldn't find.
-        return Some(format!("{}/__mock__/{}", crate::services::run_readiness::MOCK_BASE_URL, name));
+        return Some(format!(
+            "{}/__mock__/{}",
+            crate::services::run_readiness::MOCK_BASE_URL,
+            name
+        ));
     }
     None
 }
@@ -228,10 +236,9 @@ pub fn check(logic_apps_dir: &str) -> (Vec<Blocker>, rewrite::SanitizeReport, Ve
     //    a request back to the original URL through the stash, so a stale entry
     //    leaves it with no upstream: calls return an empty body and the failure
     //    surfaces somewhere else entirely.
-    let sanitized = rewrite::sanitize_workspace_with_fallback(&dir, |name| {
-        recover_lost_setting(&dir, name)
-    })
-    .unwrap_or_default();
+    let sanitized =
+        rewrite::sanitize_workspace_with_fallback(&dir, |name| recover_lost_setting(&dir, name))
+            .unwrap_or_default();
     if !sanitized.unrecoverable.is_empty() {
         blockers.push(Blocker {
             title: format!(
@@ -305,15 +312,19 @@ pub fn check(logic_apps_dir: &str) -> (Vec<Blocker>, rewrite::SanitizeReport, Ve
                     "{e} — without it there is nowhere to put a developer-local connection \
                      override, and the folder may not be writable."
                 ),
-                fix: format!("Create {} by hand, or fix the permissions on its folder.",
-                    overrides.display()),
+                fix: format!(
+                    "Create {} by hand, or fix the permissions on its folder.",
+                    overrides.display()
+                ),
             }),
         }
     } else if let Err(e) = crate::services::connections_local::load_overrides(&dir) {
         blockers.push(Blocker {
             title: "connections.local.json is not valid JSON".into(),
-            detail: format!("{e} — the override is skipped entirely, so func starts against \
-                             the Azure endpoints in connections.json."),
+            detail: format!(
+                "{e} — the override is skipped entirely, so func starts against \
+                             the Azure endpoints in connections.json."
+            ),
             fix: format!("Fix the syntax in {}.", overrides.display()),
         });
     }
@@ -326,8 +337,11 @@ mod tests {
     use super::*;
 
     fn workspace(values: serde_json::Value) -> std::path::PathBuf {
-        let ws = std::env::temp_dir()
-            .join(format!("ais-preflight-{}-{}", std::process::id(), rand_suffix()));
+        let ws = std::env::temp_dir().join(format!(
+            "ais-preflight-{}-{}",
+            std::process::id(),
+            rand_suffix()
+        ));
         std::fs::create_dir_all(&ws).unwrap();
         std::fs::write(
             ws.join("local.settings.json"),
@@ -345,8 +359,11 @@ mod tests {
         values: serde_json::Value,
         appconfig: serde_json::Value,
     ) -> std::path::PathBuf {
-        let root = std::env::temp_dir()
-            .join(format!("ais-preflight-{}-{}", std::process::id(), rand_suffix()));
+        let root = std::env::temp_dir().join(format!(
+            "ais-preflight-{}-{}",
+            std::process::id(),
+            rand_suffix()
+        ));
         let logic_apps = root.join("logic_apps");
         std::fs::create_dir_all(&logic_apps).unwrap();
         std::fs::write(
@@ -428,7 +445,9 @@ mod tests {
         }));
         let (blockers, _, _) = check(ws.to_str().unwrap());
         assert!(
-            blockers.iter().any(|b| b.title.contains("stopped mock server")),
+            blockers
+                .iter()
+                .any(|b| b.title.contains("stopped mock server")),
             "a lost original must block startup: {blockers:?}"
         );
         std::fs::remove_dir_all(&ws).ok();
@@ -471,7 +490,10 @@ mod tests {
         );
         let (blockers, sanitized, _) = check(root.to_str().unwrap());
         assert!(blockers.is_empty(), "unexpected blockers: {blockers:?}");
-        assert_eq!(sanitized.recovered, vec!["IgniteBlob_blobStorageEndpoint".to_string()]);
+        assert_eq!(
+            sanitized.recovered,
+            vec!["IgniteBlob_blobStorageEndpoint".to_string()]
+        );
 
         let raw = std::fs::read_to_string(root.join("logic_apps/local.settings.json")).unwrap();
         assert!(raw.contains("127.0.0.1:10000"));
@@ -491,7 +513,9 @@ mod tests {
         );
         let (blockers, _, _) = check(root.to_str().unwrap());
         assert!(
-            blockers.iter().any(|b| b.title.contains("stopped mock server")),
+            blockers
+                .iter()
+                .any(|b| b.title.contains("stopped mock server")),
             "a setting with no recovery source anywhere must still block: {blockers:?}"
         );
         std::fs::remove_dir_all(&root).ok();
@@ -539,9 +563,12 @@ mod tests {
     fn recovers_from_a_sibling_local_settings_file() {
         // The real case: local.settings.ci.json was committed in the repo the
         // whole time and held the lost value.
-        let ws = recovery_workspace("sibling", serde_json::json!({
-            "ApimCallbackUrl": "http://localhost:5555/__mock__/ApimCallbackUrl"
-        }));
+        let ws = recovery_workspace(
+            "sibling",
+            serde_json::json!({
+                "ApimCallbackUrl": "http://localhost:5555/__mock__/ApimCallbackUrl"
+            }),
+        );
         std::fs::write(
             ws.join("local.settings.ci.json"),
             r#"{ "Values": { "ApimCallbackUrl": "http://127.0.0.1:7079" } }"#,
@@ -562,9 +589,12 @@ mod tests {
         // The live value must itself be mocked — recovery only ever runs for a
         // setting the mock clobbered, and a clean live value would (correctly)
         // be preferred over any external source.
-        let ws = recovery_workspace("cfg", serde_json::json!({
-            "SomeUrl": "http://localhost:5555/__mock__/SomeUrl"
-        }));
+        let ws = recovery_workspace(
+            "cfg",
+            serde_json::json!({
+                "SomeUrl": "http://localhost:5555/__mock__/SomeUrl"
+            }),
+        );
         std::fs::create_dir_all(ws.join("config/appconfig")).unwrap();
         std::fs::write(
             ws.join("config/appconfig/anything.dev.json"),
@@ -580,13 +610,27 @@ mod tests {
 
     #[test]
     fn prefers_a_local_or_dev_source_over_production() {
-        let ws = recovery_workspace("rank", serde_json::json!({
-            "ApiUrl": "http://localhost:5555/__mock__/ApiUrl"
-        }));
+        let ws = recovery_workspace(
+            "rank",
+            serde_json::json!({
+                "ApiUrl": "http://localhost:5555/__mock__/ApiUrl"
+            }),
+        );
         std::fs::create_dir_all(ws.join("config")).unwrap();
-        std::fs::write(ws.join("config/settings.prod.json"), r#"{ "ApiUrl": "https://prod" }"#).unwrap();
-        std::fs::write(ws.join("config/settings.dev.json"),  r#"{ "ApiUrl": "https://dev" }"#).unwrap();
-        assert_eq!(recover_lost_setting(&ws, "ApiUrl").as_deref(), Some("https://dev"));
+        std::fs::write(
+            ws.join("config/settings.prod.json"),
+            r#"{ "ApiUrl": "https://prod" }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("config/settings.dev.json"),
+            r#"{ "ApiUrl": "https://dev" }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            recover_lost_setting(&ws, "ApiUrl").as_deref(),
+            Some("https://dev")
+        );
         std::fs::remove_dir_all(&ws).ok();
     }
 
@@ -595,10 +639,13 @@ mod tests {
         // The other real case: cosmos_accountEndpoint was lost while
         // cosmos_connectionString still carried the same URL. No external
         // source needed.
-        let ws = recovery_workspace("derive", serde_json::json!({
-            "cosmos_accountEndpoint":   "http://localhost:5555/__mock__/cosmos_accountEndpoint",
-            "cosmos_connectionString":  "AccountEndpoint=http://localhost:8081/;AccountKey=abc=="
-        }));
+        let ws = recovery_workspace(
+            "derive",
+            serde_json::json!({
+                "cosmos_accountEndpoint":   "http://localhost:5555/__mock__/cosmos_accountEndpoint",
+                "cosmos_connectionString":  "AccountEndpoint=http://localhost:8081/;AccountKey=abc=="
+            }),
+        );
         assert_eq!(
             recover_lost_setting(&ws, "cosmos_accountEndpoint").as_deref(),
             Some("http://localhost:8081/")
@@ -608,9 +655,12 @@ mod tests {
 
     #[test]
     fn a_still_mocked_or_empty_candidate_is_not_treated_as_a_recovery() {
-        let ws = recovery_workspace("stale", serde_json::json!({
-            "Thing": "http://localhost:5555/__mock__/Thing"
-        }));
+        let ws = recovery_workspace(
+            "stale",
+            serde_json::json!({
+                "Thing": "http://localhost:5555/__mock__/Thing"
+            }),
+        );
         std::fs::write(
             ws.join("local.settings.dev.json"),
             r#"{ "Values": { "Thing": "http://localhost:9/__mock__/Thing", "Other": "" } }"#,
@@ -627,8 +677,11 @@ mod tests {
         // already been fixed but the snapshot still holds a mock URL, that is
         // recoverable — blocking the user over a stale snapshot whose answer
         // is sitting in the live file next to it is pure friction.
-        let root = std::env::temp_dir()
-            .join(format!("ais-preflight-{}-{}", std::process::id(), rand_suffix()));
+        let root = std::env::temp_dir().join(format!(
+            "ais-preflight-{}-{}",
+            std::process::id(),
+            rand_suffix()
+        ));
         let logic_apps = root.join("logic_apps");
         std::fs::create_dir_all(logic_apps.join(".ais-cache")).unwrap();
         std::fs::write(logic_apps.join("connections.local.json"), "{}").unwrap();
@@ -646,11 +699,13 @@ mod tests {
         let (blockers, _, _) = check(root.to_str().unwrap());
         assert!(blockers.is_empty(), "unexpected blockers: {blockers:?}");
 
-        let healed = std::fs::read_to_string(
-            logic_apps.join(".ais-cache/local.settings.json.original"),
-        )
-        .unwrap();
-        assert!(healed.contains("127.0.0.1:7079"), "backup not healed: {healed}");
+        let healed =
+            std::fs::read_to_string(logic_apps.join(".ais-cache/local.settings.json.original"))
+                .unwrap();
+        assert!(
+            healed.contains("127.0.0.1:7079"),
+            "backup not healed: {healed}"
+        );
         assert!(!healed.contains("__mock__"));
         std::fs::remove_dir_all(&root).ok();
     }

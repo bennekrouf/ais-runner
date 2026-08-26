@@ -1,33 +1,34 @@
-use std::collections::HashSet;
 use chrono::Utc;
 use dioxus::prelude::*;
+use std::collections::HashSet;
 
 use crate::components::{
+    azure_panel::AzurePanel,
+    db_panel::DbPanel,
+    devops_panel::DevOpsPanel,
+    func_panel::FuncPanel,
+    graph_panel::GraphPanel,
     log_panel::{LogLevel, LogLine, LogPanel},
     run_detail::RunDetail,
     run_dialog::RunDialog,
     run_gate_dialog::RunGateDialog,
+    settings_editor::SettingsEditor,
+    tests_panel::TestsPanel,
     toolbar::ServiceBlock,
     workflow_list::WorkflowList,
-    settings_editor::SettingsEditor,
-    db_panel::DbPanel,
-    azure_panel::AzurePanel,
-    tests_panel::TestsPanel,
-    devops_panel::DevOpsPanel,
-    func_panel::FuncPanel,
-    graph_panel::GraphPanel,
 };
+use crate::handlers::{
+    azurite, cosmos_emulator, func_start, mock_server, sb_emulator, setup, sql_emulator,
+    workflow_run, workflow_select,
+};
+use crate::screens::MainContext;
 use crate::services::{
     azure_cli, azure_sync, blob_check, config, connection_diag, cosmos_check,
     env_mode::{self, EnvMode},
     process::ServiceState,
-    setup_manager, sftp_check, sql_check, sb_check, system_check,
-    workflow_analysis,
-    workflows,
+    sb_check, setup_manager, sftp_check, sql_check, system_check, workflow_analysis, workflows,
 };
 use crate::utils::make_push;
-use crate::handlers::{azurite, cosmos_emulator, func_start, mock_server, sb_emulator, sql_emulator, setup, workflow_select, workflow_run};
-use crate::screens::MainContext;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct MainScreenProps {
@@ -37,11 +38,10 @@ pub struct MainScreenProps {
 
 #[component]
 pub fn MainScreen(props: MainScreenProps) -> Element {
-    let dir            = props.logic_apps_dir.clone();
+    let dir = props.logic_apps_dir.clone();
 
     // Get context - signals are now managed at App level to prevent re-mounts
     let mut ctx = use_context::<MainContext>();
-
 
     // Update the window title to include the project basename so users running
     // multiple instances (one per customer) can tell them apart at a glance.
@@ -57,7 +57,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
         ));
     }
 
-    let cfg            = ctx.cfg;
+    let cfg = ctx.cfg;
     // Derive workspace_link directly rather than via cfg.read() — in Dioxus 0.6
     // the signal holds an internal write lock during hook initialisation, so
     // reading the same signal on the very next line causes AlreadyBorrowedMut
@@ -66,24 +66,24 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let workspace_link = config::load().get_link(&dir).cloned();
 
     // ── Service states & processes (from context) ─────────────────────────────
-    let azurite_state    = ctx.azurite_state;
-    let func_state       = ctx.func_state;
-    let java_func_state  = ctx.java_func_state;
-    let sb_emu_state     = ctx.sb_emu_state;
+    let azurite_state = ctx.azurite_state;
+    let func_state = ctx.func_state;
+    let java_func_state = ctx.java_func_state;
+    let sb_emu_state = ctx.sb_emu_state;
     let cosmos_emu_state = ctx.cosmos_emu_state;
-    let sql_dev_state    = ctx.sql_dev_state;
-    let mock_state       = ctx.mock_state;
-    let mock_handle      = ctx.mock_handle;
-    let azurite_proc     = ctx.azurite_proc;
-    let func_proc        = ctx.func_proc;
-    let java_func_proc   = ctx.java_func_proc;
-    let sb_emu_proc      = ctx.sb_emu_proc;
-    let cosmos_emu_proc  = ctx.cosmos_emu_proc;
-    let sql_dev_proc     = ctx.sql_dev_proc;
-    let sb_emu_lines     = ctx.sb_emu_lines;
-    let java_func_lines  = ctx.java_func_lines;
+    let sql_dev_state = ctx.sql_dev_state;
+    let mock_state = ctx.mock_state;
+    let mock_handle = ctx.mock_handle;
+    let azurite_proc = ctx.azurite_proc;
+    let func_proc = ctx.func_proc;
+    let java_func_proc = ctx.java_func_proc;
+    let sb_emu_proc = ctx.sb_emu_proc;
+    let cosmos_emu_proc = ctx.cosmos_emu_proc;
+    let sql_dev_proc = ctx.sql_dev_proc;
+    let sb_emu_lines = ctx.sb_emu_lines;
+    let java_func_lines = ctx.java_func_lines;
     let mut sql_dev_lines = ctx.sql_dev_lines;
-    let az_lines         = ctx.az_lines;
+    let az_lines = ctx.az_lines;
 
     // resolve_logic_apps_dir may descend into a logic_apps/ subfolder,
     // so derive func_apps_dir from the resolved path's parent (the platform
@@ -97,25 +97,23 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     };
 
     // ── Data signals (now from context) ────────────────────────────────────
-    let mut workflows   = ctx.workflows;
-    let selected_wf     = ctx.selected_wf;
+    let mut workflows = ctx.workflows;
+    let selected_wf = ctx.selected_wf;
     let source_text = ctx.source_text;
-    let wf_analysis = use_memo(move || {
-        workflow_analysis::analyse(&source_text.read())
-    });
-    let mut runs        = ctx.runs;
-    let mut actions     = ctx.actions;
+    let wf_analysis = use_memo(move || workflow_analysis::analyse(&source_text.read()));
+    let mut runs = ctx.runs;
+    let mut actions = ctx.actions;
     let mut running_wfs = ctx.running_wfs;
     let mut current_view = ctx.current_view;
-    let mut is_light     = ctx.is_light;
-    let active_tab  = ctx.active_tab;
-    let mut run_dialog  = ctx.run_dialog;
-    let mut run_gate    = ctx.run_gate;
-    let mut traced_wfs  = ctx.traced_wfs;
+    let mut is_light = ctx.is_light;
+    let active_tab = ctx.active_tab;
+    let mut run_dialog = ctx.run_dialog;
+    let mut run_gate = ctx.run_gate;
+    let mut traced_wfs = ctx.traced_wfs;
     let mut cleared_wfs = ctx.cleared_wfs;
-    let mut last_ran    = ctx.last_ran;
-    let mut auto_watch  = ctx.auto_watch;
-    let mut recorder    = ctx.recorder;
+    let mut last_ran = ctx.last_ran;
+    let mut auto_watch = ctx.auto_watch;
+    let mut recorder = ctx.recorder;
     // Track which views have been opened — panels are lazy-mounted on first visit
     // but stay in the DOM afterwards so their state (caches, signals) survives tab switches.
     let mut visited_views = ctx.visited_views;
@@ -134,7 +132,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 let entry = format!("{} {}", ts, line);
                 let mut w = sql_dev_lines.write();
                 let len = w.len();
-                if len > 1000 { w.drain(..len - 1000); }
+                if len > 1000 {
+                    w.drain(..len - 1000);
+                }
                 w.push(entry);
             }
         });
@@ -145,15 +145,18 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // The UI coroutine only drains the event channel — zero blocking on the
     // Dioxus/tokio executor, so rendering is never stalled.
     {
-        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
 
         // Shared flags written by the UI, read by the OS thread.
         let watch_flag = Arc::new(AtomicBool::new(true));
-        let func_flag  = Arc::new(AtomicBool::new(false));
+        let func_flag = Arc::new(AtomicBool::new(false));
 
         // Keep Arc clones that the UI closures will update.
-        let wf_clone   = Arc::clone(&watch_flag);
-        let ff_clone   = Arc::clone(&func_flag);
+        let wf_clone = Arc::clone(&watch_flag);
+        let ff_clone = Arc::clone(&func_flag);
 
         // Sync the flags with Dioxus signals via a lightweight coroutine.
         use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| {
@@ -177,9 +180,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
         let rx_holder = use_hook(|| {
             let (tx, rx) = tokio::sync::mpsc::channel::<(String, String)>(16);
 
-            let bg_dir   = dir.clone();
+            let bg_dir = dir.clone();
             let bg_watch = Arc::clone(&watch_flag);
-            let bg_func  = Arc::clone(&func_flag);
+            let bg_func = Arc::clone(&func_flag);
             std::thread::Builder::new()
                 .name("ais-blob-watcher".into())
                 .spawn(move || {
@@ -187,12 +190,15 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
                     let trigger_map = workflows::scan_all_blob_triggers(&bg_dir);
 
-                    let mut seen: HashMap<String, HashSet<String>> = trigger_map.iter()
+                    let mut seen: HashMap<String, HashSet<String>> = trigger_map
+                        .iter()
                         .map(|(c, _)| {
                             let names = crate::services::azurite_client::list_blobs(c)
-                                .unwrap_or_default().into_iter()
+                                .unwrap_or_default()
+                                .into_iter()
                                 .filter(|b| !b.name.ends_with("/.keep"))
-                                .map(|b| b.name).collect();
+                                .map(|b| b.name)
+                                .collect();
                             (c.clone(), names)
                         })
                         .collect();
@@ -207,7 +213,8 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         for (container, wf_name) in &trigger_map {
                             let current: HashSet<String> =
                                 crate::services::azurite_client::list_blobs(container)
-                                    .unwrap_or_default().into_iter()
+                                    .unwrap_or_default()
+                                    .into_iter()
                                     .filter(|b| !b.name.ends_with("/.keep"))
                                     .map(|b| b.name)
                                     .collect();
@@ -229,30 +236,47 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
         // UI coroutine — only wakes when the OS thread found something new.
         use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| {
-            let mut rx = rx_holder.lock().unwrap().take().expect("coroutine called twice");
+            let mut rx = rx_holder
+                .lock()
+                .unwrap()
+                .take()
+                .expect("coroutine called twice");
             async move {
                 while let Some((container, wf_name)) = rx.recv().await {
-                    if running_wfs.read().contains(&wf_name) { continue; }
+                    if running_wfs.read().contains(&wf_name) {
+                        continue;
+                    }
 
                     let mut push = make_push(log_lines);
                     push(
-                        format!("⚡ Auto: new blob in '{}' → watching {}…", container, wf_name),
+                        format!(
+                            "⚡ Auto: new blob in '{}' → watching {}…",
+                            container, wf_name
+                        ),
                         LogLevel::Info,
                     );
 
                     let trigger_ts = chrono::Utc::now().to_rfc3339();
-                    cleared_wfs.write().insert(wf_name.clone(), trigger_ts.clone());
+                    cleared_wfs
+                        .write()
+                        .insert(wf_name.clone(), trigger_ts.clone());
                     traced_wfs.write().insert(wf_name.clone());
                     running_wfs.write().insert(wf_name.clone());
                     last_ran.write().insert(wf_name.clone(), epoch_now());
 
-                    let wf     = wf_name.clone();
+                    let wf = wf_name.clone();
                     let cleared = cleared_wfs;
                     dioxus::prelude::spawn(workflow_run::poll_for_run(
-                        wf, Some(trigger_ts),
-                        runs, actions, log_lines,
-                        running_wfs, traced_wfs, cleared,
-                        false, false, // manual Watch — not a blob or SB trigger
+                        wf,
+                        Some(trigger_ts),
+                        runs,
+                        actions,
+                        log_lines,
+                        running_wfs,
+                        traced_wfs,
+                        cleared,
+                        false,
+                        false, // manual Watch — not a blob or SB trigger
                     ));
                 }
             }
@@ -262,8 +286,8 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // ── Setup ──────────────────────────────────────────────────────────────
     // Start with a neutral default; check_setup reads local.settings.json which
     // must not block the GUI thread.
-    let mut setup_status  = ctx.setup_status;
-    let setup_updates     = ctx.setup_updates;
+    let mut setup_status = ctx.setup_status;
+    let setup_updates = ctx.setup_updates;
 
     // Load setup status off the GUI thread on first mount.
     use_effect({
@@ -272,7 +296,8 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
             let d = d.clone();
             spawn(async move {
                 let s = tokio::task::spawn_blocking(move || setup_manager::check_setup(&d))
-                    .await.unwrap_or(setup_manager::SetupStatus::MissingSettings);
+                    .await
+                    .unwrap_or(setup_manager::SetupStatus::MissingSettings);
                 setup_status.set(s);
             });
         }
@@ -280,19 +305,23 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
     let _on_apply_setup = {
         let dir = dir.clone();
-        let mut status  = setup_status;
-        let updates     = setup_updates;
+        let mut status = setup_status;
+        let updates = setup_updates;
         move |_: Event<MouseData>| {
-            let d  = dir.clone();
+            let d = dir.clone();
             let d2 = dir.clone();
-            let u  = updates.read().clone();
+            let u = updates.read().clone();
             spawn(async move {
                 if tokio::task::spawn_blocking(move || setup_manager::apply_settings(&d, u))
-                    .await.ok().and_then(|r| r.ok()).is_some()
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .is_some()
                 {
                     // Re-check setup status off the GUI thread.
                     let s = tokio::task::spawn_blocking(move || setup_manager::check_setup(&d2))
-                        .await.unwrap_or(setup_manager::SetupStatus::MissingSettings);
+                        .await
+                        .unwrap_or(setup_manager::SetupStatus::MissingSettings);
                     status.set(s);
                 }
             });
@@ -308,42 +337,47 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
             let d = d.clone();
             spawn(async move {
                 let mode = tokio::task::spawn_blocking(move || env_mode::detect_mode(&d))
-                    .await.unwrap_or(env_mode::EnvMode::Local);
+                    .await
+                    .unwrap_or(env_mode::EnvMode::Local);
                 current_env.set(mode);
             });
         }
     });
 
     // ── Connection / SQL / SB signals ─────────────────────────────────────
-    let mut sql_wfs          = ctx.sql_wfs;
-    let mut msi_wfs          = ctx.msi_wfs;
-    let mut wf_connectors    = ctx.wf_connectors;
-    let mut sql_conns        = ctx.sql_conns;
+    let mut sql_wfs = ctx.sql_wfs;
+    let mut msi_wfs = ctx.msi_wfs;
+    let mut wf_connectors = ctx.wf_connectors;
+    let mut sql_conns = ctx.sql_conns;
     // sproc qualified name → Some(exists) once checked, None while loading.
-    let mut sproc_status     = ctx.sproc_status;
-    let mut db_panel_open    = ctx.db_panel_open;
+    let mut sproc_status = ctx.sproc_status;
+    let mut db_panel_open = ctx.db_panel_open;
     let mut azure_panel_open = ctx.azure_panel_open;
-    let az_diff_cache        = ctx.az_diff_cache;
-    let mut sftp_conns       = ctx.sftp_conns;
-    let mut blob_conns       = ctx.blob_conns;
-    let mut cosmos_conns     = ctx.cosmos_conns;
-    let mut webjobs_storage  = ctx.webjobs_storage;
-    let mut sb_namespace     = ctx.sb_namespace;
+    let az_diff_cache = ctx.az_diff_cache;
+    let mut sftp_conns = ctx.sftp_conns;
+    let mut blob_conns = ctx.blob_conns;
+    let mut cosmos_conns = ctx.cosmos_conns;
+    let mut webjobs_storage = ctx.webjobs_storage;
+    let mut sb_namespace = ctx.sb_namespace;
     let mut sb_namespace_key = ctx.sb_namespace_key;
-    let mut sb_conn_str      = ctx.sb_conn_str;
-    let mut sb_queues        = ctx.sb_queues;
+    let mut sb_conn_str = ctx.sb_conn_str;
+    let mut sb_queues = ctx.sb_queues;
 
     // ── Tool check / Azure login ───────────────────────────────────────────
-    let mut tool_statuses    = ctx.tool_statuses;
-    let mut tools_dismissed  = ctx.tools_dismissed;
-    let az_status            = ctx.az_status;
-    let active_tenant        = ctx.active_tenant;
+    let mut tool_statuses = ctx.tool_statuses;
+    let mut tools_dismissed = ctx.tools_dismissed;
+    let az_status = ctx.az_status;
+    let active_tenant = ctx.active_tenant;
 
     // ══ Effects ════════════════════════════════════════════════════════════
 
     use_effect(move || {
         spawn(async move {
-            tool_statuses.set(tokio::task::spawn_blocking(system_check::check_tools).await.unwrap_or_default());
+            tool_statuses.set(
+                tokio::task::spawn_blocking(system_check::check_tools)
+                    .await
+                    .unwrap_or_default(),
+            );
         });
     });
 
@@ -361,10 +395,23 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // workflow's analysis changes. Uses the first configured SQL connection's
     // resolved database name. Silent on failure (e.g. SQL emulator down).
     use_effect(move || {
-        let names: Vec<String> = wf_analysis.read().sql_sprocs.iter().map(|sp| sp.name.clone()).collect();
-        if names.is_empty() { return; }
-        let db = sql_conns.read().first().map(|c| c.resolved_db.clone()).unwrap_or_default();
-        if db.is_empty() { return; }
+        let names: Vec<String> = wf_analysis
+            .read()
+            .sql_sprocs
+            .iter()
+            .map(|sp| sp.name.clone())
+            .collect();
+        if names.is_empty() {
+            return;
+        }
+        let db = sql_conns
+            .read()
+            .first()
+            .map(|c| c.resolved_db.clone())
+            .unwrap_or_default();
+        if db.is_empty() {
+            return;
+        }
         {
             let mut st = sproc_status.write();
             for n in &names {
@@ -373,7 +420,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
         }
         spawn(async move {
             for n in names {
-                let exists = crate::services::sql_runner::sproc_exists(&db, &n).await.ok();
+                let exists = crate::services::sql_runner::sproc_exists(&db, &n)
+                    .await
+                    .ok();
                 if let Some(e) = exists {
                     sproc_status.write().insert(n, Some(e));
                 }
@@ -387,22 +436,29 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // for local workflow development.
 
     use_effect({
-        let dir2     = dir.clone();
+        let dir2 = dir.clone();
         let mut cfg2 = cfg;
         move || {
             // try_bootstrap_link reads local.settings.json — must run off the GUI thread.
-            if cfg2.read().get_link(&dir2).is_some() { return; }
-            let d     = dir2.clone();
-            let dir2b = dir2.clone();  // second clone for use inside the async block
+            if cfg2.read().get_link(&dir2).is_some() {
+                return;
+            }
+            let d = dir2.clone();
+            let dir2b = dir2.clone(); // second clone for use inside the async block
             spawn(async move {
                 let link = tokio::task::spawn_blocking(move || {
                     crate::services::settings_file::try_bootstrap_link(&d)
-                }).await.ok().flatten();
+                })
+                .await
+                .ok()
+                .flatten();
                 if let Some(link) = link {
                     let mut c = cfg2.write();
                     c.set_link(dir2b, link);
                     let snap = c.clone();
-                    tokio::task::spawn_blocking(move || config::save(&snap)).await.ok();
+                    tokio::task::spawn_blocking(move || config::save(&snap))
+                        .await
+                        .ok();
                 }
             });
         }
@@ -415,20 +471,29 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
             spawn(async move {
                 let (wfs, msi, conns, (sb_ns, sb_qs), sb_key, sb_cs_key, blobs, cosmos, wjs) =
                     tokio::task::spawn_blocking(move || {
-                        let wfs       = sql_check::detect_sql_workflows(&d);
-                        let msi       = connection_diag::scan_msi_local_trigger_workflows(&d);
-                        let conns     = sql_check::load_sql_connections(&d);
-                        let sb        = sb_check::detect_sb_queues(&d);
-                        let sb_key    = sb_check::detect_sb_namespace_key(&d);
+                        let wfs = sql_check::detect_sql_workflows(&d);
+                        let msi = connection_diag::scan_msi_local_trigger_workflows(&d);
+                        let conns = sql_check::load_sql_connections(&d);
+                        let sb = sb_check::detect_sb_queues(&d);
+                        let sb_key = sb_check::detect_sb_namespace_key(&d);
                         let sb_cs_key = sb_check::detect_sb_conn_str_key(&d);
-                        let blobs     = blob_check::detect_blob_connections(&d);
-                        let cosmos    = cosmos_check::detect_cosmos_connections(&d);
-                        let wjs       = blob_check::read_webjobs_storage(&d);
+                        let blobs = blob_check::detect_blob_connections(&d);
+                        let cosmos = cosmos_check::detect_cosmos_connections(&d);
+                        let wjs = blob_check::read_webjobs_storage(&d);
                         (wfs, msi, conns, sb, sb_key, sb_cs_key, blobs, cosmos, wjs)
-                    }).await.unwrap_or_default();
-                sql_wfs.set(wfs); msi_wfs.set(msi); sql_conns.set(conns); sb_namespace.set(sb_ns);
-                sb_queues.set(sb_qs); sb_namespace_key.set(sb_key); sb_conn_str.set(sb_cs_key);
-                blob_conns.set(blobs); cosmos_conns.set(cosmos); webjobs_storage.set(wjs);
+                    })
+                    .await
+                    .unwrap_or_default();
+                sql_wfs.set(wfs);
+                msi_wfs.set(msi);
+                sql_conns.set(conns);
+                sb_namespace.set(sb_ns);
+                sb_queues.set(sb_qs);
+                sb_namespace_key.set(sb_key);
+                sb_conn_str.set(sb_cs_key);
+                blob_conns.set(blobs);
+                cosmos_conns.set(cosmos);
+                webjobs_storage.set(wjs);
             });
         }
     });
@@ -445,9 +510,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
             let _ = workflows.read(); // reactive: re-runs when workflows changes
             let d = dir.clone();
             spawn(async move {
-                let map = tokio::task::spawn_blocking(move || {
-                    workflows::scan_all_connectors(&d)
-                }).await.unwrap_or_default();
+                let map = tokio::task::spawn_blocking(move || workflows::scan_all_connectors(&d))
+                    .await
+                    .unwrap_or_default();
                 wf_connectors.set(map);
             });
         }
@@ -466,9 +531,16 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     None => continue,
                 };
                 // Skip if the poll_for_run loop is already driving updates
-                if running_wfs.read().contains(&wf) { continue; }
+                if running_wfs.read().contains(&wf) {
+                    continue;
+                }
                 // Fetch fresh data
-                match tokio::time::timeout(std::time::Duration::from_secs(5), workflows::list_runs(&wf)).await {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    workflows::list_runs(&wf),
+                )
+                .await
+                {
                     Ok(Ok(r)) => {
                         let cleared_at = cleared_wfs.read().get(&wf).cloned();
                         let r = crate::utils::filter_cleared(r, cleared_at.as_deref());
@@ -502,10 +574,13 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
                 let names: Vec<String> = workflows.read().iter().map(|w| w.name.clone()).collect();
                 for name in names {
-                    let Ok(r) = workflows::list_runs(&name).await else { continue };
+                    let Ok(r) = workflows::list_runs(&name).await else {
+                        continue;
+                    };
                     let cleared_at = cleared_wfs.read().get(&name).cloned();
                     let r = crate::utils::filter_cleared(r, cleared_at.as_deref());
-                    let is_running = r.first()
+                    let is_running = r
+                        .first()
                         .map(|x| x.properties.status.eq_ignore_ascii_case("Running"))
                         .unwrap_or(false);
                     let already_in_set = running_wfs.read().contains(&name);
@@ -531,8 +606,15 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     let name = first.name.clone();
                     drop(list);
                     workflow_select::handle_select(
-                        name, selected_wf, runs, actions, source_text,
-                        traced_wfs, cleared_wfs, log_lines, &dir,
+                        name,
+                        selected_wf,
+                        runs,
+                        actions,
+                        source_text,
+                        traced_wfs,
+                        cleared_wfs,
+                        log_lines,
+                        &dir,
                     );
                 }
             }
@@ -1285,8 +1367,8 @@ fn setup_banner(
     dir: &str,
     log_lines: Signal<Vec<LogLine>>,
 ) -> Element {
-    let dir   = dir.to_string();
-    let link  = workspace_link.clone();
+    let dir = dir.to_string();
+    let link = workspace_link.clone();
     let mut ss = setup_status;
     match setup_status.read().clone() {
         setup_manager::SetupStatus::MissingSettings => rsx! {
@@ -1402,7 +1484,7 @@ fn setup_banner(
 // ── Azure login widget ────────────────────────────────────────────────────────
 
 fn az_login_widget(
-    mut az_status:     Signal<Option<Result<String, azure_cli::AzError>>>,
+    mut az_status: Signal<Option<Result<String, azure_cli::AzError>>>,
     mut active_tenant: Signal<Option<String>>,
     configured_tenant: Option<String>,
     dir: &str,
@@ -1539,11 +1621,16 @@ fn env_badge(
     setup_status: Signal<setup_manager::SetupStatus>,
     current_env: Signal<EnvMode>,
 ) -> Element {
-    if matches!(*setup_status.read(), setup_manager::SetupStatus::MissingSettings) { return rsx! {}; }
+    if matches!(
+        *setup_status.read(),
+        setup_manager::SetupStatus::MissingSettings
+    ) {
+        return rsx! {};
+    }
     let (badge_class, badge_label) = match *current_env.read() {
-        EnvMode::Local   => ("env-badge local",   "🏠 Local"),
-        EnvMode::Azure   => ("env-badge azure",   "☁ Azure"),
-        EnvMode::Mixed   => ("env-badge mixed",   "⚠ Mixed"),
+        EnvMode::Local => ("env-badge local", "🏠 Local"),
+        EnvMode::Azure => ("env-badge azure", "☁ Azure"),
+        EnvMode::Mixed => ("env-badge mixed", "⚠ Mixed"),
         EnvMode::Unknown => ("env-badge unknown", "? Env"),
     };
     rsx! { span { class: "{badge_class}", title: "Blob storage mode — open Connectors to switch", "{badge_label}" } }

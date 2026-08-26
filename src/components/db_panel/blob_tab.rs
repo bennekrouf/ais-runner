@@ -1,12 +1,12 @@
-use dioxus::prelude::*;
-use std::collections::HashSet;
-use std::collections::HashMap;
 use crate::services::{
     azure_cli::BlobInfo,
     azurite_client,
     recorder::{self, RecorderState},
     scenario::Step,
 };
+use dioxus::prelude::*;
+use std::collections::HashMap;
+use std::collections::HashSet;
 
 /// Create a container. Folders are deliberately NOT created here: an empty
 /// folder is just a `prefix/.keep` marker blob, and a container-watching
@@ -24,7 +24,12 @@ async fn do_create_container(recorder: Signal<RecorderState>, name: String) -> R
         .await
         .map_err(|e| format!("Task panicked: {}", e))?
         .map_err(|e| format!("Create container failed: {}", e))?;
-    recorder::record(recorder, Step::CreateContainer { container: recorded });
+    recorder::record(
+        recorder,
+        Step::CreateContainer {
+            container: recorded,
+        },
+    );
     Ok(())
 }
 
@@ -68,8 +73,7 @@ fn rows_with_folders(blobs: &[BlobInfo]) -> Vec<BlobInfo> {
 }
 
 fn blob_fetch_all() -> Result<Vec<(String, Vec<BlobInfo>)>, String> {
-    let names = azurite_client::list_containers()
-        .map_err(|e| format!("list containers: {}", e))?;
+    let names = azurite_client::list_containers().map_err(|e| format!("list containers: {}", e))?;
     let mut out = Vec::new();
     for name in names {
         let blobs = azurite_client::list_blobs(&name).unwrap_or_default();
@@ -82,12 +86,12 @@ fn blob_fetch_all() -> Result<Vec<(String, Vec<BlobInfo>)>, String> {
 pub struct BlobTabProps {
     pub azurite_running: bool,
     /// Project path, used to discover `.ais-runner/message-templates`.
-    pub logic_apps_dir:  String,
-    pub blob_edits:      Signal<HashMap<String, String>>,
-    pub webjobs_edit:    Signal<String>,
-    pub is_open:         Signal<bool>,
-    pub active_tab:      Signal<&'static str>,
-    pub status:          Signal<Option<(String, bool)>>,
+    pub logic_apps_dir: String,
+    pub blob_edits: Signal<HashMap<String, String>>,
+    pub webjobs_edit: Signal<String>,
+    pub is_open: Signal<bool>,
+    pub active_tab: Signal<&'static str>,
+    pub status: Signal<Option<(String, bool)>>,
 }
 
 /// New full prefix when renaming only the last segment of a folder path.
@@ -103,14 +107,14 @@ fn rename_last_segment(path: &str, new_name: &str) -> String {
 
 #[component]
 pub fn BlobTab(props: BlobTabProps) -> Element {
-    let mut blob_containers:  Signal<Option<Vec<(String, Vec<BlobInfo>)>>> = use_signal(|| None);
-    let mut blob_loading:     Signal<bool>            = use_signal(|| false);
-    let mut blob_clearing:    Signal<HashSet<String>> = use_signal(HashSet::new);
-    let mut blob_uploading:   Signal<HashSet<String>> = use_signal(HashSet::new);
+    let mut blob_containers: Signal<Option<Vec<(String, Vec<BlobInfo>)>>> = use_signal(|| None);
+    let mut blob_loading: Signal<bool> = use_signal(|| false);
+    let mut blob_clearing: Signal<HashSet<String>> = use_signal(HashSet::new);
+    let mut blob_uploading: Signal<HashSet<String>> = use_signal(HashSet::new);
     let mut blob_downloading: Signal<HashSet<String>> = use_signal(HashSet::new);
-    let mut blob_creating:    Signal<bool>            = use_signal(|| false);
-    let mut blob_expanded:    Signal<HashSet<String>> = use_signal(HashSet::new);
-    let mut new_container_name: Signal<String>        = use_signal(String::new);
+    let mut blob_creating: Signal<bool> = use_signal(|| false);
+    let mut blob_expanded: Signal<HashSet<String>> = use_signal(HashSet::new);
+    let mut new_container_name: Signal<String> = use_signal(String::new);
     let mut blob_clear_confirm: Signal<Option<String>> = use_signal(|| None);
     // Message templates are read once per mount: they're small, project-local
     // files that change far less often than the blob list they decorate.
@@ -121,22 +125,22 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
     let mut sending_event: Signal<HashSet<String>> = use_signal(HashSet::new);
     // Folder rename: which (container, folder-path) is being edited, the in-flight
     // set, and the text box contents.
-    let mut folder_rename:  Signal<Option<(String, String)>> = use_signal(|| None);
-    let mut rename_input:   Signal<String>                   = use_signal(String::new);
-    let mut blob_renaming:  Signal<HashSet<String>>          = use_signal(HashSet::new);
+    let mut folder_rename: Signal<Option<(String, String)>> = use_signal(|| None);
+    let mut rename_input: Signal<String> = use_signal(String::new);
+    let mut blob_renaming: Signal<HashSet<String>> = use_signal(HashSet::new);
     // Import file: which container's form is open, the chosen local file path,
     // and the target folder / file name the user is editing. A blob is written
     // atomically to `folder/filename` — no empty-folder marker, so a container
     // watcher only ever sees a complete file.
     let mut import_target: Signal<Option<String>> = use_signal(|| None);
-    let mut import_path:   Signal<Option<String>> = use_signal(|| None);
+    let mut import_path: Signal<Option<String>> = use_signal(|| None);
     // Full target blob path the user is editing, e.g. "payments/PAYMENT_TEST.csv".
-    let mut import_name:   Signal<String>         = use_signal(String::new);
+    let mut import_name: Signal<String> = use_signal(String::new);
 
     let mut webjobs_edit = props.webjobs_edit;
-    let mut status       = props.status;
-    let active_tab       = props.active_tab;
-    let azurite_up       = props.azurite_running;
+    let mut status = props.status;
+    let active_tab = props.active_tab;
+    let azurite_up = props.azurite_running;
     // Scenario recording. `Signal` is Copy, so the closures below capture their
     // own handle; when nothing is recording every `record` call is a no-op.
     let recorder = use_context::<crate::screens::MainContext>().recorder;
@@ -149,9 +153,13 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
             blob_clear_confirm.set(None);
             spawn(async move {
                 match tokio::task::spawn_blocking(blob_fetch_all).await {
-                    Ok(Ok(list)) => { blob_containers.set(Some(list)); }
-                    Ok(Err(e))   => { status.set(Some((format!("Refresh failed: {}", e), true))); }
-                    Err(_)       => {}
+                    Ok(Ok(list)) => {
+                        blob_containers.set(Some(list));
+                    }
+                    Ok(Err(e)) => {
+                        status.set(Some((format!("Refresh failed: {}", e), true)));
+                    }
+                    Err(_) => {}
                 }
                 blob_loading.set(false);
             });
@@ -174,11 +182,11 @@ pub fn BlobTab(props: BlobTabProps) -> Element {
 
                 let expanded: Vec<String> = blob_expanded.peek().iter().cloned().collect();
                 for container in expanded {
-                    let c  = container.clone();
+                    let c = container.clone();
                     let c2 = container.clone();
-                    if let Ok(Ok(updated)) = tokio::task::spawn_blocking(move || {
-                        azurite_client::list_blobs(&c)
-                    }).await {
+                    if let Ok(Ok(updated)) =
+                        tokio::task::spawn_blocking(move || azurite_client::list_blobs(&c)).await
+                    {
                         if let Some(ref mut list) = *blob_containers.write() {
                             if let Some(entry) = list.iter_mut().find(|(n, _)| n == &c2) {
                                 entry.1 = updated;
@@ -829,7 +837,10 @@ mod rename_segment_tests {
 
     #[test]
     fn renames_only_the_last_segment_keeping_the_parent() {
-        assert_eq!(rename_last_segment("archive/payments", "pay"), "archive/pay");
+        assert_eq!(
+            rename_last_segment("archive/payments", "pay"),
+            "archive/pay"
+        );
         assert_eq!(rename_last_segment("a/b/c", "z"), "a/b/z");
     }
 
@@ -840,8 +851,14 @@ mod rename_segment_tests {
 
     #[test]
     fn trims_whitespace_and_stray_slashes_from_input() {
-        assert_eq!(rename_last_segment("archive/payments", "  pay  "), "archive/pay");
-        assert_eq!(rename_last_segment("archive/payments", "/pay/"), "archive/pay");
+        assert_eq!(
+            rename_last_segment("archive/payments", "  pay  "),
+            "archive/pay"
+        );
+        assert_eq!(
+            rename_last_segment("archive/payments", "/pay/"),
+            "archive/pay"
+        );
         assert_eq!(rename_last_segment("payments/", "pay"), "pay");
     }
 }
@@ -881,32 +898,51 @@ mod folder_rows_tests {
     use super::rows_with_folders;
     use crate::services::azure_cli::BlobInfo;
 
-    fn b(name: &str) -> BlobInfo { BlobInfo { name: name.into(), size: 1 } }
-    fn names(v: Vec<BlobInfo>) -> Vec<String> { v.into_iter().map(|x| x.name).collect() }
+    fn b(name: &str) -> BlobInfo {
+        BlobInfo {
+            name: name.into(),
+            size: 1,
+        }
+    }
+    fn names(v: Vec<BlobInfo>) -> Vec<String> {
+        v.into_iter().map(|x| x.name).collect()
+    }
 
     #[test]
     fn nested_file_gets_a_synthetic_folder_header() {
         let out = names(rows_with_folders(&[b("payments/PAYMENT_TEST.csv")]));
-        assert_eq!(out, vec![
-            "payments/.keep".to_string(),          // synthetic folder header
-            "payments/PAYMENT_TEST.csv".to_string(),
-        ]);
+        assert_eq!(
+            out,
+            vec![
+                "payments/.keep".to_string(), // synthetic folder header
+                "payments/PAYMENT_TEST.csv".to_string(),
+            ]
+        );
     }
 
     #[test]
     fn deep_nesting_gets_a_header_per_ancestor() {
         let out = names(rows_with_folders(&[b("a/b/c.csv")]));
-        assert_eq!(out, vec![
-            "a/.keep".to_string(),
-            "a/b/.keep".to_string(),
-            "a/b/c.csv".to_string(),
-        ]);
+        assert_eq!(
+            out,
+            vec![
+                "a/.keep".to_string(),
+                "a/b/.keep".to_string(),
+                "a/b/c.csv".to_string(),
+            ]
+        );
     }
 
     #[test]
     fn real_keep_marker_is_not_duplicated() {
-        let out = names(rows_with_folders(&[b("payments/.keep"), b("payments/f.csv")]));
-        assert_eq!(out, vec!["payments/.keep".to_string(), "payments/f.csv".to_string()]);
+        let out = names(rows_with_folders(&[
+            b("payments/.keep"),
+            b("payments/f.csv"),
+        ]));
+        assert_eq!(
+            out,
+            vec!["payments/.keep".to_string(), "payments/f.csv".to_string()]
+        );
     }
 
     #[test]
@@ -918,6 +954,13 @@ mod folder_rows_tests {
     #[test]
     fn shared_folder_yields_one_header() {
         let out = names(rows_with_folders(&[b("p/a.csv"), b("p/b.csv")]));
-        assert_eq!(out, vec!["p/.keep".to_string(), "p/a.csv".to_string(), "p/b.csv".to_string()]);
+        assert_eq!(
+            out,
+            vec![
+                "p/.keep".to_string(),
+                "p/a.csv".to_string(),
+                "p/b.csv".to_string()
+            ]
+        );
     }
 }

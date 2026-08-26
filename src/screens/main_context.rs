@@ -1,11 +1,11 @@
+use crate::components::log_panel::LogLine;
+use crate::services::process::ManagedProcess;
+use crate::services::process::ServiceState;
+use crate::services::workflows::{self, RunItem, WorkflowItem};
+use crate::services::{azure_cli, config, env_mode, setup_manager, system_check};
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
-use crate::services::process::ServiceState;
-use crate::components::log_panel::LogLine;
-use crate::services::workflows::{self, WorkflowItem, RunItem};
 use std::sync::Arc;
-use crate::services::process::ManagedProcess;
-use crate::services::{azure_cli, config, env_mode, setup_manager, system_check};
 
 /// Central context holding all MainScreen signals
 /// This prevents re-mounts when signals change
@@ -57,7 +57,16 @@ pub struct MainContext {
     pub sproc_status: Signal<HashMap<String, Option<bool>>>,
 
     // Run dialog: (wf, method, url, body, callback_url, relative_path)
-    pub run_dialog: Signal<Option<(String, String, String, String, Option<String>, Option<String>)>>,
+    pub run_dialog: Signal<
+        Option<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )>,
+    >,
 
     // Blocking local-readiness gate shown when a workflow's connections aren't
     // set up for the local emulators. Some(readiness) → the consent modal is open.

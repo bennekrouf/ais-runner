@@ -1,7 +1,7 @@
-use std::path::PathBuf;
+use std::env;
 #[cfg(feature = "bundle-azurite")]
 use std::fs;
-use std::env;
+use std::path::PathBuf;
 
 /// Resolves the path to a tool (like azurite or func).
 /// For Azurite: prefers the system-installed version (likely newer) over the bundled one.
@@ -22,7 +22,11 @@ pub fn resolve_tool(name: &str) -> String {
     // Check next to the executable (Sidecar / distribution mode)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(parent) = exe_path.parent() {
-            let exe_name = if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() };
+            let exe_name = if cfg!(windows) {
+                format!("{}.exe", name)
+            } else {
+                name.to_string()
+            };
 
             // bin/<name>.exe  (flat layout)
             let flat = parent.join("bin").join(&exe_name);
@@ -41,7 +45,11 @@ pub fn resolve_tool(name: &str) -> String {
     // Check in the project root bin/ (Development mode)
     let dev_bin = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("bin")
-        .join(if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() });
+        .join(if cfg!(windows) {
+            format!("{}.exe", name)
+        } else {
+            name.to_string()
+        });
 
     if dev_bin.exists() {
         return dev_bin.to_str().unwrap_or(name).to_string();
@@ -84,14 +92,26 @@ pub fn resolve_tool_traced(name: &str) -> (String, Vec<String>) {
     // Sidecar bin/ next to the exe
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(parent) = exe_path.parent() {
-            let exe_name = if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() };
+            let exe_name = if cfg!(windows) {
+                format!("{}.exe", name)
+            } else {
+                name.to_string()
+            };
             let flat = parent.join("bin").join(&exe_name);
-            trace.push(format!("  sidecar bin/  → {} ({})", flat.display(), if flat.exists() { "FOUND" } else { "miss" }));
+            trace.push(format!(
+                "  sidecar bin/  → {} ({})",
+                flat.display(),
+                if flat.exists() { "FOUND" } else { "miss" }
+            ));
             if flat.exists() {
                 return (flat.to_str().unwrap_or(name).to_string(), trace);
             }
             let nested = parent.join("bin").join(name).join(&exe_name);
-            trace.push(format!("  sidecar nested → {} ({})", nested.display(), if nested.exists() { "FOUND" } else { "miss" }));
+            trace.push(format!(
+                "  sidecar nested → {} ({})",
+                nested.display(),
+                if nested.exists() { "FOUND" } else { "miss" }
+            ));
             if nested.exists() {
                 return (nested.to_str().unwrap_or(name).to_string(), trace);
             }
@@ -101,15 +121,28 @@ pub fn resolve_tool_traced(name: &str) -> (String, Vec<String>) {
     // Dev bin/
     let dev_bin = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("bin")
-        .join(if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() });
-    trace.push(format!("  dev bin/ → {} ({})", dev_bin.display(), if dev_bin.exists() { "FOUND" } else { "miss" }));
+        .join(if cfg!(windows) {
+            format!("{}.exe", name)
+        } else {
+            name.to_string()
+        });
+    trace.push(format!(
+        "  dev bin/ → {} ({})",
+        dev_bin.display(),
+        if dev_bin.exists() { "FOUND" } else { "miss" }
+    ));
     if dev_bin.exists() {
         return (dev_bin.to_str().unwrap_or(name).to_string(), trace);
     }
 
     // Platform-aware PATH lookup
     let candidates: Vec<String> = if cfg!(windows) {
-        vec![format!("{}.exe", name), format!("{}.cmd", name), format!("{}.bat", name), name.to_string()]
+        vec![
+            format!("{}.exe", name),
+            format!("{}.cmd", name),
+            format!("{}.bat", name),
+            name.to_string(),
+        ]
     } else {
         vec![name.to_string()]
     };
@@ -120,7 +153,11 @@ pub fn resolve_tool_traced(name: &str) -> (String, Vec<String>) {
     } else {
         vec![]
     };
-    trace.push(format!("  probing {} dir(s) × {} candidate name(s)…", extra_dirs.len(), candidates.len()));
+    trace.push(format!(
+        "  probing {} dir(s) × {} candidate name(s)…",
+        extra_dirs.len(),
+        candidates.len()
+    ));
     for dir in &extra_dirs {
         for cand in &candidates {
             let p = dir.join(cand);
@@ -145,7 +182,13 @@ pub fn resolve_tool_traced(name: &str) -> (String, Vec<String>) {
         }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            trace.push(format!("  `{} {}` exit={} stderr={}", lookup_cmd, name, out.status.code().unwrap_or(-1), stderr));
+            trace.push(format!(
+                "  `{} {}` exit={} stderr={}",
+                lookup_cmd,
+                name,
+                out.status.code().unwrap_or(-1),
+                stderr
+            ));
         }
         Err(e) => trace.push(format!("  `{} {}` spawn failed: {}", lookup_cmd, name, e)),
     }
@@ -197,8 +240,13 @@ pub fn find_on_path(name: &str) -> Option<String> {
     // Fallback: ask the shell. `where` on Windows returns paths of all
     // PATHEXT-matched files, including .cmd/.bat — handles npm-installed tools.
     let lookup_cmd = if cfg!(windows) { "where" } else { "which" };
-    let out = std::process::Command::new(lookup_cmd).arg(name).output().ok()?;
-    if !out.status.success() { return None; }
+    let out = std::process::Command::new(lookup_cmd)
+        .arg(name)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
     let raw = String::from_utf8_lossy(&out.stdout);
     let first = raw.lines().map(str::trim).find(|l| !l.is_empty())?;
     Some(first.to_string())
@@ -218,7 +266,9 @@ pub fn find_on_path(name: &str) -> Option<String> {
 /// nameable for the AST to resolve at compile time, because `cfg!()` is a
 /// runtime macro, not a `#[cfg]` attribute.
 #[cfg(target_os = "windows")]
-pub fn unix_extra_dirs() -> Vec<PathBuf> { Vec::new() }
+pub fn unix_extra_dirs() -> Vec<PathBuf> {
+    Vec::new()
+}
 
 #[cfg(not(target_os = "windows"))]
 pub fn unix_extra_dirs() -> Vec<PathBuf> {
@@ -230,11 +280,11 @@ pub fn unix_extra_dirs() -> Vec<PathBuf> {
     };
 
     // System / package-manager dirs (priority order)
-    push("/opt/homebrew/bin".into());   // Apple Silicon Homebrew
+    push("/opt/homebrew/bin".into()); // Apple Silicon Homebrew
     push("/opt/homebrew/sbin".into());
-    push("/usr/local/bin".into());      // Intel Homebrew + manual installs + npm-global
+    push("/usr/local/bin".into()); // Intel Homebrew + manual installs + npm-global
     push("/usr/local/sbin".into());
-    push("/opt/local/bin".into());      // MacPorts
+    push("/opt/local/bin".into()); // MacPorts
     push("/usr/bin".into());
     push("/usr/sbin".into());
     // Docker Desktop on macOS — newer versions ship the CLI here
@@ -242,11 +292,11 @@ pub fn unix_extra_dirs() -> Vec<PathBuf> {
 
     if let Ok(home) = env::var("HOME") {
         let home = PathBuf::from(home);
-        push(home.join(".local/bin"));          // pipx, pip --user
-        push(home.join(".cargo/bin"));          // cargo install
-        push(home.join(".docker/bin"));         // recent Docker Desktop layout
-        push(home.join(".volta/bin"));          // Volta-managed Node tools
-        push(home.join(".asdf/shims"));         // asdf shims
+        push(home.join(".local/bin")); // pipx, pip --user
+        push(home.join(".cargo/bin")); // cargo install
+        push(home.join(".docker/bin")); // recent Docker Desktop layout
+        push(home.join(".volta/bin")); // Volta-managed Node tools
+        push(home.join(".asdf/shims")); // asdf shims
         push(home.join(".fnm/aliases/default/bin")); // fnm default
 
         // nvm: enumerate all installed Node versions and add their bin dirs.
@@ -279,7 +329,9 @@ pub fn windows_extra_dirs() -> Vec<PathBuf> {
     fn env_join(dirs: &mut Vec<PathBuf>, env_var: &str, sub: &str) {
         if let Ok(base) = std::env::var(env_var) {
             let p = std::path::Path::new(&base).join(sub);
-            if p.is_dir() { dirs.push(p); }
+            if p.is_dir() {
+                dirs.push(p);
+            }
         }
     }
 
@@ -288,12 +340,16 @@ pub fn windows_extra_dirs() -> Vec<PathBuf> {
     // npm-global — where `func.cmd` and `azurite.cmd` live after `npm install -g`
     env_join(&mut dirs, "APPDATA", "npm");
     // Node itself
-    env_join(&mut dirs, "ProgramFiles",      "nodejs");
+    env_join(&mut dirs, "ProgramFiles", "nodejs");
     env_join(&mut dirs, "ProgramFiles(x86)", "nodejs");
     // Azure CLI — three known installer layouts
-    env_join(&mut dirs, "ProgramFiles(x86)", r"Microsoft SDKs\Azure\CLI2\wbin");
-    env_join(&mut dirs, "ProgramFiles",      r"Microsoft SDKs\Azure\CLI2\wbin");
-    env_join(&mut dirs, "LOCALAPPDATA",      r"Programs\Azure CLI\wbin");
+    env_join(
+        &mut dirs,
+        "ProgramFiles(x86)",
+        r"Microsoft SDKs\Azure\CLI2\wbin",
+    );
+    env_join(&mut dirs, "ProgramFiles", r"Microsoft SDKs\Azure\CLI2\wbin");
+    env_join(&mut dirs, "LOCALAPPDATA", r"Programs\Azure CLI\wbin");
     // Chocolatey shims
     env_join(&mut dirs, "ChocolateyInstall", "bin");
     // Scoop shims (user-level)
@@ -311,7 +367,9 @@ pub fn windows_extra_dirs() -> Vec<PathBuf> {
                     let nm = n.to_string_lossy().to_lowercase();
                     if nm.starts_with("apache-maven") || nm == "maven" {
                         let bin = entry.path().join("bin");
-                        if bin.is_dir() { dirs.push(bin); }
+                        if bin.is_dir() {
+                            dirs.push(bin);
+                        }
                     }
                 }
             }
@@ -325,7 +383,9 @@ pub fn windows_extra_dirs() -> Vec<PathBuf> {
 
 #[cfg(not(target_os = "windows"))]
 #[allow(dead_code)]
-pub fn windows_extra_dirs() -> Vec<PathBuf> { Vec::new() }
+pub fn windows_extra_dirs() -> Vec<PathBuf> {
+    Vec::new()
+}
 
 /// Extracts the embedded Azurite binary to a temp folder if it exists.
 /// This enables "Single-EXE" distribution.
@@ -335,15 +395,19 @@ fn extract_embedded_azurite() -> Result<String, String> {
         // We use include_bytes! to bake the binary into our app.
         // bin/azurite must exist during compilation for this to work.
         const BYTES: &[u8] = include_bytes!("../../bin/azurite");
-        
+
         let mut temp_path = env::temp_dir();
         // Use a versioned name so updates trigger a re-extraction
         temp_path.push(format!("ais_runner_azurite_{}", BYTES.len()));
-        if cfg!(windows) { temp_path.set_extension("exe"); }
+        if cfg!(windows) {
+            temp_path.set_extension("exe");
+        }
 
-        if !temp_path.exists() || fs::metadata(&temp_path).map(|m| m.len()).unwrap_or(0) != BYTES.len() as u64 {
+        if !temp_path.exists()
+            || fs::metadata(&temp_path).map(|m| m.len()).unwrap_or(0) != BYTES.len() as u64
+        {
             fs::write(&temp_path, BYTES).map_err(|e| e.to_string())?;
-            
+
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -356,4 +420,3 @@ fn extract_embedded_azurite() -> Result<String, String> {
     #[cfg(not(feature = "bundle-azurite"))]
     Err("Embedded binary not enabled in this build".to_string())
 }
-

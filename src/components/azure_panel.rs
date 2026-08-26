@@ -1,23 +1,26 @@
-use dioxus::prelude::*;
-use std::collections::{HashSet, HashMap};
 use crate::services::{
-    azure_sync::{self, AzureWorkflow, LogicAppSite},
     azure_cli::{self, AzError},
+    azure_sync::{self, AzureWorkflow, LogicAppSite},
     config,
 };
+use dioxus::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 fn fmt_az_error(e: &AzError) -> String {
     match e {
-        AzError::NotLoggedIn => {
-            "Not signed in to Azure — click 🔐 Re-login to authenticate. \
-             Local workflows work without Azure login.".into()
-        }
+        AzError::NotLoggedIn => "Not signed in to Azure — click 🔐 Re-login to authenticate. \
+             Local workflows work without Azure login."
+            .into(),
         AzError::Other(msg) => {
             if msg.contains("AuthorizationFailed") {
-                let user = msg.split("client '").nth(1)
+                let user = msg
+                    .split("client '")
+                    .nth(1)
                     .and_then(|s| s.split("' with").next())
                     .unwrap_or("your account");
-                let site = msg.split("/sites/").nth(1)
+                let site = msg
+                    .split("/sites/")
+                    .nth(1)
                     .and_then(|s| s.split(['\'', '"', ' ', '\\']).next())
                     .unwrap_or("the Logic App");
                 return format!(
@@ -40,53 +43,54 @@ pub enum DiffStatus {
 
 #[derive(Props, Clone, PartialEq)]
 pub struct AzurePanelProps {
-    pub logic_apps_dir:  String,
+    pub logic_apps_dir: String,
     pub local_workflows: Vec<String>,
     /// Persistent diff cache owned by the parent — survives panel close/reopen.
-    pub diff_cache:      Signal<HashMap<String, DiffStatus>>,
+    pub diff_cache: Signal<HashMap<String, DiffStatus>>,
     /// Azure AD tenant to target on login. None = use az default.
-    pub tenant_id:       Option<String>,
+    pub tenant_id: Option<String>,
     /// Drives visibility; panel sets this to false when the × button is clicked.
-    pub is_open:         Signal<bool>,
-    pub on_pulled:       EventHandler<String>,
+    pub is_open: Signal<bool>,
+    pub on_pulled: EventHandler<String>,
 }
 
 #[component]
 pub fn AzurePanel(props: AzurePanelProps) -> Element {
-    let mut az_workflows:   Signal<Vec<AzureWorkflow>>          = use_signal(Vec::new);
-    let mut fetching_sites: Signal<bool>                        = use_signal(|| false);
-    let mut fetching_wfs:   Signal<bool>                        = use_signal(|| false);
-    let mut pulling:        Signal<HashSet<String>>             = use_signal(HashSet::new);
-    let mut status:         Signal<Option<String>>              = use_signal(|| None);
-    let mut diff_map:       Signal<HashMap<String, DiffStatus>> = use_signal(HashMap::new);
-    let mut computing:        Signal<usize> = use_signal(|| 0);
+    let mut az_workflows: Signal<Vec<AzureWorkflow>> = use_signal(Vec::new);
+    let mut fetching_sites: Signal<bool> = use_signal(|| false);
+    let mut fetching_wfs: Signal<bool> = use_signal(|| false);
+    let mut pulling: Signal<HashSet<String>> = use_signal(HashSet::new);
+    let mut status: Signal<Option<String>> = use_signal(|| None);
+    let mut diff_map: Signal<HashMap<String, DiffStatus>> = use_signal(HashMap::new);
+    let mut computing: Signal<usize> = use_signal(|| 0);
     let mut config_computing: Signal<usize> = use_signal(|| 0);
-    let mut confirm_pull:   Signal<Option<String>>              = use_signal(|| None);
-    let mut show_all:       Signal<bool>                        = use_signal(|| false);
+    let mut confirm_pull: Signal<Option<String>> = use_signal(|| None);
+    let mut show_all: Signal<bool> = use_signal(|| false);
     let mut diff_cache = props.diff_cache;
 
     let config = use_signal(config::load);
     let workspace_link = config.read().get_link(&props.logic_apps_dir).cloned();
 
     let mut selected_site: Signal<Option<LogicAppSite>> = use_signal(|| {
-        workspace_link.as_ref().and_then(|l| l.logic_app_name.as_ref().map(|name| LogicAppSite {
-            name:           name.clone(),
-            resource_group: l.resource_group.clone(),
-            subscription:   l.subscription_id.clone(),
-        }))
+        workspace_link.as_ref().and_then(|l| {
+            l.logic_app_name.as_ref().map(|name| LogicAppSite {
+                name: name.clone(),
+                resource_group: l.resource_group.clone(),
+                subscription: l.subscription_id.clone(),
+            })
+        })
     });
 
-    let selected_sub: Signal<Option<String>> = use_signal(|| {
-        workspace_link.as_ref().map(|l| l.subscription_id.clone())
-    });
+    let selected_sub: Signal<Option<String>> =
+        use_signal(|| workspace_link.as_ref().map(|l| l.subscription_id.clone()));
     let local_set: HashSet<String> = props.local_workflows.iter().cloned().collect();
 
     // Special diff_map keys for config files (not workflows).
     const PARAM_KEY: &str = "__parameters.json__";
-    const CONN_KEY:  &str = "__connections.json__";
+    const CONN_KEY: &str = "__connections.json__";
 
     let fetch_workflows = {
-        let la_dir        = props.logic_apps_dir.clone();
+        let la_dir = props.logic_apps_dir.clone();
         let local_set_ref = local_set.clone();
         move |site: LogicAppSite| {
             fetching_wfs.set(true);
@@ -95,17 +99,19 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
             computing.set(0);
             config_computing.set(0);
             status.set(None);
-            let sub  = site.subscription.clone();
-            let rg   = site.resource_group.clone();
+            let sub = site.subscription.clone();
+            let rg = site.resource_group.clone();
             let name = site.name.clone();
             selected_site.set(Some(site));
-            let dir  = la_dir.clone();
+            let dir = la_dir.clone();
             let lset = local_set_ref.clone();
             spawn(async move {
                 let (s, r, n) = (sub.clone(), rg.clone(), name.clone());
                 let result = tokio::task::spawn_blocking(move || {
                     azure_sync::list_azure_workflows(&s, &r, &n)
-                }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into())));
+                })
+                .await
+                .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())));
                 fetching_wfs.set(false);
                 match result {
                     Ok(wfs) => {
@@ -116,7 +122,9 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                                 if let Some(cached) = diff_cache.read().get(&wf.name).cloned() {
                                     diff_map.write().insert(wf.name.clone(), cached);
                                 } else {
-                                    diff_map.write().insert(wf.name.clone(), DiffStatus::Checking);
+                                    diff_map
+                                        .write()
+                                        .insert(wf.name.clone(), DiffStatus::Checking);
                                     to_compute.push((i, wf.name.clone()));
                                 }
                             }
@@ -124,14 +132,18 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
 
                         // Config file diffs: check cache, else schedule.
                         let needs_params = diff_cache.read().get(PARAM_KEY).is_none();
-                        let needs_conns  = diff_cache.read().get(CONN_KEY).is_none();
+                        let needs_conns = diff_cache.read().get(CONN_KEY).is_none();
                         if needs_params {
-                            diff_map.write().insert(PARAM_KEY.to_string(), DiffStatus::Checking);
+                            diff_map
+                                .write()
+                                .insert(PARAM_KEY.to_string(), DiffStatus::Checking);
                         } else if let Some(c) = diff_cache.read().get(PARAM_KEY).cloned() {
                             diff_map.write().insert(PARAM_KEY.to_string(), c);
                         }
                         if needs_conns {
-                            diff_map.write().insert(CONN_KEY.to_string(), DiffStatus::Checking);
+                            diff_map
+                                .write()
+                                .insert(CONN_KEY.to_string(), DiffStatus::Checking);
                         } else if let Some(c) = diff_cache.read().get(CONN_KEY).cloned() {
                             diff_map.write().insert(CONN_KEY.to_string(), c);
                         }
@@ -143,19 +155,24 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                         az_workflows.set(wfs);
 
                         for (i, wf_nm) in to_compute {
-                            let (sc, rc, nc, dc) = (sub.clone(), rg.clone(), name.clone(), dir.clone());
+                            let (sc, rc, nc, dc) =
+                                (sub.clone(), rg.clone(), name.clone(), dir.clone());
                             let key = wf_nm.clone();
                             spawn(async move {
                                 if i > 0 {
                                     let delay = std::cmp::min(200 * i as u64, 2_000);
-                                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                                    tokio::time::sleep(std::time::Duration::from_millis(delay))
+                                        .await;
                                 }
                                 let ds = match tokio::task::spawn_blocking(move || {
                                     azure_sync::diff_workflow_vs_local(&sc, &rc, &nc, &wf_nm, &dc)
-                                }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into()))) {
-                                    Ok(0)   => DiffStatus::Same,
+                                })
+                                .await
+                                .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
+                                {
+                                    Ok(0) => DiffStatus::Same,
                                     Ok(cnt) => DiffStatus::Differs(cnt),
-                                    Err(_)  => DiffStatus::Error,
+                                    Err(_) => DiffStatus::Error,
                                 };
                                 diff_map.write().insert(key.clone(), ds.clone());
                                 diff_cache.write().insert(key, ds);
@@ -165,14 +182,18 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                         }
 
                         if needs_params {
-                            let (sc, rc, nc, dc) = (sub.clone(), rg.clone(), name.clone(), dir.clone());
+                            let (sc, rc, nc, dc) =
+                                (sub.clone(), rg.clone(), name.clone(), dir.clone());
                             spawn(async move {
                                 let ds = match tokio::task::spawn_blocking(move || {
                                     azure_sync::diff_parameters_vs_local(&sc, &rc, &nc, &dc)
-                                }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into()))) {
-                                    Ok(0)   => DiffStatus::Same,
+                                })
+                                .await
+                                .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
+                                {
+                                    Ok(0) => DiffStatus::Same,
                                     Ok(cnt) => DiffStatus::Differs(cnt),
-                                    Err(_)  => DiffStatus::Error,
+                                    Err(_) => DiffStatus::Error,
                                 };
                                 diff_map.write().insert(PARAM_KEY.to_string(), ds.clone());
                                 diff_cache.write().insert(PARAM_KEY.to_string(), ds);
@@ -182,14 +203,18 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                         }
 
                         if needs_conns {
-                            let (sc, rc, nc, dc) = (sub.clone(), rg.clone(), name.clone(), dir.clone());
+                            let (sc, rc, nc, dc) =
+                                (sub.clone(), rg.clone(), name.clone(), dir.clone());
                             spawn(async move {
                                 let ds = match tokio::task::spawn_blocking(move || {
                                     azure_sync::diff_connections_vs_local(&sc, &rc, &nc, &dc)
-                                }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into()))) {
-                                    Ok(0)   => DiffStatus::Same,
+                                })
+                                .await
+                                .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())))
+                                {
+                                    Ok(0) => DiffStatus::Same,
                                     Ok(cnt) => DiffStatus::Differs(cnt),
-                                    Err(_)  => DiffStatus::Error,
+                                    Err(_) => DiffStatus::Error,
                                 };
                                 diff_map.write().insert(CONN_KEY.to_string(), ds.clone());
                                 diff_cache.write().insert(CONN_KEY.to_string(), ds);
@@ -200,7 +225,8 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                     }
                     Err(azure_cli::AzError::NotLoggedIn) => status.set(Some(
                         "Not signed in to Azure — click 🔐 Re-login to load workflows. \
-                         Local workflows work without Azure login.".into()
+                         Local workflows work without Azure login."
+                            .into(),
                     )),
                     Err(e) => status.set(Some(fmt_az_error(&e))),
                 }
@@ -209,7 +235,7 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
     };
 
     let pull_workflow = {
-        let la_dir    = props.logic_apps_dir.clone();
+        let la_dir = props.logic_apps_dir.clone();
         let on_pulled = props.on_pulled.clone();
         move |wf_name: String| {
             let site = match selected_site.read().clone() {
@@ -218,15 +244,17 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
             };
             pulling.write().insert(wf_name.clone());
             status.set(None);
-            let dir      = la_dir.clone();
-            let sub      = site.subscription.clone();
-            let rg       = site.resource_group.clone();
+            let dir = la_dir.clone();
+            let sub = site.subscription.clone();
+            let rg = site.resource_group.clone();
             let sitename = site.name.clone();
-            let wf       = wf_name.clone();
+            let wf = wf_name.clone();
             spawn(async move {
                 let result = tokio::task::spawn_blocking(move || {
                     azure_sync::download_workflow(&sub, &rg, &sitename, &wf)
-                }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into())));
+                })
+                .await
+                .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())));
 
                 pulling.write().remove(&wf_name);
 
@@ -234,7 +262,7 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                     Err(e) => status.set(Some(format!("❌ {wf_name}: {}", fmt_az_error(&e)))),
                     Ok(json) => {
                         let resolved = crate::services::workflows::resolve_logic_apps_dir(&dir);
-                        let wf_dir   = resolved.join(&wf_name);
+                        let wf_dir = resolved.join(&wf_name);
                         if let Err(e) = std::fs::create_dir_all(&wf_dir) {
                             status.set(Some(format!("❌ mkdir failed: {}", e)));
                             return;
@@ -258,17 +286,19 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
         move |filename: &'static str, cache_key: &'static str| {
             let site = match selected_site.read().clone() {
                 Some(s) => s,
-                None    => return,
+                None => return,
             };
             status.set(None);
-            let dir      = la_dir.clone();
-            let sub      = site.subscription.clone();
-            let rg       = site.resource_group.clone();
+            let dir = la_dir.clone();
+            let sub = site.subscription.clone();
+            let rg = site.resource_group.clone();
             let sitename = site.name.clone();
             spawn(async move {
                 let result = tokio::task::spawn_blocking(move || {
                     azure_sync::download_config_file(&sub, &rg, &sitename, filename)
-                }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into())));
+                })
+                .await
+                .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())));
                 match result {
                     Err(e) => status.set(Some(format!("❌ {filename}: {}", fmt_az_error(&e)))),
                     Ok(json) => {
@@ -277,8 +307,12 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                             status.set(Some(format!("❌ write failed: {}", e)));
                             return;
                         }
-                        diff_map.write().insert(cache_key.to_string(), DiffStatus::Same);
-                        diff_cache.write().insert(cache_key.to_string(), DiffStatus::Same);
+                        diff_map
+                            .write()
+                            .insert(cache_key.to_string(), DiffStatus::Same);
+                        diff_cache
+                            .write()
+                            .insert(cache_key.to_string(), DiffStatus::Same);
                         status.set(Some(format!("✅ {filename} pulled")));
                     }
                 }
@@ -298,41 +332,48 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
     };
 
     use_effect({
-        let link    = workspace_link.clone();
-        let mut fw  = fetch_workflows.clone();
+        let link = workspace_link.clone();
+        let mut fw = fetch_workflows.clone();
         let is_open = props.is_open;
         move || {
-            if !*is_open.read() { return; } // reactive — re-runs when panel opens
+            if !*is_open.read() {
+                return;
+            } // reactive — re-runs when panel opens
             let Some(link) = link.clone() else { return };
             status.set(None);
 
             if let Some(site_name) = link.logic_app_name.clone() {
                 fw(LogicAppSite {
-                    name:           site_name,
+                    name: site_name,
                     resource_group: link.resource_group.clone(),
-                    subscription:   link.subscription_id.clone(),
+                    subscription: link.subscription_id.clone(),
                 });
                 return;
             }
 
             fetching_sites.set(true);
             let sub_id = link.subscription_id.clone();
-            let rg_id  = link.resource_group.clone();
+            let rg_id = link.resource_group.clone();
             let mut fw = fw.clone();
             spawn(async move {
                 let result = tokio::task::spawn_blocking(move || {
                     azure_sync::list_logic_app_sites_in_rg(&sub_id, &rg_id)
-                }).await.unwrap_or(Err(azure_cli::AzError::Other("task failed".into())));
+                })
+                .await
+                .unwrap_or(Err(azure_cli::AzError::Other("task failed".into())));
                 fetching_sites.set(false);
                 match result {
                     Ok(list) => match list.into_iter().next() {
                         Some(first) => fw(first),
-                        None        => status.set(Some("No Logic Apps Standard sites found in this resource group.".into())),
+                        None => status.set(Some(
+                            "No Logic Apps Standard sites found in this resource group.".into(),
+                        )),
                     },
                     // NotLoggedIn on auto-fetch: show the hint but don't treat it as a hard error
                     Err(azure_cli::AzError::NotLoggedIn) => status.set(Some(
                         "Not signed in to Azure — click 🔐 Re-login to load workflows. \
-                         Local workflows work without Azure login.".into()
+                         Local workflows work without Azure login."
+                            .into(),
                     )),
                     Err(e) => status.set(Some(fmt_az_error(&e))),
                 }
@@ -341,20 +382,33 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
     });
 
     // ── derived state ──────────────────────────────────────────────────────
-    let is_loading  = *fetching_sites.read() || *fetching_wfs.read();
+    let is_loading = *fetching_sites.read() || *fetching_wfs.read();
     let is_computing = *computing.read() > 0;
-    let wf_count    = az_workflows.read().len();
+    let wf_count = az_workflows.read().len();
 
     // stats (computed only when done, cheap to compute always)
-    let in_sync   = diff_map.read().values().filter(|s| matches!(s, DiffStatus::Same)).count();
-    let differ    = diff_map.read().values().filter(|s| matches!(s, DiffStatus::Differs(_))).count();
-    let errors    = diff_map.read().values().filter(|s| matches!(s, DiffStatus::Error)).count();
+    let in_sync = diff_map
+        .read()
+        .values()
+        .filter(|s| matches!(s, DiffStatus::Same))
+        .count();
+    let differ = diff_map
+        .read()
+        .values()
+        .filter(|s| matches!(s, DiffStatus::Differs(_)))
+        .count();
+    let errors = diff_map
+        .read()
+        .values()
+        .filter(|s| matches!(s, DiffStatus::Error))
+        .count();
     let synced_count = in_sync;
     let visible: Vec<AzureWorkflow> = if !is_computing {
-        az_workflows.read().iter()
+        az_workflows
+            .read()
+            .iter()
             .filter(|wf| {
-                *show_all.read()
-                    || !matches!(diff_map.read().get(&wf.name), Some(DiffStatus::Same))
+                *show_all.read() || !matches!(diff_map.read().get(&wf.name), Some(DiffStatus::Same))
             })
             .cloned()
             .collect()

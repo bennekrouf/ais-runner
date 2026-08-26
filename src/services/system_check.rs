@@ -19,23 +19,27 @@ pub const FUNC_INSTALL_HINT: &str = "npm install -g azure-functions-core-tools@4
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolStatus {
-    pub name:         &'static str,
-    pub available:    bool,
-    pub version:      Option<String>,
+    pub name: &'static str,
+    pub available: bool,
+    pub version: Option<String>,
     pub install_hint: &'static str,
     /// Step-by-step trace of resolution + spawn attempt. Surfaced in the UI
     /// tooltip and also written to a log file. Always populated so users can
     /// see what was tried even on success.
-    pub diagnostic:   String,
+    pub diagnostic: String,
 }
 
 pub fn check_tools() -> Vec<ToolStatus> {
     let results = vec![
-        probe("func",    &["--version"], FUNC_INSTALL_HINT),
+        probe("func", &["--version"], FUNC_INSTALL_HINT),
         probe("azurite", &["--version"], "npm install -g azurite"),
-        probe("az",      &["--version"], "https://aka.ms/installazurecli"),
-        probe("node",    &["--version"], "https://nodejs.org"),
-        probe("mvn",     &["--version"], "https://maven.apache.org/install.html"),
+        probe("az", &["--version"], "https://aka.ms/installazurecli"),
+        probe("node", &["--version"], "https://nodejs.org"),
+        probe(
+            "mvn",
+            &["--version"],
+            "https://maven.apache.org/install.html",
+        ),
         probe_docker(),
     ];
     write_diagnostic_log(&results);
@@ -56,9 +60,15 @@ fn write_diagnostic_log(results: &[ToolStatus]) {
     );
     buf.push_str(&format!(
         "PATH ({} entries):\n",
-        std::env::var("PATH").unwrap_or_default().split(if cfg!(windows) { ';' } else { ':' }).count()
+        std::env::var("PATH")
+            .unwrap_or_default()
+            .split(if cfg!(windows) { ';' } else { ':' })
+            .count()
     ));
-    for entry in std::env::var("PATH").unwrap_or_default().split(if cfg!(windows) { ';' } else { ':' }) {
+    for entry in std::env::var("PATH")
+        .unwrap_or_default()
+        .split(if cfg!(windows) { ';' } else { ':' })
+    {
         if !entry.is_empty() {
             buf.push_str(&format!("  {}\n", entry));
         }
@@ -69,7 +79,11 @@ fn write_diagnostic_log(results: &[ToolStatus]) {
         buf.push_str(&format!(
             "── {} ── {}\n",
             t.name,
-            if t.available { "✓ available" } else { "✗ unavailable" }
+            if t.available {
+                "✓ available"
+            } else {
+                "✗ unavailable"
+            }
         ));
         if let Some(v) = &t.version {
             buf.push_str(&format!("   version: {}\n", v));
@@ -104,7 +118,10 @@ fn probe_docker() -> ToolStatus {
         Ok(out) if out.status.success() => {
             let raw = String::from_utf8_lossy(&out.stdout).to_string();
             trace.push_str(&format!("   docker --version: ok ({})\n", raw.trim()));
-            raw.lines().map(|l| l.trim()).find(|l| !l.is_empty()).map(|l| l.to_string())
+            raw.lines()
+                .map(|l| l.trim())
+                .find(|l| !l.is_empty())
+                .map(|l| l.to_string())
         }
         Ok(out) => {
             trace.push_str(&format!(
@@ -122,11 +139,11 @@ fn probe_docker() -> ToolStatus {
 
     if version.is_none() {
         return ToolStatus {
-            name:         "docker",
-            available:    false,
-            version:      None,
+            name: "docker",
+            available: false,
+            version: None,
             install_hint: "https://www.docker.com/products/docker-desktop/",
-            diagnostic:   trace,
+            diagnostic: trace,
         };
     }
 
@@ -135,8 +152,11 @@ fn probe_docker() -> ToolStatus {
         Ok(out) if out.status.success() => {
             trace.push_str("   docker info: ok (daemon running)\n");
             ToolStatus {
-                name: "docker", available: true, version,
-                install_hint: "", diagnostic: trace,
+                name: "docker",
+                available: true,
+                version,
+                install_hint: "",
+                diagnostic: trace,
             }
         }
         Ok(out) => {
@@ -145,16 +165,22 @@ fn probe_docker() -> ToolStatus {
                 out.status.code().unwrap_or(-1)
             ));
             ToolStatus {
-                name: "docker", available: false, version,
-                install_hint: "Docker Desktop is installed but not running — start it from the Start Menu",
+                name: "docker",
+                available: false,
+                version,
+                install_hint:
+                    "Docker Desktop is installed but not running — start it from the Start Menu",
                 diagnostic: trace,
             }
         }
         Err(e) => {
             trace.push_str(&format!("   docker info: spawn failed: {}\n", e));
             ToolStatus {
-                name: "docker", available: false, version,
-                install_hint: "Docker Desktop is installed but not running — start it from the Start Menu",
+                name: "docker",
+                available: false,
+                version,
+                install_hint:
+                    "Docker Desktop is installed but not running — start it from the Start Menu",
                 diagnostic: trace,
             }
         }
@@ -175,7 +201,10 @@ fn probe(name: &'static str, args: &[&str], install_hint: &'static str) -> ToolS
     };
 
     let result = if needs_shell {
-        Command::new("cmd").args(["/c", &resolved]).args(args).output()
+        Command::new("cmd")
+            .args(["/c", &resolved])
+            .args(args)
+            .output()
     } else {
         Command::new(&resolved).args(args).output()
     };
@@ -183,12 +212,22 @@ fn probe(name: &'static str, args: &[&str], install_hint: &'static str) -> ToolS
     match result {
         Ok(out) if out.status.success() => {
             let raw = String::from_utf8_lossy(&out.stdout).to_string();
-            let version = raw.lines().map(|l| l.trim()).find(|l| !l.is_empty()).map(String::from);
+            let version = raw
+                .lines()
+                .map(|l| l.trim())
+                .find(|l| !l.is_empty())
+                .map(String::from);
             diagnostic.push_str(&format!("Spawn: `{}` → ok\n", spawn_label));
             if let Some(v) = &version {
                 diagnostic.push_str(&format!("Version: {}\n", v));
             }
-            return ToolStatus { name, available: true, version, install_hint, diagnostic };
+            return ToolStatus {
+                name,
+                available: true,
+                version,
+                install_hint,
+                diagnostic,
+            };
         }
         Ok(out) => {
             diagnostic.push_str(&format!(
@@ -209,12 +248,22 @@ fn probe(name: &'static str, args: &[&str], install_hint: &'static str) -> ToolS
         match Command::new("cmd").args(["/c", name]).args(args).output() {
             Ok(out) if out.status.success() => {
                 let raw = String::from_utf8_lossy(&out.stdout).to_string();
-                let version = raw.lines().map(|l| l.trim()).find(|l| !l.is_empty()).map(String::from);
+                let version = raw
+                    .lines()
+                    .map(|l| l.trim())
+                    .find(|l| !l.is_empty())
+                    .map(String::from);
                 diagnostic.push_str(&format!("Fallback: `{}` → ok\n", fallback_label));
                 if let Some(v) = &version {
                     diagnostic.push_str(&format!("Version: {}\n", v));
                 }
-                return ToolStatus { name, available: true, version, install_hint, diagnostic };
+                return ToolStatus {
+                    name,
+                    available: true,
+                    version,
+                    install_hint,
+                    diagnostic,
+                };
             }
             Ok(out) => {
                 diagnostic.push_str(&format!(
@@ -230,5 +279,11 @@ fn probe(name: &'static str, args: &[&str], install_hint: &'static str) -> ToolS
         }
     }
 
-    ToolStatus { name, available: false, version: None, install_hint, diagnostic }
+    ToolStatus {
+        name,
+        available: false,
+        version: None,
+        install_hint,
+        diagnostic,
+    }
 }

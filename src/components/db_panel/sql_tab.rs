@@ -1,34 +1,34 @@
-use dioxus::prelude::*;
-use std::collections::{HashMap, HashSet};
-use crate::services::sql_check::{self, SqlAuthType, SqlConnection, TestResult};
-use crate::services::sql_runner;
 use crate::services::recorder;
 use crate::services::scenario::Step;
+use crate::services::sql_check::{self, SqlAuthType, SqlConnection, TestResult};
+use crate::services::sql_runner;
+use dioxus::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SqlTabProps {
     pub connections: Vec<SqlConnection>,
-    pub edits:       Signal<HashMap<String, String>>,
-    pub status:      Signal<Option<(String, bool)>>,
+    pub edits: Signal<HashMap<String, String>>,
+    pub status: Signal<Option<(String, bool)>>,
 }
 
 #[component]
 pub fn SqlTab(props: SqlTabProps) -> Element {
     let mut sql_test_results: Signal<HashMap<String, TestResult>> = use_signal(HashMap::new);
-    let mut sql_testing:      Signal<HashSet<String>>             = use_signal(HashSet::new);
+    let mut sql_testing: Signal<HashSet<String>> = use_signal(HashSet::new);
 
     // Scenario recording — a no-op unless a recording is in progress.
     let recorder = use_context::<crate::screens::MainContext>().recorder;
 
     // ── SQL Dev Console state ──────────────────────────────────────────
-    let mut dev_db_name:   Signal<String>              = use_signal(String::new);
+    let mut dev_db_name: Signal<String> = use_signal(String::new);
     let mut dev_db_result: Signal<Option<Result<String, String>>> = use_signal(|| None);
-    let mut dev_db_busy:   Signal<bool>                = use_signal(|| false);
+    let mut dev_db_busy: Signal<bool> = use_signal(|| false);
 
-    let mut dev_sql_db:     Signal<String>              = use_signal(String::new);
-    let mut dev_sql_input:  Signal<String>              = use_signal(String::new);
+    let mut dev_sql_db: Signal<String> = use_signal(String::new);
+    let mut dev_sql_input: Signal<String> = use_signal(String::new);
     let mut dev_sql_result: Signal<Option<Result<String, String>>> = use_signal(|| None);
-    let mut dev_sql_busy:   Signal<bool>                = use_signal(|| false);
+    let mut dev_sql_busy: Signal<bool> = use_signal(|| false);
 
     // Status line for the "Copy shell command" button (item 6 in the
     // batch-B bug report). Hoisted to component scope because Dioxus tracks
@@ -39,10 +39,11 @@ pub fn SqlTab(props: SqlTabProps) -> Element {
     // ── Database tree ──────────────────────────────────────────────────
     // Vec<(db_name, Vec<(schema, table, row_count)>)>
     let mut db_tree: Signal<Vec<(String, Vec<(String, String, u64)>)>> = use_signal(Vec::new);
-    let mut tree_loading: Signal<bool>                                  = use_signal(|| false);
-    let mut expanded_dbs: Signal<std::collections::HashSet<String>>     = use_signal(std::collections::HashSet::new);
+    let mut tree_loading: Signal<bool> = use_signal(|| false);
+    let mut expanded_dbs: Signal<std::collections::HashSet<String>> =
+        use_signal(std::collections::HashSet::new);
     // key = "db::schema.table" — pending drop confirmation
-    let mut confirm_drop: Signal<Option<String>>                        = use_signal(|| None);
+    let mut confirm_drop: Signal<Option<String>> = use_signal(|| None);
 
     let mut refresh_tree = move || {
         tree_loading.set(true);
@@ -56,25 +57,31 @@ pub fn SqlTab(props: SqlTabProps) -> Element {
                     }
                     db_tree.set(tree);
                 }
-                Err(_) => { db_tree.set(vec![]); }
+                Err(_) => {
+                    db_tree.set(vec![]);
+                }
             }
             tree_loading.set(false);
         });
     };
 
     // Load tree on first mount
-    use_effect(move || { refresh_tree(); });
-
-    // Live refresh every 3 seconds
-    use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            refresh_tree();
-        }
+    use_effect(move || {
+        refresh_tree();
     });
 
-    let mut edits  = props.edits;
-    let _status    = props.status; // passed to parent; unused locally
+    // Live refresh every 3 seconds
+    use_coroutine(
+        move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                refresh_tree();
+            }
+        },
+    );
+
+    let mut edits = props.edits;
+    let _status = props.status; // passed to parent; unused locally
 
     rsx! {
         if props.connections.is_empty() {

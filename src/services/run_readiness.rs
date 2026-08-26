@@ -149,10 +149,11 @@ pub fn check(logic_apps_dir: &str, workflow: &str) -> RunReadiness {
 
     // Read once so a SQL default can pick up its sibling `*_databaseName`
     // rather than falling back to `master`.
-    let settings: serde_json::Value = crate::services::settings_file::read_local_settings(logic_apps_dir)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or(serde_json::Value::Null);
+    let settings: serde_json::Value =
+        crate::services::settings_file::read_local_settings(logic_apps_dir)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(serde_json::Value::Null);
 
     for (conn, key) in connection_diag::missing_endpoints_for_workflow(logic_apps_dir, workflow) {
         let default = setup_manager::smart_default_for(&key, &settings);
@@ -176,7 +177,10 @@ pub fn check(logic_apps_dir: &str, workflow: &str) -> RunReadiness {
 fn collect_appsetting_refs(val: &serde_json::Value, out: &mut Vec<String>) {
     match val {
         serde_json::Value::String(s) => {
-            if let Some(k) = s.strip_prefix("@appsetting('").and_then(|s| s.strip_suffix("')")) {
+            if let Some(k) = s
+                .strip_prefix("@appsetting('")
+                .and_then(|s| s.strip_suffix("')"))
+            {
                 out.push(k.to_string());
             }
         }
@@ -190,20 +194,26 @@ fn collect_appsetting_refs(val: &serde_json::Value, out: &mut Vec<String>) {
 /// paired with the local target they'll be rewritten to.
 fn cloud_pointing_for(logic_apps_dir: &str, workflow: &str) -> Vec<(String, String, String)> {
     let dir = workflows::resolve_logic_apps_dir(logic_apps_dir);
-    let wf_text = std::fs::read_to_string(dir.join(workflow).join("workflow.json")).unwrap_or_default();
+    let wf_text =
+        std::fs::read_to_string(dir.join(workflow).join("workflow.json")).unwrap_or_default();
     if wf_text.is_empty() {
         return Vec::new();
     }
-    let conn: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("connections.json")).unwrap_or_default())
-            .unwrap_or_default();
-    let settings: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("local.settings.json")).unwrap_or_default())
-            .unwrap_or_default();
+    let conn: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("connections.json")).unwrap_or_default(),
+    )
+    .unwrap_or_default();
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("local.settings.json")).unwrap_or_default(),
+    )
+    .unwrap_or_default();
 
     // Connection names the workflow references.
     let re = regex::Regex::new(r#""connectionName"\s*:\s*"([^"]+)""#).unwrap();
-    let used: HashSet<String> = re.captures_iter(&wf_text).map(|c| c[1].to_string()).collect();
+    let used: HashSet<String> = re
+        .captures_iter(&wf_text)
+        .map(|c| c[1].to_string())
+        .collect();
 
     // All appsetting keys reachable from those connections.
     let mut keys: Vec<String> = Vec::new();
@@ -235,7 +245,8 @@ fn cloud_pointing_for(logic_apps_dir: &str, workflow: &str) -> Vec<(String, Stri
 /// under any connection section of connections.json.
 fn missing_connections_for(logic_apps_dir: &str, workflow: &str) -> Vec<String> {
     let dir = workflows::resolve_logic_apps_dir(logic_apps_dir);
-    let wf_text = std::fs::read_to_string(dir.join(workflow).join("workflow.json")).unwrap_or_default();
+    let wf_text =
+        std::fs::read_to_string(dir.join(workflow).join("workflow.json")).unwrap_or_default();
     if wf_text.is_empty() {
         return Vec::new();
     }
@@ -243,7 +254,11 @@ fn missing_connections_for(logic_apps_dir: &str, workflow: &str) -> Vec<String> 
     let conn: serde_json::Value = serde_json::from_str(&conn_text).unwrap_or_default();
 
     let mut known: HashSet<String> = HashSet::new();
-    for section in ["serviceProviderConnections", "managedApiConnections", "functionConnections"] {
+    for section in [
+        "serviceProviderConnections",
+        "managedApiConnections",
+        "functionConnections",
+    ] {
         if let Some(o) = conn[section].as_object() {
             known.extend(o.keys().cloned());
         }
@@ -318,7 +333,10 @@ mod tests {
 
     #[test]
     fn ready_when_nothing_pending() {
-        let r = RunReadiness { workflow: "W".into(), ..Default::default() };
+        let r = RunReadiness {
+            workflow: "W".into(),
+            ..Default::default()
+        };
         assert!(r.is_ready());
         assert!(!r.needs_manual());
     }
@@ -338,7 +356,11 @@ mod tests {
     fn cloud_pointing_blocks_but_is_not_manual() {
         let r = RunReadiness {
             workflow: "W".into(),
-            cloud_pointing: vec![("K".into(), "https://x.database.windows.net".into(), "local".into())],
+            cloud_pointing: vec![(
+                "K".into(),
+                "https://x.database.windows.net".into(),
+                "local".into(),
+            )],
             ..Default::default()
         };
         assert!(!r.is_ready());
@@ -350,15 +372,23 @@ mod tests {
         assert!(is_cloud_value("Server=tcp:foo.database.windows.net,1433;"));
         assert!(is_cloud_value("Endpoint=sb://bar.servicebus.windows.net/;"));
         assert!(is_cloud_value("https://acct.blob.core.windows.net"));
-        assert!(is_cloud_value("AccountEndpoint=https://c.documents.azure.com:443/;"));
+        assert!(is_cloud_value(
+            "AccountEndpoint=https://c.documents.azure.com:443/;"
+        ));
         assert!(is_cloud_value("https://partner-api.example.com/v1"));
         // Local / neutral values are NOT cloud.
         assert!(!is_cloud_value("UseDevelopmentStorage=true"));
         assert!(!is_cloud_value("http://localhost:8081"));
-        assert!(!is_cloud_value("https://placeholder.azure-apim.net/apim/teams/teams-local/"));
+        assert!(!is_cloud_value(
+            "https://placeholder.azure-apim.net/apim/teams/teams-local/"
+        ));
         // Real managed-API connector URLs must NOT be treated as redirectable cloud.
-        assert!(!is_cloud_value("https://acme-prod.azure-apim.net/apim/teams/teams-1a2b/"));
-        assert!(!is_cloud_value("https://logic-apis-northeurope.azure-apim.net/apim/office365/conn/"));
+        assert!(!is_cloud_value(
+            "https://acme-prod.azure-apim.net/apim/teams/teams-1a2b/"
+        ));
+        assert!(!is_cloud_value(
+            "https://logic-apis-northeurope.azure-apim.net/apim/office365/conn/"
+        ));
         assert!(!is_cloud_value(""));
     }
 
@@ -369,7 +399,10 @@ mod tests {
         assert!(target("x.database.windows.net").contains("Server=localhost,1433"));
         assert!(target("x.documents.azure.com").contains("localhost:8081"));
         assert!(target("x.servicebus.windows.net").contains("localhost"));
-        assert_eq!(target("x.blob.core.windows.net"), "UseDevelopmentStorage=true");
+        assert_eq!(
+            target("x.blob.core.windows.net"),
+            "UseDevelopmentStorage=true"
+        );
         assert_eq!(target("https://partner.example.com"), MOCK_BASE_URL);
     }
 

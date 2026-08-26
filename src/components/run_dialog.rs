@@ -2,13 +2,13 @@ use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct RunDialogProps {
-    pub workflow:        String,
-    pub trigger_type:    String,
-    pub payload:         String,
-    pub blob_container:  Option<String>,   // Some("kyriba-input") for blob triggers
-    pub queue_name:      Option<String>,   // Some("ais.pivot.trading.je-local") for SB triggers
-    pub on_run:          EventHandler<(String, String)>, // (blob_name_or_queue, body)
-    pub on_cancel:       EventHandler<()>,
+    pub workflow: String,
+    pub trigger_type: String,
+    pub payload: String,
+    pub blob_container: Option<String>, // Some("kyriba-input") for blob triggers
+    pub queue_name: Option<String>,     // Some("ais.pivot.trading.je-local") for SB triggers
+    pub on_run: EventHandler<(String, String)>, // (blob_name_or_queue, body)
+    pub on_cancel: EventHandler<()>,
 }
 
 #[component]
@@ -16,9 +16,9 @@ pub fn RunDialog(props: RunDialogProps) -> Element {
     let mut body = use_signal(|| props.payload.clone());
 
     let trigger_lower = props.trigger_type.to_lowercase();
-    let is_http        = matches!(trigger_lower.as_str(), "request" | "http");
-    let is_schedule    = matches!(trigger_lower.as_str(), "recurrence" | "schedule");
-    let is_blob        = props.blob_container.is_some();
+    let is_http = matches!(trigger_lower.as_str(), "request" | "http");
+    let is_schedule = matches!(trigger_lower.as_str(), "recurrence" | "schedule");
+    let is_blob = props.blob_container.is_some();
     let is_service_bus = props.queue_name.is_some() && !is_blob;
 
     let hint = if is_blob {
@@ -33,9 +33,13 @@ pub fn RunDialog(props: RunDialogProps) -> Element {
         "Trigger will be fired via /run. Body is passed as query input."
     };
 
-    let run_label = if is_blob { "👁 Watch" }
-                   else if is_service_bus { "📨 Send" }
-                   else { "▶  Run" };
+    let run_label = if is_blob {
+        "👁 Watch"
+    } else if is_service_bus {
+        "📨 Send"
+    } else {
+        "▶  Run"
+    };
 
     rsx! {
         // ── backdrop ──────────────────────────────────────────────────

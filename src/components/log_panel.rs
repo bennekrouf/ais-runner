@@ -18,18 +18,22 @@ pub enum LogLevel {
 impl LogLevel {
     pub fn css_class(&self) -> &'static str {
         match self {
-            LogLevel::Info  => "log-msg info",
-            LogLevel::Ok    => "log-msg ok",
-            LogLevel::Warn  => "log-msg warn",
+            LogLevel::Info => "log-msg info",
+            LogLevel::Ok => "log-msg ok",
+            LogLevel::Warn => "log-msg warn",
             LogLevel::Error => "log-msg error",
         }
     }
 }
 
 fn az_line_class(line: &str) -> &'static str {
-    if line.contains("error") || line.contains("Error") { "log-msg error" }
-    else if line.contains("warn")  || line.contains("Warn")  { "log-msg warn" }
-    else { "log-msg info" }
+    if line.contains("error") || line.contains("Error") {
+        "log-msg error"
+    } else if line.contains("warn") || line.contains("Warn") {
+        "log-msg warn"
+    } else {
+        "log-msg info"
+    }
 }
 
 // ── Azurite poll-noise filter ─────────────────────────────────────────────
@@ -38,10 +42,14 @@ fn az_line_class(line: &str) -> &'static str {
 /// heartbeats (GET/POST/PUT on jobdefinitions or histories with 2xx status).
 /// These repeat every ~60 s per workflow and carry no actionable information.
 pub fn is_azurite_poll_noise(line: &str) -> bool {
-    if !line.contains("HTTP/1.1") { return false; }
+    if !line.contains("HTTP/1.1") {
+        return false;
+    }
     // Must be a 2xx response
     let ok = line.ends_with(" 200 -") || line.ends_with(" 201 -") || line.ends_with(" 204 -");
-    if !ok { return false; }
+    if !ok {
+        return false;
+    }
     // jobdefinitions / histories — job scheduler heartbeats
     // flows — runtime polling "is workflow X still active?" (every 2 s per workflow)
     line.contains("jobdefinitions") || line.contains("histories") || line.contains("flows(")
@@ -53,7 +61,11 @@ fn azurite_request_id(line: &str) -> Option<&str> {
     let first = line.split_whitespace().next()?;
     // GUID-ish: hyphenated and long enough. Guards against matching a
     // timestamp or a plain word.
-    if first.len() >= 32 && first.contains('-') { Some(first) } else { None }
+    if first.len() >= 32 && first.contains('-') {
+        Some(first)
+    } else {
+        None
+    }
 }
 
 /// Parses a `--debug` trace line of the form `<guid> <level>: <component>: …`
@@ -65,10 +77,11 @@ fn azurite_request_id(line: &str) -> Option<&str> {
 fn azurite_trace(line: &str) -> Option<(&str, &str)> {
     let mut it = line.split_whitespace();
     let id = it.next()?;
-    if id.len() < 32 || !id.contains('-') { return None; }
+    if id.len() < 32 || !id.contains('-') {
+        return None;
+    }
     let level = it.next()?.trim_end_matches(':');
-    matches!(level, "debug" | "verbose" | "info" | "warn" | "error")
-        .then_some((id, level))
+    matches!(level, "debug" | "verbose" | "info" | "warn" | "error").then_some((id, level))
 }
 
 /// Extracts the terminal HTTP status code Azurite reported for a request,
@@ -127,10 +140,12 @@ pub fn extract_azurite_poll_queue(line: &str) -> Option<String> {
     let decoded_line = pct_decode(line);
 
     let marker = "FlowTriggerJob-WHEN";
-    let start  = decoded_line.find(marker)? + marker.len();
-    let rest   = &decoded_line[start..];
-    let end    = rest.find(|c| c == '\'' || c == ')' || c == '?').unwrap_or(rest.len());
-    let raw    = &rest[..end];
+    let start = decoded_line.find(marker)? + marker.len();
+    let rest = &decoded_line[start..];
+    let end = rest
+        .find(|c| c == '\'' || c == ')' || c == '?')
+        .unwrap_or(rest.len());
+    let raw = &rest[..end];
 
     // Secondary decode: treat `:` as `%` for two-hex sequences
     let mut decoded = String::with_capacity(raw.len());
@@ -160,7 +175,11 @@ pub fn extract_azurite_poll_queue(line: &str) -> Option<String> {
     };
 
     let queue = queue.trim().to_lowercase();
-    if queue.is_empty() { None } else { Some(queue) }
+    if queue.is_empty() {
+        None
+    } else {
+        Some(queue)
+    }
 }
 
 /// Splits the raw Azurite debug-log lines into:
@@ -168,13 +187,11 @@ pub fn extract_azurite_poll_queue(line: &str) -> Option<String> {
 ///   - `polling`: set of queue names actively polled (seen in last 20 poll lines)
 ///   - `stale`:   queue names that appeared early but NOT in the last 20 poll lines
 ///   - `poll_hidden`: total number of suppressed poll lines
-pub fn process_azurite_lines(
-    lines: &[String],
-) -> (Vec<String>, Vec<String>, Vec<String>, usize) {
+pub fn process_azurite_lines(lines: &[String]) -> (Vec<String>, Vec<String>, Vec<String>, usize) {
     use std::collections::{HashMap, HashSet};
 
-    let mut display: Vec<String>  = Vec::new();
-    let mut poll_hidden           = 0usize;
+    let mut display: Vec<String> = Vec::new();
+    let mut poll_hidden = 0usize;
     // queue → (first_seen_idx, last_seen_idx) among poll lines only
     let mut queue_span: HashMap<String, (usize, usize)> = HashMap::new();
     let mut poll_count = 0usize;
@@ -189,7 +206,9 @@ pub fn process_azurite_lines(
         if let (Some(id), Some(code)) = (azurite_request_id(line), azurite_status_code(line)) {
             // Keep the worst (highest) code seen for the request.
             let e = req_status.entry(id).or_insert(code);
-            if code > *e { *e = code; }
+            if code > *e {
+                *e = code;
+            }
         }
     }
 
@@ -217,8 +236,8 @@ pub fn process_azurite_lines(
         // ── Apache-format HTTP access lines + everything else ────────────
         let is_poll = is_azurite_poll_noise(line);
         // Genuine, non-request error lines (crashes, stack traces) — always keep.
-        let is_freeform_error = !line.contains("HTTP/1.1")
-            && (line.contains("error") || line.contains("Error"));
+        let is_freeform_error =
+            !line.contains("HTTP/1.1") && (line.contains("error") || line.contains("Error"));
 
         if is_poll && !is_freeform_error {
             poll_hidden += 1;
@@ -235,7 +254,7 @@ pub fn process_azurite_lines(
     // "recent" = seen in the last 20 poll-line slots
     let recent_threshold = poll_count.saturating_sub(20);
     let mut polling: Vec<String> = Vec::new();
-    let mut stale:   Vec<String> = Vec::new();
+    let mut stale: Vec<String> = Vec::new();
 
     let mut seen_queues: HashSet<String> = queue_span.keys().cloned().collect();
     let mut sorted: Vec<String> = seen_queues.drain().collect();
@@ -295,24 +314,35 @@ pub fn is_sb_emulator_noise(line: &str) -> bool {
 pub fn is_mvn_noise(msg: &str) -> bool {
     let t = msg.trim_start();
     // Maven artifact download progress: "Progress (N): X kB | …"
-    if t.starts_with("Progress (") { return true; }
+    if t.starts_with("Progress (") {
+        return true;
+    }
     // Maven downloaded confirmation: "Downloaded from central: https://…"
-    if t.starts_with("Downloaded from ") { return true; }
+    if t.starts_with("Downloaded from ") {
+        return true;
+    }
     // JVM sun.misc.Unsafe deprecation warnings (Java 17+)
-    if t.contains("sun.misc.Unsafe") { return true; }
-    if t.contains("terminally deprecated method") { return true; }
-    if t.contains("Please consider reporting this to the maintainers") { return true; }
+    if t.contains("sun.misc.Unsafe") {
+        return true;
+    }
+    if t.contains("terminally deprecated method") {
+        return true;
+    }
+    if t.contains("Please consider reporting this to the maintainers") {
+        return true;
+    }
     false
 }
 
 pub fn is_sb_noise(msg: &str) -> bool {
-    msg.contains("An unhandled exception occurred in the message batch receive loop") ||
-    msg.contains("aka.ms/azsdk/net/servicebus/exceptions/troubleshoot") ||
-    msg.contains("serviceBus.ServiceBusServiceOperationsProvider") ||
-    (msg.contains("ServiceProviderRecurrenceTriggerJob") && msg.contains("serviceBus")) ||
-    (msg.contains("ServiceProviderActionJob") && msg.contains("serviceBus")) ||
-    msg.contains("onNewMessagesFromQueueSession") ||
-    (msg.contains("Outgoing HTTP request ends with server failure") && msg.contains("hostName='serviceBus'"))
+    msg.contains("An unhandled exception occurred in the message batch receive loop")
+        || msg.contains("aka.ms/azsdk/net/servicebus/exceptions/troubleshoot")
+        || msg.contains("serviceBus.ServiceBusServiceOperationsProvider")
+        || (msg.contains("ServiceProviderRecurrenceTriggerJob") && msg.contains("serviceBus"))
+        || (msg.contains("ServiceProviderActionJob") && msg.contains("serviceBus"))
+        || msg.contains("onNewMessagesFromQueueSession")
+        || (msg.contains("Outgoing HTTP request ends with server failure")
+            && msg.contains("hostName='serviceBus'"))
 }
 
 fn az_split(line: &str) -> (&str, &str) {
@@ -327,12 +357,12 @@ fn az_split(line: &str) -> (&str, &str) {
 
 #[derive(Props, Clone, PartialEq)]
 pub struct LogPanelProps {
-    pub lines:        Signal<Vec<LogLine>>,
-    pub az_lines:     Signal<Vec<String>>,
+    pub lines: Signal<Vec<LogLine>>,
+    pub az_lines: Signal<Vec<String>>,
     pub sb_emu_lines: Signal<Vec<String>>,
-    pub java_lines:    Signal<Vec<String>>,
+    pub java_lines: Signal<Vec<String>>,
     pub sql_dev_lines: Signal<Vec<String>>,
-    pub on_clear:      EventHandler<()>,
+    pub on_clear: EventHandler<()>,
     /// Logic Apps workspace path — used by the Mock tab to scan and run the
     /// embedded HTTP mock server.
     pub workspace_dir: String,
@@ -346,50 +376,56 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
     // lives here — it writes into the shared Signal.
     let mut az_lines: Signal<Vec<String>> = props.az_lines;
     let mut sb_emu_lines = props.sb_emu_lines;
-    let mut java_lines    = props.java_lines;
+    let mut java_lines = props.java_lines;
     let mut sql_dev_lines = props.sql_dev_lines;
 
     // ── Pause snapshots — None = live, Some(snapshot) = paused ──────────────
-    let mut console_snap: Signal<Option<Vec<LogLine>>>    = use_signal(|| None);
-    let mut az_snap:      Signal<Option<Vec<String>>>     = use_signal(|| None);
-    let mut sb_snap:      Signal<Option<(Vec<String>, Vec<LogLine>)>> = use_signal(|| None);
-    let mut java_snap:    Signal<Option<Vec<String>>>     = use_signal(|| None);
-    let mut sql_snap:     Signal<Option<Vec<String>>>     = use_signal(|| None);
+    let mut console_snap: Signal<Option<Vec<LogLine>>> = use_signal(|| None);
+    let mut az_snap: Signal<Option<Vec<String>>> = use_signal(|| None);
+    let mut sb_snap: Signal<Option<(Vec<String>, Vec<LogLine>)>> = use_signal(|| None);
+    let mut java_snap: Signal<Option<Vec<String>>> = use_signal(|| None);
+    let mut sql_snap: Signal<Option<Vec<String>>> = use_signal(|| None);
 
     // ── Per-tab text filter ───────────────────────────────────────────────────
     let console_filter: Signal<String> = use_signal(String::new);
-    let az_filter:      Signal<String> = use_signal(String::new);
-    let sb_filter:      Signal<String> = use_signal(String::new);
-    let java_filter:    Signal<String> = use_signal(String::new);
-    let sql_filter:     Signal<String> = use_signal(String::new);
-    let mock_filter:    Signal<String> = use_signal(String::new);
+    let az_filter: Signal<String> = use_signal(String::new);
+    let sb_filter: Signal<String> = use_signal(String::new);
+    let java_filter: Signal<String> = use_signal(String::new);
+    let sql_filter: Signal<String> = use_signal(String::new);
+    let mock_filter: Signal<String> = use_signal(String::new);
 
     // ── Mock tab state ──────────────────────────────────────────────────────
     // Lines of formatted human-readable log output from MockEvents.
-    let mut mock_lines:   Signal<Vec<String>>     = use_signal(Vec::new);
-    let mut mock_snap:    Signal<Option<Vec<String>>> = use_signal(|| None);
+    let mut mock_lines: Signal<Vec<String>> = use_signal(Vec::new);
+    let mut mock_snap: Signal<Option<Vec<String>>> = use_signal(|| None);
     // Status line shown above the log: scan summary, server URL, etc.
-    let mut mock_status:  Signal<String>          = use_signal(String::new);
-    let mut mock_busy:    Signal<bool>            = use_signal(|| false);
+    let mut mock_status: Signal<String> = use_signal(String::new);
+    let mut mock_busy: Signal<bool> = use_signal(|| false);
     let workspace_dir = props.workspace_dir.clone();
 
     // ── Auto-scroll: only when not paused ───────────────────────────────────
     use_effect(move || {
         let _n = props.lines.read().len();
         if console_snap.read().is_none() {
-            document::eval("var e=document.getElementById('log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+            document::eval(
+                "var e=document.getElementById('log-scroll'); if(e) e.scrollTop=e.scrollHeight;",
+            );
         }
     });
     use_effect(move || {
         let _n = az_lines.read().len();
         if az_snap.read().is_none() {
-            document::eval("var e=document.getElementById('az-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+            document::eval(
+                "var e=document.getElementById('az-log-scroll'); if(e) e.scrollTop=e.scrollHeight;",
+            );
         }
     });
     use_effect(move || {
         let _n = sb_emu_lines.read().len();
         if sb_snap.read().is_none() {
-            document::eval("var e=document.getElementById('sb-log-scroll'); if(e) e.scrollTop=e.scrollHeight;");
+            document::eval(
+                "var e=document.getElementById('sb-log-scroll'); if(e) e.scrollTop=e.scrollHeight;",
+            );
         }
     });
     use_effect(move || {
@@ -432,7 +468,11 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
                     // Jump to the last TAIL_CAP bytes on first sight of the
                     // file, or when it grew faster than we can catch up.
                     let jumped = len.saturating_sub(offset.unwrap_or(0)) > TAIL_CAP;
-                    let start = if jumped { len - TAIL_CAP } else { offset.unwrap_or(0) };
+                    let start = if jumped {
+                        len - TAIL_CAP
+                    } else {
+                        offset.unwrap_or(0)
+                    };
                     if len > start {
                         if let Ok(mut f) = tokio::fs::File::open(&path).await {
                             use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -479,93 +519,158 @@ pub fn LogPanel(props: LogPanelProps) -> Element {
 
     // ── New-line counts while paused ─────────────────────────────────────────
     let console_new = console_snap.read().as_ref().map(|snap| {
-        let live: Vec<_> = props.lines.read().iter()
-            .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg) && !is_mvn_noise(&l.msg))
-            .cloned().collect();
+        let live: Vec<_> = props
+            .lines
+            .read()
+            .iter()
+            .filter(|l| {
+                !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg) && !is_mvn_noise(&l.msg)
+            })
+            .cloned()
+            .collect();
         live.len().saturating_sub(snap.len())
     });
-    let az_new = az_snap.read().as_ref().map(|snap| {
-        az_lines.read().len().saturating_sub(snap.len())
-    });
+    let az_new = az_snap
+        .read()
+        .as_ref()
+        .map(|snap| az_lines.read().len().saturating_sub(snap.len()));
     let sb_new = sb_snap.read().as_ref().map(|snap| {
         let live_emu = sb_emu_lines.read().len();
-        let live_noise = props.lines.read().iter().filter(|l| is_sb_noise(&l.msg)).count();
+        let live_noise = props
+            .lines
+            .read()
+            .iter()
+            .filter(|l| is_sb_noise(&l.msg))
+            .count();
         (live_emu + live_noise).saturating_sub(snap.0.len() + snap.1.len())
     });
 
-    let sb_noise_count = props.lines.read().iter().filter(|l| is_sb_noise(&l.msg)).count();
-    let sb_emu_count   = sb_emu_lines.read().len();
-    let sb_count       = sb_noise_count + sb_emu_count;
-    let java_new = java_snap.read().as_ref().map(|snap| {
-        java_lines.read().len().saturating_sub(snap.len())
-    });
+    let sb_noise_count = props
+        .lines
+        .read()
+        .iter()
+        .filter(|l| is_sb_noise(&l.msg))
+        .count();
+    let sb_emu_count = sb_emu_lines.read().len();
+    let sb_count = sb_noise_count + sb_emu_count;
+    let java_new = java_snap
+        .read()
+        .as_ref()
+        .map(|snap| java_lines.read().len().saturating_sub(snap.len()));
     let java_count = java_lines.read().len();
-    let sql_new = sql_snap.read().as_ref().map(|snap| sql_dev_lines.read().len().saturating_sub(snap.len()));
+    let sql_new = sql_snap
+        .read()
+        .as_ref()
+        .map(|snap| sql_dev_lines.read().len().saturating_sub(snap.len()));
     let sql_count = sql_dev_lines.read().len();
 
     // ── Rendered lines (with filter applied) ─────────────────────────────────
     let cf = console_filter.read().to_lowercase();
     let af = az_filter.read().to_lowercase();
     let sf = sb_filter.read().to_lowercase();
-    let jf  = java_filter.read().to_lowercase();
+    let jf = java_filter.read().to_lowercase();
     let sqf = sql_filter.read().to_lowercase();
-    let mf  = mock_filter.read().to_lowercase();
+    let mf = mock_filter.read().to_lowercase();
 
     let console_lines: Vec<LogLine> = {
         let base: Vec<LogLine> = match console_snap.read().clone() {
             Some(snap) => snap,
-            None => props.lines.read().iter()
-                .filter(|l| !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg) && !is_mvn_noise(&l.msg))
-                .cloned().collect(),
+            None => props
+                .lines
+                .read()
+                .iter()
+                .filter(|l| {
+                    !is_sb_noise(&l.msg) && !is_stack_frame_noise(&l.msg) && !is_mvn_noise(&l.msg)
+                })
+                .cloned()
+                .collect(),
         };
-        if cf.is_empty() { base }
-        else { base.into_iter().filter(|l| l.msg.to_lowercase().contains(&cf)).collect() }
+        if cf.is_empty() {
+            base
+        } else {
+            base.into_iter()
+                .filter(|l| l.msg.to_lowercase().contains(&cf))
+                .collect()
+        }
     };
     let az_display: Vec<String> = {
         let base: Vec<String> = match az_snap.read().clone() {
             Some(snap) => snap,
             None => az_lines.read().clone(),
         };
-        if af.is_empty() { base }
-        else { base.into_iter().filter(|l| l.to_lowercase().contains(&af)).collect() }
+        if af.is_empty() {
+            base
+        } else {
+            base.into_iter()
+                .filter(|l| l.to_lowercase().contains(&af))
+                .collect()
+        }
     };
     let sql_display: Vec<String> = {
         let base = match sql_snap.read().clone() {
             Some(snap) => snap,
             None => sql_dev_lines.read().clone(),
         };
-        if sqf.is_empty() { base } else { base.into_iter().filter(|l| l.to_lowercase().contains(&sqf)).collect() }
+        if sqf.is_empty() {
+            base
+        } else {
+            base.into_iter()
+                .filter(|l| l.to_lowercase().contains(&sqf))
+                .collect()
+        }
     };
     let java_display: Vec<String> = {
         let base = match java_snap.read().clone() {
             Some(snap) => snap,
             None => java_lines.read().clone(),
         };
-        if jf.is_empty() { base }
-        else { base.into_iter().filter(|l| l.to_lowercase().contains(&jf)).collect() }
+        if jf.is_empty() {
+            base
+        } else {
+            base.into_iter()
+                .filter(|l| l.to_lowercase().contains(&jf))
+                .collect()
+        }
     };
     let mock_display: Vec<String> = {
         let base = match mock_snap.read().clone() {
             Some(snap) => snap,
-            None       => mock_lines.read().clone(),
+            None => mock_lines.read().clone(),
         };
-        if mf.is_empty() { base }
-        else { base.into_iter().filter(|l| l.to_lowercase().contains(&mf)).collect() }
+        if mf.is_empty() {
+            base
+        } else {
+            base.into_iter()
+                .filter(|l| l.to_lowercase().contains(&mf))
+                .collect()
+        }
     };
     let (sb_emu_display, sb_noise_display): (Vec<String>, Vec<LogLine>) = {
         let (base_emu, base_noise) = match sb_snap.read().clone() {
             Some(snap) => snap,
             None => (
                 sb_emu_lines.read().clone(),
-                props.lines.read().iter().filter(|l| is_sb_noise(&l.msg)).cloned().collect(),
+                props
+                    .lines
+                    .read()
+                    .iter()
+                    .filter(|l| is_sb_noise(&l.msg))
+                    .cloned()
+                    .collect(),
             ),
         };
         if sf.is_empty() {
             (base_emu, base_noise)
         } else {
             (
-                base_emu.into_iter().filter(|l| l.to_lowercase().contains(&sf)).collect(),
-                base_noise.into_iter().filter(|l| l.msg.to_lowercase().contains(&sf)).collect(),
+                base_emu
+                    .into_iter()
+                    .filter(|l| l.to_lowercase().contains(&sf))
+                    .collect(),
+                base_noise
+                    .into_iter()
+                    .filter(|l| l.msg.to_lowercase().contains(&sf))
+                    .collect(),
             )
         }
     };
@@ -1126,7 +1231,10 @@ mod azurite_filter_tests {
     fn benign_404_cascade_is_fully_suppressed() {
         let lines = benign_404_cascade();
         let (shown, _polling, _stale, hidden) = process_azurite_lines(&lines);
-        assert!(shown.is_empty(), "benign 404 cascade should be hidden, got: {shown:?}");
+        assert!(
+            shown.is_empty(),
+            "benign 404 cascade should be hidden, got: {shown:?}"
+        );
         assert_eq!(hidden, lines.len());
     }
 
@@ -1149,9 +1257,7 @@ mod azurite_filter_tests {
 
     #[test]
     fn freeform_error_without_request_id_is_kept() {
-        let lines = vec![
-            "error: Azurite failed to bind port 10000".to_string(),
-        ];
+        let lines = vec!["error: Azurite failed to bind port 10000".to_string()];
         let (shown, _p, _s, _h) = process_azurite_lines(&lines);
         assert_eq!(shown.len(), 1);
     }
@@ -1167,12 +1273,17 @@ mod azurite_filter_tests {
             format!("{id} debug: Serializer: Raw response body string is <?xml ...>"),
             format!("{id} info: Serializer: Start returning stream body."),
             format!("{id} info: TableStorageContextMiddleware: RequestMethod=GET RequestURL=..."),
-            format!("{id} debug: tableStorageContextMiddleware: Dispatch pattern string: /...flows()"),
+            format!(
+                "{id} debug: tableStorageContextMiddleware: Dispatch pattern string: /...flows()"
+            ),
             format!("{id} info: TableSharedKeyAuthenticator:validate() Start validation..."),
             format!("{id} debug: TableHandler:queryEntities() Raw response string is \"{{...}}\""),
         ];
         let (shown, _p, _s, hidden) = process_azurite_lines(&lines);
-        assert!(shown.is_empty(), "benign 200 trace should be hidden, got: {shown:?}");
+        assert!(
+            shown.is_empty(),
+            "benign 200 trace should be hidden, got: {shown:?}"
+        );
         assert_eq!(hidden, lines.len());
     }
 
@@ -1181,7 +1292,8 @@ mod azurite_filter_tests {
         // Global (no request-id) lifecycle lines must survive.
         let lines = vec![
             "info: Azurite Blob service is starting at http://127.0.0.1:10000".to_string(),
-            "info: Azurite Table service successfully listens on http://127.0.0.1:10002".to_string(),
+            "info: Azurite Table service successfully listens on http://127.0.0.1:10002"
+                .to_string(),
         ];
         let (shown, _p, _s, _h) = process_azurite_lines(&lines);
         assert_eq!(shown.len(), 2);
@@ -1197,10 +1309,12 @@ mod azurite_filter_tests {
 
     #[test]
     fn status_code_parsing() {
-        assert_eq!(azurite_status_code("x ErrorHTTPStatusCode=404 y"), Some(404));
+        assert_eq!(
+            azurite_status_code("x ErrorHTTPStatusCode=404 y"),
+            Some(404)
+        );
         assert_eq!(azurite_status_code("x Set HTTP code: 500"), Some(500));
         assert_eq!(azurite_status_code("x StatusCode=201 y"), Some(201));
         assert_eq!(azurite_status_code("no code here"), None);
     }
 }
-

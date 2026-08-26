@@ -1,43 +1,60 @@
-use dioxus::prelude::*;
-use indexmap::IndexMap;
-use crate::services::{azure_cli, config, settings_file, missing_settings, setup_manager};
 use crate::components::env_compare_panel::EnvComparePanel;
 use crate::components::eventgrid_panel::EventGridPanel;
 use crate::components::sb_compare_panel::SbComparePanel;
+use crate::services::{azure_cli, config, missing_settings, settings_file, setup_manager};
+use dioxus::prelude::*;
+use indexmap::IndexMap;
 
 const DEFAULT_SUBSCRIPTION: &str = "b4c0de7e-1fe0-4d3b-90c7-e3e9c9e4b9db";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 #[derive(Clone, PartialEq)]
-enum FetchKind { ServiceBus }
+enum FetchKind {
+    ServiceBus,
+}
 
 fn fetch_kind(key: &str) -> Option<FetchKind> {
     let k = key.to_lowercase();
-    if k.contains("servicebus") && k.contains("connection") { Some(FetchKind::ServiceBus) }
-    else { None }
+    if k.contains("servicebus") && k.contains("connection") {
+        Some(FetchKind::ServiceBus)
+    } else {
+        None
+    }
 }
 
 fn is_placeholder(val: &str) -> bool {
     let v = val.trim();
-    v.is_empty()
-        || v.starts_with('<')
-        || v.to_lowercase().contains("placeholder")
+    v.is_empty() || v.starts_with('<') || v.to_lowercase().contains("placeholder")
 }
 
 fn is_secret(key: &str) -> bool {
     let k = key.to_lowercase();
-    k.contains("secret") || k.contains("password") || k.contains("_key")
-        || k.contains("connectionstring") || k.contains("sharedaccesskey") || k.contains("apikey")
+    k.contains("secret")
+        || k.contains("password")
+        || k.contains("_key")
+        || k.contains("connectionstring")
+        || k.contains("sharedaccesskey")
+        || k.contains("apikey")
 }
 
 fn category(key: &str) -> &'static str {
     let k = key.to_lowercase();
-    if k.contains("servicebus")                         { return "Service Bus"; }
-    if k.contains("azurewebjobs") || k.contains("storage") { return "Storage"; }
-    if k.contains("azurefunction") || k.contains("triggerurl") { return "Function URLs"; }
-    if k.contains("tenant") || k.contains("clientid") || k.contains("clientsecret") { return "Auth"; }
-    if k.starts_with("workflows_")                     { return "Workflows Runtime"; }
+    if k.contains("servicebus") {
+        return "Service Bus";
+    }
+    if k.contains("azurewebjobs") || k.contains("storage") {
+        return "Storage";
+    }
+    if k.contains("azurefunction") || k.contains("triggerurl") {
+        return "Function URLs";
+    }
+    if k.contains("tenant") || k.contains("clientid") || k.contains("clientsecret") {
+        return "Auth";
+    }
+    if k.starts_with("workflows_") {
+        return "Workflows Runtime";
+    }
     "Other"
 }
 
@@ -56,56 +73,76 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
     let app_cfg = config::load();
 
     let mut active_tab = use_signal(|| "edit");
-    let mut pairs      = use_signal(|| IndexMap::<String, String>::new());
-    let mut status     = use_signal(|| String::new());
-    let mut is_err     = use_signal(|| false);
+    let mut pairs = use_signal(|| IndexMap::<String, String>::new());
+    let mut status = use_signal(|| String::new());
+    let mut is_err = use_signal(|| false);
     let mut az_expired = use_signal(|| false);
-    let mut filter     = use_signal(|| String::new());
-    let mut fetching   = use_signal(|| String::new());
-    let mut show_keys  = use_signal(|| std::collections::HashSet::<String>::new());
+    let mut filter = use_signal(|| String::new());
+    let mut fetching = use_signal(|| String::new());
+    let mut show_keys = use_signal(|| std::collections::HashSet::<String>::new());
     let link = app_cfg.get_link(&props.logic_apps_dir);
-    let mut tenant_id          = use_signal(|| link.and_then(|l| l.tenant_id.clone()).unwrap_or_default());
-    let mut tenant_detecting   = use_signal(|| false);
-    let mut sb_namespace  = use_signal(|| link.and_then(|l| l.sb_namespace.clone()).unwrap_or_default());
-    let mut subscription  = use_signal(|| link.map(|l| l.subscription_id.clone()).unwrap_or_else(|| DEFAULT_SUBSCRIPTION.to_string()));
-    let mut ns_options    = use_signal(|| Vec::<String>::new());
-    let mut ns_loading    = use_signal(|| false);
-    let mut sub_options   = use_signal(|| Vec::<(String, String)>::new());
-    let mut sub_loading   = use_signal(|| false);
+    let mut tenant_id = use_signal(|| link.and_then(|l| l.tenant_id.clone()).unwrap_or_default());
+    let mut tenant_detecting = use_signal(|| false);
+    let mut sb_namespace = use_signal(|| {
+        link.and_then(|l| l.sb_namespace.clone())
+            .unwrap_or_default()
+    });
+    let mut subscription = use_signal(|| {
+        link.map(|l| l.subscription_id.clone())
+            .unwrap_or_else(|| DEFAULT_SUBSCRIPTION.to_string())
+    });
+    let mut ns_options = use_signal(|| Vec::<String>::new());
+    let mut ns_loading = use_signal(|| false);
+    let mut sub_options = use_signal(|| Vec::<(String, String)>::new());
+    let mut sub_loading = use_signal(|| false);
 
     // load on mount
     use_effect({
         let logic_apps_dir = logic_apps_dir.clone();
-        move || {
-            match settings_file::read_local_settings(&logic_apps_dir) {
-                Ok(text) if !text.is_empty() => {
-                    if let Ok(serde_json::Value::Object(root)) = serde_json::from_str::<serde_json::Value>(&text) {
-                        if let Some(serde_json::Value::Object(vals)) = root.get("Values") {
-                            pairs.set(vals.iter()
+        move || match settings_file::read_local_settings(&logic_apps_dir) {
+            Ok(text) if !text.is_empty() => {
+                if let Ok(serde_json::Value::Object(root)) =
+                    serde_json::from_str::<serde_json::Value>(&text)
+                {
+                    if let Some(serde_json::Value::Object(vals)) = root.get("Values") {
+                        pairs.set(
+                            vals.iter()
                                 .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
-                                .collect());
-                        }
+                                .collect(),
+                        );
                     }
                 }
-                Err(e) => { status.set(e); is_err.set(true); }
-                _ => {}
             }
+            Err(e) => {
+                status.set(e);
+                is_err.set(true);
+            }
+            _ => {}
         }
     });
 
     let on_save = {
         let logic_apps_dir = logic_apps_dir.clone();
         move |_| {
-            let vals: serde_json::Map<_, _> = pairs.read().iter()
+            let vals: serde_json::Map<_, _> = pairs
+                .read()
+                .iter()
                 .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
                 .collect();
             let text = serde_json::to_string_pretty(&serde_json::json!({
                 "IsEncrypted": false,
                 "Values": serde_json::Value::Object(vals)
-            })).unwrap_or_default();
+            }))
+            .unwrap_or_default();
             match settings_file::write_local_settings(&logic_apps_dir, &text) {
-                Ok(_) => { status.set("Saved — restart func start to apply changes.".to_string()); is_err.set(false); }
-                Err(e) => { status.set(e); is_err.set(true); }
+                Ok(_) => {
+                    status.set("Saved — restart func start to apply changes.".to_string());
+                    is_err.set(false);
+                }
+                Err(e) => {
+                    status.set(e);
+                    is_err.set(true);
+                }
             }
         }
     };
@@ -719,8 +756,8 @@ fn MissingSettingsPanel(props: MissingSettingsPanelProps) -> Element {
     let missing = use_memo(move || missing_settings::scan(&dir_for_scan));
 
     let mut auto_status: Signal<Option<String>> = use_signal(|| None);
-    let mut expanded:    Signal<bool>           = use_signal(|| true);
-    let mut refresh_tick: Signal<u32>           = use_signal(|| 0);
+    let mut expanded: Signal<bool> = use_signal(|| true);
+    let mut refresh_tick: Signal<u32> = use_signal(|| 0);
 
     // Re-derive when the user clicks Refresh — bumping refresh_tick is enough
     // to invalidate the memo because we capture it.

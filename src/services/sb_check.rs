@@ -12,11 +12,11 @@ pub fn trigger_queue_for(logic_apps_dir: &str, workflow_name: &str) -> Option<(S
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SbQueueInfo {
-    pub queue:              String,
-    pub namespace:          String,
-    pub trigger_workflows:  Vec<String>,
-    pub action_workflows:   Vec<String>,
-    pub requires_session:   bool,
+    pub queue: String,
+    pub namespace: String,
+    pub trigger_workflows: Vec<String>,
+    pub action_workflows: Vec<String>,
+    pub requires_session: bool,
 }
 
 /// The local.settings.json key + current value for the SB connection string, if present.
@@ -29,7 +29,10 @@ pub fn detect_sb_conn_str_key(logic_apps_dir: &str) -> Option<(String, String)> 
     let vals = settings["Values"].as_object()?;
 
     let resolve = |key: &str| -> String {
-        vals.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
+        vals.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
     };
 
     // Primary: check connections.json @appsetting reference
@@ -37,7 +40,9 @@ pub fn detect_sb_conn_str_key(logic_apps_dir: &str) -> Option<(String, String)> 
         if let Ok(conn_json) = serde_json::from_str::<serde_json::Value>(&conn_text) {
             if let Some(providers) = conn_json["serviceProviderConnections"].as_object() {
                 for (_name, conn) in providers {
-                    if conn["serviceProvider"]["id"].as_str() == Some("/serviceProviders/serviceBus") {
+                    if conn["serviceProvider"]["id"].as_str()
+                        == Some("/serviceProviders/serviceBus")
+                    {
                         if let Some(raw) = conn["parameterValues"]["connectionString"].as_str() {
                             if let Some(key) = raw
                                 .strip_prefix("@appsetting('")
@@ -55,9 +60,7 @@ pub fn detect_sb_conn_str_key(logic_apps_dir: &str) -> Option<(String, String)> 
     // Fallback: scan local.settings.json for a SB-looking connection string key
     for (k, v) in vals {
         let kl = k.to_lowercase();
-        if (kl.contains("servicebus") || kl.contains("service_bus"))
-            && kl.contains("connection")
-        {
+        if (kl.contains("servicebus") || kl.contains("service_bus")) && kl.contains("connection") {
             let val = v.as_str().unwrap_or("");
             if val.is_empty() || val.contains("Endpoint=sb://") || val.contains("SharedAccessKey") {
                 return Some((k.clone(), val.to_string()));
@@ -97,16 +100,17 @@ pub fn detect_sb_queues(logic_apps_dir: &str) -> (String, Vec<SbQueueInfo>) {
     let dir = crate::services::workflows::resolve_logic_apps_dir(logic_apps_dir);
 
     // Resolve @appsetting references from local.settings.json
-    let settings: HashMap<String, String> = std::fs::read_to_string(dir.join("local.settings.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .and_then(|v| v["Values"].as_object().cloned())
-        .map(|m| {
-            m.into_iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
+    let settings: HashMap<String, String> =
+        std::fs::read_to_string(dir.join("local.settings.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| v["Values"].as_object().cloned())
+            .map(|m| {
+                m.into_iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
 
     // Find the Service Bus namespace FQDN from connections.json
     let conn_text = std::fs::read_to_string(dir.join("connections.json")).unwrap_or_default();
@@ -152,7 +156,9 @@ pub fn detect_sb_queues(logic_apps_dir: &str) -> (String, Vec<SbQueueInfo>) {
                 break;
             }
             // Short name like "sbns-foo" stored directly — normalise it
-            if !v.is_empty() && !v.contains(' ') && !v.contains('=')
+            if !v.is_empty()
+                && !v.contains(' ')
+                && !v.contains('=')
                 && (v.starts_with("sbns-") || v.ends_with("-sb") || v.contains("servicebus"))
             {
                 namespace = normalise_sb_fqdn(v);
@@ -160,7 +166,7 @@ pub fn detect_sb_queues(logic_apps_dir: &str) -> (String, Vec<SbQueueInfo>) {
             }
         }
     }
-    
+
     // Second Fallback: check project link in config
     if namespace.is_empty() {
         if let Some(link) = crate::services::config::load().get_link(logic_apps_dir) {
@@ -198,23 +204,29 @@ pub fn detect_sb_queues(logic_apps_dir: &str) -> (String, Vec<SbQueueInfo>) {
         // Trigger check
         if let Some(triggers) = defn["triggers"].as_object() {
             for (_tname, trigger) in triggers {
-                let is_sb_trigger =
-                    trigger["kind"].as_str() == Some("ServiceBusTrigger")
+                let is_sb_trigger = trigger["kind"].as_str() == Some("ServiceBusTrigger")
                     || (trigger["type"].as_str() == Some("ServiceProvider")
                         && trigger["inputs"]["serviceProviderConfiguration"]["serviceProviderId"]
-                            .as_str() == Some("/serviceProviders/serviceBus"));
+                            .as_str()
+                            == Some("/serviceProviders/serviceBus"));
                 if is_sb_trigger {
                     if let Some(queue) = resolve_queue_name(trigger, &settings) {
-                        let is_session = trigger["inputs"]["serviceProviderConfiguration"]["operationId"]
-                            .as_str() == Some("onNewMessagesFromQueueSession");
-                        let entry = queue_map.entry(queue.clone()).or_insert_with(|| SbQueueInfo {
-                            queue: queue.clone(),
-                            namespace: namespace.clone(),
-                            trigger_workflows: vec![],
-                            action_workflows: vec![],
-                            requires_session: false,
-                        });
-                        if is_session { entry.requires_session = true; }
+                        let is_session = trigger["inputs"]["serviceProviderConfiguration"]
+                            ["operationId"]
+                            .as_str()
+                            == Some("onNewMessagesFromQueueSession");
+                        let entry = queue_map
+                            .entry(queue.clone())
+                            .or_insert_with(|| SbQueueInfo {
+                                queue: queue.clone(),
+                                namespace: namespace.clone(),
+                                trigger_workflows: vec![],
+                                action_workflows: vec![],
+                                requires_session: false,
+                            });
+                        if is_session {
+                            entry.requires_session = true;
+                        }
                         if !entry.trigger_workflows.contains(&wf_name) {
                             entry.trigger_workflows.push(wf_name.clone());
                         }
@@ -235,10 +247,10 @@ pub fn detect_sb_queues(logic_apps_dir: &str) -> (String, Vec<SbQueueInfo>) {
 }
 
 fn scan_sb_actions(
-    actions:   &serde_json::Map<String, serde_json::Value>,
-    wf_name:   &str,
+    actions: &serde_json::Map<String, serde_json::Value>,
+    wf_name: &str,
     namespace: &str,
-    settings:  &HashMap<String, String>,
+    settings: &HashMap<String, String>,
     queue_map: &mut HashMap<String, SbQueueInfo>,
 ) {
     for (_name, action) in actions {
@@ -249,13 +261,15 @@ fn scan_sb_actions(
                 .unwrap_or("");
             if provider_id == "/serviceProviders/serviceBus" {
                 if let Some(queue) = resolve_queue_name(action, settings) {
-                    let entry = queue_map.entry(queue.clone()).or_insert_with(|| SbQueueInfo {
-                        queue: queue.clone(),
-                        namespace: namespace.to_string(),
-                        trigger_workflows: vec![],
-                        action_workflows: vec![],
-                        requires_session: false,
-                    });
+                    let entry = queue_map
+                        .entry(queue.clone())
+                        .or_insert_with(|| SbQueueInfo {
+                            queue: queue.clone(),
+                            namespace: namespace.to_string(),
+                            trigger_workflows: vec![],
+                            action_workflows: vec![],
+                            requires_session: false,
+                        });
                     if !entry.action_workflows.contains(&wf_name.to_string()) {
                         entry.action_workflows.push(wf_name.to_string());
                     }
@@ -283,15 +297,23 @@ fn scan_sb_actions(
 
 /// Extract the queue/topic name from an action or trigger node, resolving @appsetting refs.
 /// Checks all field name variants used across Logic Apps Standard versions.
-fn resolve_queue_name(node: &serde_json::Value, settings: &HashMap<String, String>) -> Option<String> {
+fn resolve_queue_name(
+    node: &serde_json::Value,
+    settings: &HashMap<String, String>,
+) -> Option<String> {
     let params = &node["inputs"]["parameters"];
-    let raw = params["queueName"].as_str()
+    let raw = params["queueName"]
+        .as_str()
         .or_else(|| params["entityName"].as_str())
         .or_else(|| params["queueOrTopicName"].as_str())?;
     // Trim — queue names from @appsetting values or hand-edited JSON sometimes
     // carry stray whitespace which the SB emulator rejects with a regex assertion.
     let resolved = resolve_appsetting(raw, settings).trim().to_string();
-    if resolved.is_empty() { None } else { Some(resolved) }
+    if resolved.is_empty() {
+        None
+    } else {
+        Some(resolved)
+    }
 }
 
 fn resolve_appsetting(val: &str, settings: &HashMap<String, String>) -> String {
@@ -304,7 +326,6 @@ fn resolve_appsetting(val: &str, settings: &HashMap<String, String>) -> String {
         val.to_string()
     }
 }
-
 
 /// Extract the hostname from a Service Bus connection string.
 /// `Endpoint=sb://sbns-xxx.servicebus.windows.net/;...` → `sbns-xxx.servicebus.windows.net`
@@ -380,16 +401,17 @@ pub fn emulator_only_queues(workflow_queues: &[SbQueueInfo]) -> Vec<String> {
         Ok(v) => v,
         Err(_) => return vec![],
     };
-    let known: std::collections::HashSet<&str> = workflow_queues.iter()
-        .map(|q| q.queue.as_str())
-        .collect();
+    let known: std::collections::HashSet<&str> =
+        workflow_queues.iter().map(|q| q.queue.as_str()).collect();
 
     v["UserConfig"]["Namespaces"][0]["Queues"]
         .as_array()
-        .map(|arr| arr.iter()
-            .filter_map(|q| q["Name"].as_str())
-            .filter(|name| !known.contains(name) && *name != "ais.default")
-            .map(|s| s.to_string())
-            .collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|q| q["Name"].as_str())
+                .filter(|name| !known.contains(name) && *name != "ais.default")
+                .map(|s| s.to_string())
+                .collect()
+        })
         .unwrap_or_default()
 }

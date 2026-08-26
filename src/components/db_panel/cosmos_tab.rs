@@ -1,15 +1,19 @@
-use dioxus::prelude::*;
-use std::collections::{HashMap, HashSet};
 use crate::services::cosmos_check::{self, CosmosConnection};
 use crate::services::cosmos_query;
+use dioxus::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 /// Per-connection query console — same UI as the ad-hoc one but the endpoint
 /// and key come from the connection's resolved values. We hold them as
 /// independent signals so the user can override per-query (e.g. point at the
 /// emulator for a quick check) without dirtying the saved settings.
 #[component]
-fn CosmosConnQueryConsole(endpoint_seed: String, account_key_seed: String, console_id: String) -> Element {
-    let endpoint:    Signal<String> = use_signal(|| endpoint_seed.clone());
+fn CosmosConnQueryConsole(
+    endpoint_seed: String,
+    account_key_seed: String,
+    console_id: String,
+) -> Element {
+    let endpoint: Signal<String> = use_signal(|| endpoint_seed.clone());
     let account_key: Signal<String> = use_signal(|| account_key_seed.clone());
     rsx! {
         CosmosQueryConsole { endpoint, account_key, console_id }
@@ -26,18 +30,18 @@ fn CosmosQueryConsole(
     account_key: Signal<String>,
     console_id: String,
 ) -> Element {
-    let mut dbs:        Signal<Vec<String>> = use_signal(Vec::new);
-    let mut dbs_busy:   Signal<bool>        = use_signal(|| false);
+    let mut dbs: Signal<Vec<String>> = use_signal(Vec::new);
+    let mut dbs_busy: Signal<bool> = use_signal(|| false);
     let mut dbs_status: Signal<Option<String>> = use_signal(|| None);
-    let mut db_sel:     Signal<String>      = use_signal(String::new);
+    let mut db_sel: Signal<String> = use_signal(String::new);
 
-    let mut colls:      Signal<Vec<String>> = use_signal(Vec::new);
-    let mut colls_busy: Signal<bool>        = use_signal(|| false);
-    let mut coll_sel:   Signal<String>      = use_signal(String::new);
+    let mut colls: Signal<Vec<String>> = use_signal(Vec::new);
+    let mut colls_busy: Signal<bool> = use_signal(|| false);
+    let mut coll_sel: Signal<String> = use_signal(String::new);
 
-    let mut query:      Signal<String>      = use_signal(|| "SELECT TOP 10 * FROM c".to_string());
-    let mut q_busy:     Signal<bool>        = use_signal(|| false);
-    let mut q_result:   Signal<Option<Result<String, String>>> = use_signal(|| None);
+    let mut query: Signal<String> = use_signal(|| "SELECT TOP 10 * FROM c".to_string());
+    let mut q_busy: Signal<bool> = use_signal(|| false);
+    let mut q_result: Signal<Option<Result<String, String>>> = use_signal(|| None);
 
     // Treat a value as "really selected" only when it matches a known entry
     // in the loaded list. Webview select onchange has been observed to fire
@@ -46,8 +50,14 @@ fn CosmosQueryConsole(
     // ghost selection can't slip through to the REST call.
     let normalize_sel = |raw: &str, options: &[String]| -> String {
         let trimmed = raw.trim();
-        if trimmed.is_empty() || trimmed.starts_with('—') { return String::new(); }
-        if options.iter().any(|o| o == trimmed) { trimmed.to_string() } else { String::new() }
+        if trimmed.is_empty() || trimmed.starts_with('—') {
+            return String::new();
+        }
+        if options.iter().any(|o| o == trimmed) {
+            trimmed.to_string()
+        } else {
+            String::new()
+        }
     };
 
     let load_dbs = move |_| {
@@ -81,10 +91,10 @@ fn CosmosQueryConsole(
     };
 
     let load_colls = move |_| {
-        let ep   = endpoint.read().clone();
-        let key  = account_key.read().clone();
+        let ep = endpoint.read().clone();
+        let key = account_key.read().clone();
         let db_list = dbs.read().clone();
-        let db   = normalize_sel(&db_sel.read(), &db_list);
+        let db = normalize_sel(&db_sel.read(), &db_list);
         if db.is_empty() {
             q_result.set(Some(Err(
                 "Pick a database from the dropdown before loading containers.".into(),
@@ -94,21 +104,25 @@ fn CosmosQueryConsole(
         colls_busy.set(true);
         spawn(async move {
             match cosmos_query::list_containers(&ep, &key, &db).await {
-                Ok(list) => { colls.set(list); }
-                Err(e)   => { q_result.set(Some(Err(format!("List containers failed: {e}")))); }
+                Ok(list) => {
+                    colls.set(list);
+                }
+                Err(e) => {
+                    q_result.set(Some(Err(format!("List containers failed: {e}"))));
+                }
             }
             colls_busy.set(false);
         });
     };
 
     let run_q = move |_| {
-        let ep      = endpoint.read().clone();
-        let key     = account_key.read().clone();
+        let ep = endpoint.read().clone();
+        let key = account_key.read().clone();
         let db_list = dbs.read().clone();
         let cl_list = colls.read().clone();
-        let db   = normalize_sel(&db_sel.read(),  &db_list);
+        let db = normalize_sel(&db_sel.read(), &db_list);
         let coll = normalize_sel(&coll_sel.read(), &cl_list);
-        let q    = query.read().clone();
+        let q = query.read().clone();
         if db.is_empty() || coll.is_empty() || q.trim().is_empty() {
             q_result.set(Some(Err(
                 "Pick a database and container, and enter a query, before running.".into(),
@@ -118,7 +132,8 @@ fn CosmosQueryConsole(
         q_busy.set(true);
         q_result.set(None);
         spawn(async move {
-            let r = cosmos_query::run_query(&ep, &key, &db, &coll, &q).await
+            let r = cosmos_query::run_query(&ep, &key, &db, &coll, &q)
+                .await
                 .and_then(|v| serde_json::to_string_pretty(&v).map_err(|e| e.to_string()));
             q_result.set(Some(r));
             q_busy.set(false);
@@ -258,19 +273,22 @@ fn CosmosQueryConsole(
 #[derive(Props, Clone, PartialEq)]
 pub struct CosmosTabProps {
     pub cosmos_connections: Vec<CosmosConnection>,
-    pub cosmos_edits:       Signal<HashMap<String, String>>,
-    pub status:             Signal<Option<(String, bool)>>,
+    pub cosmos_edits: Signal<HashMap<String, String>>,
+    pub status: Signal<Option<(String, bool)>>,
 }
 
 #[component]
 pub fn CosmosTab(props: CosmosTabProps) -> Element {
-    let mut cosmos_test_results: Signal<HashMap<String, Result<u64, String>>> = use_signal(HashMap::new);
+    let mut cosmos_test_results: Signal<HashMap<String, Result<u64, String>>> =
+        use_signal(HashMap::new);
     let mut cosmos_testing: Signal<HashSet<String>> = use_signal(HashSet::new);
 
-    let mut cosmos_adhoc_endpoint: Signal<String> = use_signal(|| cosmos_check::EMULATOR_ENDPOINT.to_string());
-    let mut cosmos_adhoc_key:      Signal<String> = use_signal(|| cosmos_check::EMULATOR_KEY.to_string());
-    let mut cosmos_adhoc_testing:  Signal<bool>   = use_signal(|| false);
-    let mut cosmos_adhoc_result:   Signal<Option<Result<u64, String>>> = use_signal(|| None);
+    let mut cosmos_adhoc_endpoint: Signal<String> =
+        use_signal(|| cosmos_check::EMULATOR_ENDPOINT.to_string());
+    let mut cosmos_adhoc_key: Signal<String> =
+        use_signal(|| cosmos_check::EMULATOR_KEY.to_string());
+    let mut cosmos_adhoc_testing: Signal<bool> = use_signal(|| false);
+    let mut cosmos_adhoc_result: Signal<Option<Result<u64, String>>> = use_signal(|| None);
 
     let mut cosmos_edits = props.cosmos_edits;
 

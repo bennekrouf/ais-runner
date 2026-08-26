@@ -10,43 +10,36 @@ pub use sb_tab::SbTab;
 pub use sftp_tab::SftpTab;
 pub use sql_tab::SqlTab;
 
+use crate::services::{
+    azure_cli, azure_sync, blob_check::BlobConnection, cosmos_check::CosmosConnection,
+    env_mode::EnvMode, maps_check, sb_check::SbQueueInfo, settings_file,
+    sftp_check::SftpConnection, sql_check::SqlConnection,
+};
 use dioxus::prelude::*;
 use std::collections::HashMap;
-use crate::services::{
-    azure_cli,
-    azure_sync,
-    blob_check::BlobConnection,
-    cosmos_check::CosmosConnection,
-    env_mode::EnvMode,
-    sb_check::SbQueueInfo,
-    sftp_check::SftpConnection,
-    sql_check::SqlConnection,
-    settings_file,
-    maps_check,
-};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct DbPanelProps {
-    pub logic_apps_dir:    String,
-    pub connections:       Vec<SqlConnection>,
-    pub sb_namespace:      String,
+    pub logic_apps_dir: String,
+    pub connections: Vec<SqlConnection>,
+    pub sb_namespace: String,
     /// The local.settings.json key that holds the SB FQDN (e.g. "serviceBus_fullyQualifiedNamespace")
-    pub sb_namespace_key:  Option<String>,
+    pub sb_namespace_key: Option<String>,
     /// (setting_key, current_value) for the SB connection string, if detected
-    pub sb_conn_str:       Option<(String, String)>,
-    pub sb_queues:         Vec<SbQueueInfo>,
-    pub sftp_connections:  Vec<SftpConnection>,
-    pub blob_connections:  Vec<BlobConnection>,
+    pub sb_conn_str: Option<(String, String)>,
+    pub sb_queues: Vec<SbQueueInfo>,
+    pub sftp_connections: Vec<SftpConnection>,
+    pub blob_connections: Vec<BlobConnection>,
     /// Current value of AzureWebJobsStorage from local.settings.json
-    pub webjobs_storage:   String,
+    pub webjobs_storage: String,
     pub cosmos_connections: Vec<CosmosConnection>,
-    pub env_mode:          EnvMode,
-    pub azurite_running:   bool,
-    pub is_open:           Signal<bool>,
+    pub env_mode: EnvMode,
+    pub azurite_running: bool,
+    pub is_open: Signal<bool>,
     /// Shared az login state — updated when any panel operation discovers the token is expired.
-    pub az_status:         Signal<Option<Result<String, azure_cli::AzError>>>,
-    pub on_saved:          EventHandler<String>,
-    pub on_env_changed:    EventHandler<()>,
+    pub az_status: Signal<Option<Result<String, azure_cli::AzError>>>,
+    pub on_saved: EventHandler<String>,
+    pub on_env_changed: EventHandler<()>,
 }
 
 #[component]
@@ -55,16 +48,24 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     let edits: Signal<HashMap<String, String>> = use_signal(|| {
         let mut m = HashMap::new();
         for c in &props.connections {
-            if let Some(k) = &c.server_key   { m.insert(k.clone(), c.resolved_server.clone()); }
-            if let Some(k) = &c.db_key       { m.insert(k.clone(), c.resolved_db.clone()); }
-            if let Some(k) = &c.conn_str_key { m.insert(k.clone(), c.resolved_conn_str.clone()); }
+            if let Some(k) = &c.server_key {
+                m.insert(k.clone(), c.resolved_server.clone());
+            }
+            if let Some(k) = &c.db_key {
+                m.insert(k.clone(), c.resolved_db.clone());
+            }
+            if let Some(k) = &c.conn_str_key {
+                m.insert(k.clone(), c.resolved_conn_str.clone());
+            }
         }
         m
     });
 
     // Blob connection endpoint edits: appsetting_key → current value
     let blob_edits: Signal<HashMap<String, String>> = use_signal(|| {
-        props.blob_connections.iter()
+        props
+            .blob_connections
+            .iter()
             .map(|c| (c.endpoint_key.clone(), c.endpoint.clone()))
             .collect()
     });
@@ -76,8 +77,12 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
     let cosmos_edits: Signal<HashMap<String, String>> = use_signal(|| {
         let mut m = HashMap::new();
         for c in &props.cosmos_connections {
-            if let Some(k) = &c.endpoint_key { m.insert(k.clone(), c.endpoint.clone()); }
-            if let Some(k) = &c.key_key      { m.insert(k.clone(), c.account_key.clone()); }
+            if let Some(k) = &c.endpoint_key {
+                m.insert(k.clone(), c.endpoint.clone());
+            }
+            if let Some(k) = &c.key_key {
+                m.insert(k.clone(), c.account_key.clone());
+            }
         }
         m
     });
@@ -108,42 +113,50 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
         }
     });
 
-
     let dir = props.logic_apps_dir.clone();
 
     // ── Save SQL + Blob + Cosmos connection strings ──────────────────────────
     let on_save = {
         let dir = dir.clone();
-        move |_| {
-            match settings_file::read_local_settings(&dir) {
-                Err(e) => { status.set(Some((e, true))); return; }
-                Ok(text) => {
-                    let mut root: serde_json::Value = match serde_json::from_str(&text) {
-                        Ok(v) => v,
-                        Err(e) => { status.set(Some((format!("Parse error: {}", e), true))); return; }
-                    };
-                    if let Some(vals) = root["Values"].as_object_mut() {
-                        for (k, v) in edits.read().iter() {
-                            vals.insert(k.clone(), serde_json::Value::String(v.clone()));
-                        }
-                        for (k, v) in blob_edits.read().iter() {
-                            vals.insert(k.clone(), serde_json::Value::String(v.clone()));
-                        }
-                        let wjs = webjobs_edit.read().clone();
-                        if !wjs.is_empty() {
-                            vals.insert("AzureWebJobsStorage".into(), serde_json::Value::String(wjs));
-                        }
-                        for (k, v) in cosmos_edits.read().iter() {
-                            vals.insert(k.clone(), serde_json::Value::String(v.clone()));
-                        }
+        move |_| match settings_file::read_local_settings(&dir) {
+            Err(e) => {
+                status.set(Some((e, true)));
+                return;
+            }
+            Ok(text) => {
+                let mut root: serde_json::Value = match serde_json::from_str(&text) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        status.set(Some((format!("Parse error: {}", e), true)));
+                        return;
                     }
-                    let text = serde_json::to_string_pretty(&root).unwrap_or_default();
-                    match settings_file::write_local_settings(&dir, &text) {
-                        Ok(_) => {
-                            status.set(Some(("Saved — restart func start to apply.".into(), false)));
-                            props.on_saved.call("⚠ Settings saved — stop and restart func start to apply changes.".into());
-                        }
-                        Err(e) => { status.set(Some((e, true))); }
+                };
+                if let Some(vals) = root["Values"].as_object_mut() {
+                    for (k, v) in edits.read().iter() {
+                        vals.insert(k.clone(), serde_json::Value::String(v.clone()));
+                    }
+                    for (k, v) in blob_edits.read().iter() {
+                        vals.insert(k.clone(), serde_json::Value::String(v.clone()));
+                    }
+                    let wjs = webjobs_edit.read().clone();
+                    if !wjs.is_empty() {
+                        vals.insert("AzureWebJobsStorage".into(), serde_json::Value::String(wjs));
+                    }
+                    for (k, v) in cosmos_edits.read().iter() {
+                        vals.insert(k.clone(), serde_json::Value::String(v.clone()));
+                    }
+                }
+                let text = serde_json::to_string_pretty(&root).unwrap_or_default();
+                match settings_file::write_local_settings(&dir, &text) {
+                    Ok(_) => {
+                        status.set(Some(("Saved — restart func start to apply.".into(), false)));
+                        props.on_saved.call(
+                            "⚠ Settings saved — stop and restart func start to apply changes."
+                                .into(),
+                        );
+                    }
+                    Err(e) => {
+                        status.set(Some((e, true)));
                     }
                 }
             }
@@ -292,24 +305,25 @@ struct MapsTabProps {
 
 #[component]
 fn MapsTab(props: MapsTabProps) -> Element {
-    let dir  = props.logic_apps_dir.clone();
+    let dir = props.logic_apps_dir.clone();
     let dir2 = dir.clone();
 
-    let maps   = use_memo(move || maps_check::scan_maps(&dir));
+    let maps = use_memo(move || maps_check::scan_maps(&dir));
     let usages = use_memo(move || maps_check::scan_workflow_map_usages(&dir2));
 
     // tester state: which map is expanded for testing
-    let mut test_open:   Signal<Option<String>>  = use_signal(|| None);
-    let mut test_input:  Signal<String>          = use_signal(|| "{}".to_string());
-    let mut test_output: Signal<String>          = use_signal(String::new);
-    let mut test_err:    Signal<bool>            = use_signal(|| false);
-    let mut test_engine:    Signal<String> = use_signal(String::new);
-    let mut installing:     Signal<bool>   = use_signal(|| false);
+    let mut test_open: Signal<Option<String>> = use_signal(|| None);
+    let mut test_input: Signal<String> = use_signal(|| "{}".to_string());
+    let mut test_output: Signal<String> = use_signal(String::new);
+    let mut test_err: Signal<bool> = use_signal(|| false);
+    let mut test_engine: Signal<String> = use_signal(String::new);
+    let mut installing: Signal<bool> = use_signal(|| false);
     let mut install_status: Signal<String> = use_signal(String::new);
-    let mut install_err:    Signal<bool>   = use_signal(|| false);
+    let mut install_err: Signal<bool> = use_signal(|| false);
     // Computed once — subprocess checks must NOT run on every render
-    let has_dotnet        = use_memo(|| maps_check::dotnet_available());
-    let has_dotnet_script = use_memo(move || *has_dotnet.read() && maps_check::dotnet_script_available());
+    let has_dotnet = use_memo(|| maps_check::dotnet_available());
+    let has_dotnet_script =
+        use_memo(move || *has_dotnet.read() && maps_check::dotnet_script_available());
 
     if maps.read().is_empty() {
         return rsx! {

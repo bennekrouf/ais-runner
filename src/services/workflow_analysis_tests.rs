@@ -54,7 +54,10 @@ fn http_request_trigger() {
         serde_json::json!({}),
     ));
     assert_eq!(a.trigger, TriggerKind::Http);
-    assert!(a.is_empty(), "HTTP-only trigger counts as empty per is_empty()'s contract");
+    assert!(
+        a.is_empty(),
+        "HTTP-only trigger counts as empty per is_empty()'s contract"
+    );
 }
 
 #[test]
@@ -66,7 +69,12 @@ fn recurrence_trigger_formats_schedule() {
         }),
         serde_json::json!({}),
     ));
-    assert_eq!(a.trigger, TriggerKind::Timer { schedule: "every 1 Hour".into() });
+    assert_eq!(
+        a.trigger,
+        TriggerKind::Timer {
+            schedule: "every 1 Hour".into()
+        }
+    );
 }
 
 #[test]
@@ -75,7 +83,12 @@ fn recurrence_trigger_defaults_interval_to_one_when_absent() {
         serde_json::json!({ "t": { "type": "Recurrence", "recurrence": { "frequency": "Day" } } }),
         serde_json::json!({}),
     ));
-    assert_eq!(a.trigger, TriggerKind::Timer { schedule: "every 1 Day".into() });
+    assert_eq!(
+        a.trigger,
+        TriggerKind::Timer {
+            schedule: "every 1 Day".into()
+        }
+    );
 }
 
 #[test]
@@ -96,7 +109,12 @@ fn service_bus_trigger_records_queue_as_input() {
         }),
         serde_json::json!({}),
     ));
-    assert_eq!(a.trigger, TriggerKind::ServiceBus { queue: "ais.ignite.kyriba.payment".into() });
+    assert_eq!(
+        a.trigger,
+        TriggerKind::ServiceBus {
+            queue: "ais.ignite.kyriba.payment".into()
+        }
+    );
     assert_eq!(a.input_queues, vec!["ais.ignite.kyriba.payment"]);
     // Must not also appear as an output — a trigger only ever consumes.
     assert!(a.output_queues.is_empty());
@@ -120,7 +138,12 @@ fn blob_trigger_uses_path_and_records_as_input() {
         }),
         serde_json::json!({}),
     ));
-    assert_eq!(a.trigger, TriggerKind::Blob { container: "kyriba-reports".into() });
+    assert_eq!(
+        a.trigger,
+        TriggerKind::Blob {
+            container: "kyriba-reports".into()
+        }
+    );
     assert_eq!(a.input_blobs, vec!["kyriba-reports"]);
 }
 
@@ -138,7 +161,12 @@ fn blob_trigger_falls_back_to_container_name_when_path_absent() {
         }),
         serde_json::json!({}),
     ));
-    assert_eq!(a.trigger, TriggerKind::Blob { container: "output".into() });
+    assert_eq!(
+        a.trigger,
+        TriggerKind::Blob {
+            container: "output".into()
+        }
+    );
 }
 
 #[test]
@@ -192,7 +220,11 @@ fn queue_name_dedupes_across_actions() {
             "serviceProviderConfiguration": { "serviceProviderId": "/serviceProviders/serviceBus", "operationId": "sendMessage" }
         }}
     })));
-    assert_eq!(a.output_queues, vec!["ais.teams.notif"], "same queue sent from two actions must appear once");
+    assert_eq!(
+        a.output_queues,
+        vec!["ais.teams.notif"],
+        "same queue sent from two actions must appear once"
+    );
 }
 
 #[test]
@@ -343,7 +375,11 @@ fn blob_container_dedupes_read_and_write_independently() {
         }}
     })));
     assert_eq!(a.input_blobs, vec!["c"]);
-    assert_eq!(a.output_blobs, vec!["c"], "same container can legitimately be both read and written");
+    assert_eq!(
+        a.output_blobs,
+        vec!["c"],
+        "same container can legitimately be both read and written"
+    );
 }
 
 // ── SQL stored procedures ────────────────────────────────────────────────
@@ -378,14 +414,22 @@ fn sproc_params_strip_leading_at_and_preserve_all_keys() {
 
 #[test]
 fn sproc_name_field_fallback_chain() {
-    for field in ["storedProcedureName", "storedProcedureFullName", "procedure"] {
+    for field in [
+        "storedProcedureName",
+        "storedProcedureFullName",
+        "procedure",
+    ] {
         let a = analyse(&wf(serde_json::json!({
             "Call": { "type": "ServiceProvider", "inputs": {
                 "parameters": { field: "dbo.Sp" },
                 "serviceProviderConfiguration": { "serviceProviderId": "/serviceProviders/sql", "operationId": "executeQuery" }
             }}
         })));
-        assert_eq!(a.sql_sprocs.first().map(|s| s.name.as_str()), Some("dbo.Sp"), "field '{field}' should resolve the sproc name");
+        assert_eq!(
+            a.sql_sprocs.first().map(|s| s.name.as_str()),
+            Some("dbo.Sp"),
+            "field '{field}' should resolve the sproc name"
+        );
     }
 }
 
@@ -600,7 +644,10 @@ fn blob_and_service_bus_triggers_are_not_empty() {
         }}}),
         serde_json::json!({}),
     ));
-    assert!(!sb.is_empty(), "a workflow that consumes a queue is not analytically empty");
+    assert!(
+        !sb.is_empty(),
+        "a workflow that consumes a queue is not analytically empty"
+    );
 }
 
 // ── all_queues() ──────────────────────────────────────────────────────────
@@ -617,7 +664,10 @@ fn all_queues_merges_and_dedupes_input_and_output() {
 
 #[test]
 fn literal_str_rejects_expressions_and_empty_strings() {
-    assert_eq!(literal_str(&serde_json::json!("plain")), Some("plain".to_string()));
+    assert_eq!(
+        literal_str(&serde_json::json!("plain")),
+        Some("plain".to_string())
+    );
     assert_eq!(literal_str(&serde_json::json!("@variables('x')")), None);
     assert_eq!(literal_str(&serde_json::json!("")), None);
     assert_eq!(literal_str(&serde_json::json!(null)), None);
@@ -632,8 +682,14 @@ fn normalize_sproc_name_strips_all_brackets_and_trims() {
 
 #[test]
 fn extract_host_handles_scheme_path_and_query() {
-    assert_eq!(extract_host("https://host.example.com/a/b?x=1"), Some("host.example.com".into()));
-    assert_eq!(extract_host("host.example.com/a"), Some("host.example.com".into()));
+    assert_eq!(
+        extract_host("https://host.example.com/a/b?x=1"),
+        Some("host.example.com".into())
+    );
+    assert_eq!(
+        extract_host("host.example.com/a"),
+        Some("host.example.com".into())
+    );
     assert_eq!(extract_host("@parameters('x')"), None);
     assert_eq!(extract_host(""), None);
 }

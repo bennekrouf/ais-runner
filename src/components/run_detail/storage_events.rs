@@ -1,8 +1,8 @@
 //! Azurite storage-event extraction: filter debug.log lines to a run's time
 //! window and condense verbose middleware logs into per-request summaries.
 
-use std::collections::HashMap;
 use crate::components::log_panel::is_azurite_poll_noise;
+use std::collections::HashMap;
 
 // ── Azurite storage-event extraction ──────────────────────────────────────
 //
@@ -40,17 +40,25 @@ pub fn storage_events_for_run(
     run_start: &str,
     run_end: Option<&str>,
 ) -> Vec<String> {
-    az_lines.iter()
+    az_lines
+        .iter()
         .filter(|l| {
-            let Some(ts) = parse_az_timestamp(l) else { return false; };
-            if ts < run_start { return false; }
-            if let Some(end) = run_end { if ts > end { return false; } }
+            let Some(ts) = parse_az_timestamp(l) else {
+                return false;
+            };
+            if ts < run_start {
+                return false;
+            }
+            if let Some(end) = run_end {
+                if ts > end {
+                    return false;
+                }
+            }
             !is_azurite_poll_noise(l)
         })
         .cloned()
         .collect()
 }
-
 
 // ── Storage-request summaries ───────────────────────────────────────────────
 //
@@ -62,10 +70,10 @@ pub fn storage_events_for_run(
 /// One storage request, condensed from its middleware log lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageRequestSummary {
-    pub time:       String,
-    pub method:     String,
-    pub path:       String,
-    pub status:     Option<u16>,
+    pub time: String,
+    pub method: String,
+    pub path: String,
+    pub status: Option<u16>,
     pub error_code: Option<String>,
 }
 
@@ -103,22 +111,38 @@ pub fn summarize_storage_events(lines: &[String]) -> Vec<StorageRequestSummary> 
         }
         // Middleware shape: `<ts> <request-id> <level>: …`
         let mut parts = line.splitn(3, ' ');
-        let (Some(ts), Some(rid), Some(rest)) = (parts.next(), parts.next(), parts.next())
-        else { continue };
-        if !ts.ends_with('Z') || rid.len() < 8 { continue; }
+        let (Some(ts), Some(rid), Some(rest)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        if !ts.ends_with('Z') || rid.len() < 8 {
+            continue;
+        }
 
         if let Some(pos) = rest.find("RequestMethod=") {
             let method = rest[pos + "RequestMethod=".len()..]
-                .split_whitespace().next().unwrap_or("?").to_string();
-            let path = rest.find("RequestURL=")
-                .map(|p| shorten_storage_url(
-                    rest[p + "RequestURL=".len()..].split_whitespace().next().unwrap_or("")))
+                .split_whitespace()
+                .next()
+                .unwrap_or("?")
+                .to_string();
+            let path = rest
+                .find("RequestURL=")
+                .map(|p| {
+                    shorten_storage_url(
+                        rest[p + "RequestURL=".len()..]
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(""),
+                    )
+                })
                 .unwrap_or_default();
             let entry = by_id.entry(rid.to_string()).or_insert_with(|| {
                 order.push(rid.to_string());
                 StorageRequestSummary {
-                    time: short_time(ts), method: String::new(), path: String::new(),
-                    status: None, error_code: None,
+                    time: short_time(ts),
+                    method: String::new(),
+                    path: String::new(),
+                    status: None,
+                    error_code: None,
                 }
             });
             entry.method = method;
@@ -126,7 +150,10 @@ pub fn summarize_storage_events(lines: &[String]) -> Vec<StorageRequestSummary> 
         } else if let Some(pos) = rest.find("StatusCode=") {
             if rest.contains("End response") || rest.contains("ErrorHTTPStatusCode") {
                 if let Ok(code) = rest[pos + "StatusCode=".len()..]
-                    .split_whitespace().next().unwrap_or("").parse::<u16>()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .parse::<u16>()
                 {
                     if let Some(entry) = by_id.get_mut(rid) {
                         entry.status.get_or_insert(code);
@@ -136,7 +163,9 @@ pub fn summarize_storage_events(lines: &[String]) -> Vec<StorageRequestSummary> 
         } else if let Some(pos) = rest.find("x-ms-error-code=") {
             let code = rest[pos + "x-ms-error-code=".len()..]
                 .split(|c: char| c.is_whitespace() || c == '"' || c == ',')
-                .next().unwrap_or("").to_string();
+                .next()
+                .unwrap_or("")
+                .to_string();
             if !code.is_empty() {
                 if let Some(entry) = by_id.get_mut(rid) {
                     entry.error_code.get_or_insert(code);
@@ -145,7 +174,8 @@ pub fn summarize_storage_events(lines: &[String]) -> Vec<StorageRequestSummary> 
         }
     }
 
-    order.into_iter()
+    order
+        .into_iter()
         .filter_map(|id| by_id.remove(&id))
         // A request we only saw fragments of (no method AND no status) is noise.
         .filter(|s| !s.method.is_empty() || s.status.is_some())
@@ -162,14 +192,21 @@ fn summarize_access_log_line(line: &str) -> Option<StorageRequestSummary> {
     let method = it.next()?.to_string();
     let path = shorten_storage_url(it.next().unwrap_or(""));
     let time = parse_az_timestamp(line).map(short_time).unwrap_or_default();
-    Some(StorageRequestSummary { time, method, path, status: Some(status), error_code: None })
+    Some(StorageRequestSummary {
+        time,
+        method,
+        path,
+        status: Some(status),
+        error_code: None,
+    })
 }
 
 /// `http://127.0.0.1:10002/devstoreaccount1/flowXXXruns?$filter=…`
 /// → `flowXXXruns` — the table/container is what the user cares about.
 fn shorten_storage_url(url: &str) -> String {
     let no_query = url.split('?').next().unwrap_or(url);
-    let path = no_query.find("://")
+    let path = no_query
+        .find("://")
         .and_then(|i| no_query[i + 3..].find('/').map(|j| &no_query[i + 3 + j..]))
         .unwrap_or(no_query);
     path.trim_start_matches('/')
@@ -260,4 +297,3 @@ mod storage_summary_tests {
         assert!(summarize_storage_events(&lines).is_empty());
     }
 }
-

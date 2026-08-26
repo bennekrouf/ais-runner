@@ -33,14 +33,14 @@ pub fn example_from(schema: &Value) -> Value {
         }
         "string" => match schema.get("format").and_then(|v| v.as_str()) {
             Some("date-time") => json!("1970-01-01T00:00:00Z"),
-            Some("uuid")      => json!("00000000-0000-0000-0000-000000000000"),
-            Some("email")     => json!("user@example.com"),
-            _                 => json!(""),
+            Some("uuid") => json!("00000000-0000-0000-0000-000000000000"),
+            Some("email") => json!("user@example.com"),
+            _ => json!(""),
         },
         "number" | "integer" => json!(0),
-        "boolean"            => json!(false),
-        "null"               => Value::Null,
-        _                    => {
+        "boolean" => json!(false),
+        "null" => Value::Null,
+        _ => {
             // Permissive union types: ["string","null"] etc. — pick the first non-null.
             if let Some(arr) = schema.get("type").and_then(|v| v.as_array()) {
                 if let Some(first) = arr.iter().find(|v| v.as_str() != Some("null")) {
@@ -79,8 +79,10 @@ mod tests {
                 "properties": { "id": { "type": "string", "format": "uuid" } }
             }
         });
-        assert_eq!(example_from(&s),
-                   json!([{ "id": "00000000-0000-0000-0000-000000000000" }]));
+        assert_eq!(
+            example_from(&s),
+            json!([{ "id": "00000000-0000-0000-0000-000000000000" }])
+        );
     }
 
     #[test]

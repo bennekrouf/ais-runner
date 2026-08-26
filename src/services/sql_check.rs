@@ -12,37 +12,36 @@ pub enum SqlAuthType {
 impl SqlAuthType {
     pub fn label(&self) -> &'static str {
         match self {
-            SqlAuthType::ManagedIdentity  => "MSI",
+            SqlAuthType::ManagedIdentity => "MSI",
             SqlAuthType::ConnectionString => "ConnStr",
-            SqlAuthType::Unknown          => "?",
+            SqlAuthType::Unknown => "?",
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SqlConnection {
-    pub name:             String,
-    pub auth_type:        SqlAuthType,
+    pub name: String,
+    pub auth_type: SqlAuthType,
     /// Setting key for serverName (MSI)
-    pub server_key:       Option<String>,
+    pub server_key: Option<String>,
     /// Setting key for databaseName (MSI)
-    pub db_key:           Option<String>,
+    pub db_key: Option<String>,
     /// Setting key for connectionString (ConnStr)
-    pub conn_str_key:     Option<String>,
+    pub conn_str_key: Option<String>,
     /// Resolved values from local.settings.json
-    pub resolved_server:  String,
-    pub resolved_db:      String,
+    pub resolved_server: String,
+    pub resolved_db: String,
     pub resolved_conn_str: String,
 }
 
-impl SqlConnection {
-}
+impl SqlConnection {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TestResult {
-    pub reachable:  bool,
+    pub reachable: bool,
     pub latency_ms: Option<u64>,
-    pub error:      Option<String>,
+    pub error: Option<String>,
 }
 
 fn extract_appsetting_key(val: &str) -> Option<String> {
@@ -102,7 +101,7 @@ pub fn load_sql_connections(logic_apps_dir: &str) -> Vec<SqlConnection> {
         }
 
         let param_set = conn["parameterSetName"].as_str().unwrap_or("");
-        let params    = conn["parameterValues"].as_object();
+        let params = conn["parameterValues"].as_object();
 
         let get_key = |field: &str| -> Option<String> {
             params
@@ -136,9 +135,9 @@ pub fn load_sql_connections(logic_apps_dir: &str) -> Vec<SqlConnection> {
         };
 
         result.push(SqlConnection {
-            name:             name.clone(),
-            resolved_server:  resolve(&server_key),
-            resolved_db:      resolve(&db_key),
+            name: name.clone(),
+            resolved_server: resolve(&server_key),
+            resolved_db: resolve(&db_key),
             resolved_conn_str: resolve(&conn_str_key),
             auth_type,
             server_key,
@@ -202,40 +201,42 @@ pub fn detect_sql_workflows(logic_apps_dir: &str) -> HashSet<String> {
 pub fn test_tcp(host: &str, port: u16) -> TestResult {
     if host.is_empty() {
         return TestResult {
-            reachable:  false,
+            reachable: false,
             latency_ms: None,
-            error:      Some("No host configured".into()),
+            error: Some("No host configured".into()),
         };
     }
     let addr_str = format!("{}:{}", host, port);
-    let start    = Instant::now();
+    let start = Instant::now();
 
     let mut addrs = match addr_str.to_socket_addrs() {
-        Ok(a)  => a,
-        Err(e) => return TestResult {
-            reachable:  false,
-            latency_ms: None,
-            error:      Some(format!("DNS: {}", e)),
-        },
+        Ok(a) => a,
+        Err(e) => {
+            return TestResult {
+                reachable: false,
+                latency_ms: None,
+                error: Some(format!("DNS: {}", e)),
+            }
+        }
     };
 
     match addrs.next() {
         Some(addr) => match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
             Ok(_) => TestResult {
-                reachable:  true,
+                reachable: true,
                 latency_ms: Some(start.elapsed().as_millis() as u64),
-                error:      None,
+                error: None,
             },
             Err(e) => TestResult {
-                reachable:  false,
+                reachable: false,
                 latency_ms: None,
-                error:      Some(e.to_string()),
+                error: Some(e.to_string()),
             },
         },
         None => TestResult {
-            reachable:  false,
+            reachable: false,
             latency_ms: None,
-            error:      Some("No addresses resolved".into()),
+            error: Some("No addresses resolved".into()),
         },
     }
 }

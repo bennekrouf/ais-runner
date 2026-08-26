@@ -12,9 +12,9 @@ pub(super) fn SqlSprocChip(name: String, params: Vec<String>, status: Option<boo
     let stub = crate::services::sql_hint::stub_sproc_with_params(&name, &param_refs);
 
     let (dot_color, dot_title) = match status {
-        Some(true)  => ("#3fb950", format!("Found in local SQL: {}", name)),
+        Some(true) => ("#3fb950", format!("Found in local SQL: {}", name)),
         Some(false) => ("#f85149", format!("MISSING in local SQL: {}", name)),
-        None        => ("#8b949e", format!("Probing local SQL for: {}", name)),
+        None => ("#8b949e", format!("Probing local SQL for: {}", name)),
     };
 
     rsx! {
@@ -72,12 +72,15 @@ pub(super) fn SqlSprocChip(name: String, params: Vec<String>, status: Option<boo
 // ── Missing-SQL-object hint banner (under failed action detail) ────────────
 
 #[component]
-pub(super) fn SqlMissingHint(hint: crate::services::sql_hint::SqlMissingObject, indent_px: u32) -> Element {
+pub(super) fn SqlMissingHint(
+    hint: crate::services::sql_hint::SqlMissingObject,
+    indent_px: u32,
+) -> Element {
     let mut copied = use_signal(|| false);
     let kind_label = hint.kind.label();
-    let name       = hint.name.clone();
-    let ddl        = hint.stub_ddl.clone();
-    let raw        = hint.raw_message.clone();
+    let name = hint.name.clone();
+    let ddl = hint.stub_ddl.clone();
+    let raw = hint.raw_message.clone();
 
     rsx! {
         div {

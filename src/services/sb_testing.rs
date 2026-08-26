@@ -45,9 +45,9 @@ impl QueueEncoding {
     /// Short human-readable explanation for the status line.
     pub fn describe(&self) -> String {
         match self {
-            QueueEncoding::Base64Wrapped { consumer } => format!(
-                "base64-wrapped — {consumer} decodes contentData.$content"
-            ),
+            QueueEncoding::Base64Wrapped { consumer } => {
+                format!("base64-wrapped — {consumer} decodes contentData.$content")
+            }
             QueueEncoding::RawJson { consumer: Some(c) } => {
                 format!("raw JSON — {c} reads contentData directly")
             }
@@ -66,8 +66,12 @@ pub fn queue_encoding(logic_apps_dir: &str, queue: &str) -> QueueEncoding {
     };
     for entry in entries.flatten() {
         let wf_path = entry.path().join("workflow.json");
-        let Ok(content) = std::fs::read_to_string(&wf_path) else { continue };
-        let Ok(workflow) = serde_json::from_str::<Value>(&content) else { continue };
+        let Ok(content) = std::fs::read_to_string(&wf_path) else {
+            continue;
+        };
+        let Ok(workflow) = serde_json::from_str::<Value>(&content) else {
+            continue;
+        };
         let name = entry.file_name().to_string_lossy().to_string();
         if let Some(enc) = encoding_from_workflow(&workflow, &content, queue, &name) {
             return enc;
@@ -99,9 +103,13 @@ fn encoding_from_workflow(
     let wants_base64 = raw_text.contains("$content")
         && (raw_text.contains("decodeBase64") || raw_text.contains("base64ToString"));
     Some(if wants_base64 {
-        QueueEncoding::Base64Wrapped { consumer: workflow_name.to_string() }
+        QueueEncoding::Base64Wrapped {
+            consumer: workflow_name.to_string(),
+        }
     } else {
-        QueueEncoding::RawJson { consumer: Some(workflow_name.to_string()) }
+        QueueEncoding::RawJson {
+            consumer: Some(workflow_name.to_string()),
+        }
     })
 }
 
@@ -163,7 +171,10 @@ pub async fn trace_correlation(host: &str, queues: &[String], needle: &str) -> V
         };
         let count = msgs.iter().filter(|m| m.body.contains(needle)).count();
         if count > 0 {
-            hits.push(TraceHit { queue: q.clone(), count });
+            hits.push(TraceHit {
+                queue: q.clone(),
+                count,
+            });
         }
     }
     hits
@@ -220,9 +231,9 @@ fn find_adaptive_card(v: &Value) -> Option<Value> {
         }
         Value::Array(items) => items.iter().find_map(find_adaptive_card),
         // Cards are sometimes embedded as a JSON string (double-encoded)
-        Value::String(s) if s.contains("AdaptiveCard") => {
-            serde_json::from_str::<Value>(s).ok().and_then(|inner| find_adaptive_card(&inner))
-        }
+        Value::String(s) if s.contains("AdaptiveCard") => serde_json::from_str::<Value>(s)
+            .ok()
+            .and_then(|inner| find_adaptive_card(&inner)),
         _ => None,
     }
 }
@@ -294,7 +305,10 @@ pub async fn check_expectation(
         matched,
         peeked: msgs.len(),
         detail: if path.is_empty() {
-            format!("{matched}/{} messages (expected >= {min_count})", msgs.len())
+            format!(
+                "{matched}/{} messages (expected >= {min_count})",
+                msgs.len()
+            )
         } else {
             format!(
                 "{matched}/{} messages with {path} = {expected} (expected >= {min_count})",
@@ -312,7 +326,9 @@ fn message_matches(body: &str, path: &str, expected: &str) -> bool {
     if path.is_empty() {
         return true;
     }
-    let Some(found) = lookup_path(&v, path) else { return false };
+    let Some(found) = lookup_path(&v, path) else {
+        return false;
+    };
     match found {
         Value::String(s) => s == expected,
         other => other.to_string() == expected,
@@ -371,7 +387,9 @@ mod tests {
         let enc = encoding_from_workflow(&w, &raw, "ais.event.ignite", "Get-AddressBook").unwrap();
         assert_eq!(
             enc,
-            QueueEncoding::Base64Wrapped { consumer: "Get-AddressBook".into() }
+            QueueEncoding::Base64Wrapped {
+                consumer: "Get-AddressBook".into()
+            }
         );
         assert_eq!(enc.content_type(), "application/octet-stream");
     }
@@ -379,9 +397,13 @@ mod tests {
     #[test]
     fn detects_raw_json_consumer() {
         let (w, raw) = wf("ais.ignite.counterparty", "@json(item()['contentData'])");
-        let enc =
-            encoding_from_workflow(&w, &raw, "ais.ignite.counterparty", "Pivot-Cp").unwrap();
-        assert_eq!(enc, QueueEncoding::RawJson { consumer: Some("Pivot-Cp".into()) });
+        let enc = encoding_from_workflow(&w, &raw, "ais.ignite.counterparty", "Pivot-Cp").unwrap();
+        assert_eq!(
+            enc,
+            QueueEncoding::RawJson {
+                consumer: Some("Pivot-Cp".into())
+            }
+        );
         assert_eq!(enc.content_type(), "application/json");
     }
 

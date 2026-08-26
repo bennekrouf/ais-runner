@@ -19,8 +19,8 @@ use dioxus::prelude::*;
 use tokio::sync::Mutex;
 
 use crate::components::log_panel::{LogLevel, LogLine};
-use crate::services::mock::{EventBus, MockEvent, MockRuntime, ResponseSource};
 use crate::services::mock::events::LogLevel as MockLevel;
+use crate::services::mock::{EventBus, MockEvent, MockRuntime, ResponseSource};
 use crate::services::process::ServiceState;
 use crate::services::workflows;
 use crate::utils::make_push;
@@ -50,7 +50,10 @@ pub fn handle_start(
         let bus = EventBus::new();
         pump_events(bus.subscribe(), log_lines);
 
-        push("🎭 Starting mock server — scanning workspace for outbound HTTP calls…".into(), LogLevel::Info);
+        push(
+            "🎭 Starting mock server — scanning workspace for outbound HTTP calls…".into(),
+            LogLevel::Info,
+        );
 
         match MockRuntime::start(&workspace, bus).await {
             Ok(runtime) => {
@@ -67,7 +70,10 @@ pub fn handle_start(
             }
             Err(e) => {
                 state.set(ServiceState::Stopped);
-                push(format!("❌ Mock server failed to start: {e}"), LogLevel::Error);
+                push(
+                    format!("❌ Mock server failed to start: {e}"),
+                    LogLevel::Error,
+                );
                 push(
                     "   local.settings.json was not modified. Check the folder is a \
                      Logic Apps workspace (local.settings.json + */workflow.json)."
@@ -91,8 +97,14 @@ pub fn handle_stop(
         match runtime {
             Some(runtime) => {
                 runtime.stop().await;
-                push("🎭 Mock server stopped — local.settings.json restored.".into(), LogLevel::Ok);
-                push("   Restart func to go back to the real endpoints.".into(), LogLevel::Warn);
+                push(
+                    "🎭 Mock server stopped — local.settings.json restored.".into(),
+                    LogLevel::Ok,
+                );
+                push(
+                    "   Restart func to go back to the real endpoints.".into(),
+                    LogLevel::Warn,
+                );
             }
             // Reachable if a start failed after the button already flipped.
             None => push("🎭 Mock server was not running.".into(), LogLevel::Info),
@@ -106,7 +118,10 @@ pub fn handle_stop(
 /// The loop ends on `ServerStopped` (or when the bus closes) so a start/stop
 /// cycle doesn't leak a task per session. `Lagged` is survivable — a burst of
 /// traffic drops diagnostics, never requests — so it keeps reading.
-fn pump_events(mut rx: tokio::sync::broadcast::Receiver<MockEvent>, log_lines: Signal<Vec<LogLine>>) {
+fn pump_events(
+    mut rx: tokio::sync::broadcast::Receiver<MockEvent>,
+    log_lines: Signal<Vec<LogLine>>,
+) {
     spawn(async move {
         let mut push = make_push(log_lines);
         loop {
@@ -118,7 +133,10 @@ fn pump_events(mut rx: tokio::sync::broadcast::Receiver<MockEvent>, log_lines: S
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    push(format!("🎭 … {n} mock event(s) dropped (UI behind)"), LogLevel::Warn);
+                    push(
+                        format!("🎭 … {n} mock event(s) dropped (UI behind)"),
+                        LogLevel::Warn,
+                    );
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -133,7 +151,9 @@ fn render(event: MockEvent) -> Option<(String, LogLevel)> {
         // Emitted by the handler with the port already known.
         MockEvent::ServerStarted { .. } | MockEvent::ServerStopped => None,
 
-        MockEvent::SettingsRewritten { rewritten_count, .. } => Some((
+        MockEvent::SettingsRewritten {
+            rewritten_count, ..
+        } => Some((
             format!("🎭 Rewrote {rewritten_count} URL setting(s) → mock"),
             LogLevel::Info,
         )),
@@ -143,7 +163,12 @@ fn render(event: MockEvent) -> Option<(String, LogLevel)> {
             Some((format!("🎭 → {method} {url}"), LogLevel::Info))
         }
 
-        MockEvent::Response { status, source, elapsed_ms, .. } => {
+        MockEvent::Response {
+            status,
+            source,
+            elapsed_ms,
+            ..
+        } => {
             // A 404 here is the actionable case: the workflow called something
             // the contract never saw, so the mock had nothing to answer with.
             let level = match source {
@@ -164,8 +189,8 @@ fn render(event: MockEvent) -> Option<(String, LogLevel)> {
         MockEvent::Log { level, message } => Some((
             format!("🎭 {message}"),
             match level {
-                MockLevel::Info  => LogLevel::Info,
-                MockLevel::Warn  => LogLevel::Warn,
+                MockLevel::Info => LogLevel::Info,
+                MockLevel::Warn => LogLevel::Warn,
                 MockLevel::Error => LogLevel::Error,
             },
         )),
@@ -176,10 +201,10 @@ fn render(event: MockEvent) -> Option<(String, LogLevel)> {
 
 fn describe(source: ResponseSource) -> &'static str {
     match source {
-        ResponseSource::AutoStub      => "auto-stub",
-        ResponseSource::Fixture       => "fixture",
-        ResponseSource::Recorded      => "recorded",
-        ResponseSource::Passthrough   => "passthrough",
+        ResponseSource::AutoStub => "auto-stub",
+        ResponseSource::Fixture => "fixture",
+        ResponseSource::Recorded => "recorded",
+        ResponseSource::Passthrough => "passthrough",
         ResponseSource::NotInContract => "no match",
     }
 }

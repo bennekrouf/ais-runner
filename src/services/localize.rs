@@ -65,7 +65,10 @@ fn msi_connections(conn: &serde_json::Value) -> HashMap<String, String> {
             if c["parameterSetName"].as_str() == Some("ManagedServiceIdentity") {
                 out.insert(
                     name.clone(),
-                    c["serviceProvider"]["id"].as_str().unwrap_or("").to_string(),
+                    c["serviceProvider"]["id"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
                 );
             }
         }
@@ -84,7 +87,10 @@ fn referenced_keys(conn: &serde_json::Value) -> Vec<String> {
     fn collect(v: &serde_json::Value, out: &mut Vec<String>) {
         match v {
             serde_json::Value::String(s) => {
-                if let Some(k) = s.strip_prefix("@appsetting('").and_then(|s| s.strip_suffix("')")) {
+                if let Some(k) = s
+                    .strip_prefix("@appsetting('")
+                    .and_then(|s| s.strip_suffix("')"))
+                {
                     out.push(k.to_string());
                 }
             }
@@ -113,9 +119,8 @@ pub fn localize(logic_apps_dir: &str) -> LocalizeReport {
         // even if the user never starts func. `func start` applies the same
         // patch itself (with snapshot/restore around it), so the file on disk
         // is correct by the time the runtime actually reads it.
-        let patched = setup_manager::patch_connections_for_local(
-            &setup_manager::fix_connections_json(&raw),
-        );
+        let patched =
+            setup_manager::patch_connections_for_local(&setup_manager::fix_connections_json(&raw));
 
         let after: serde_json::Value = serde_json::from_str(&patched).unwrap_or_default();
         let msi_after = msi_connections(&after);
@@ -163,10 +168,7 @@ pub fn localize(logic_apps_dir: &str) -> LocalizeReport {
                     }
                     if let Some(s) = v.as_str() {
                         if run_readiness::is_cloud_value(s) {
-                            updates.insert(
-                                k.clone(),
-                                run_readiness::local_target_for(k, s, &json),
-                            );
+                            updates.insert(k.clone(), run_readiness::local_target_for(k, s, &json));
                         }
                     }
                 }
@@ -190,7 +192,10 @@ fn setting_is_empty(dir: &std::path::Path, key: &str) -> bool {
         return true;
     };
     let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-    json["Values"][key].as_str().map(|s| s.is_empty()).unwrap_or(true)
+    json["Values"][key]
+        .as_str()
+        .map(|s| s.is_empty())
+        .unwrap_or(true)
 }
 
 #[cfg(test)]
@@ -222,7 +227,10 @@ mod tests {
                                             "endpoint": "@appsetting('K2')" } }
             }
         });
-        assert_eq!(referenced_keys(&conn), vec!["K1".to_string(), "K2".to_string()]);
+        assert_eq!(
+            referenced_keys(&conn),
+            vec!["K1".to_string(), "K2".to_string()]
+        );
     }
 
     #[test]
@@ -262,13 +270,18 @@ mod localize_e2e {
         })).unwrap()).unwrap();
 
         // local.settings.json: one value pointing at a real cloud SQL endpoint.
-        std::fs::write(dir.join("local.settings.json"), serde_json::to_string_pretty(&json!({
-            "IsEncrypted": false,
-            "Values": {
-                "AzureWebJobsStorage": "UseDevelopmentStorage=true",
-                "SomeDb_cs": "Server=tcp:corp.database.windows.net,1433;Database=x;"
-            }
-        })).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("local.settings.json"),
+            serde_json::to_string_pretty(&json!({
+                "IsEncrypted": false,
+                "Values": {
+                    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+                    "SomeDb_cs": "Server=tcp:corp.database.windows.net,1433;Database=x;"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
 
         let conn_before = std::fs::read_to_string(dir.join("connections.json")).unwrap();
 
@@ -281,21 +294,38 @@ mod localize_e2e {
 
         // The cloud SQL setting was rewritten to the local emulator.
         assert!(r.settings_localized.contains(&"SomeDb_cs".to_string()));
-        let settings: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("local.settings.json")).unwrap()).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("local.settings.json")).unwrap(),
+        )
+        .unwrap();
         let cs = settings["Values"]["SomeDb_cs"].as_str().unwrap();
-        assert!(cs.contains("localhost,1433"), "cloud SQL should be redirected local, got: {cs}");
+        assert!(
+            cs.contains("localhost,1433"),
+            "cloud SQL should be redirected local, got: {cs}"
+        );
 
         // connections.json on disk is UNTOUCHED. It is committed and
         // cloud-facing; opening a project must never dirty it. The MSI
         // analysis above came from an in-memory patch, and `func start`
         // applies the real one under snapshot/restore.
         let on_disk = std::fs::read_to_string(dir.join("connections.json")).unwrap();
-        assert_eq!(on_disk, conn_before, "localize() must not write connections.json");
+        assert_eq!(
+            on_disk, conn_before,
+            "localize() must not write connections.json"
+        );
         let conn: serde_json::Value = serde_json::from_str(&on_disk).unwrap();
-        assert_eq!(conn["serviceProviderConnections"]["IgniteBlob"]["parameterSetName"], "ManagedServiceIdentity");
-        assert_eq!(conn["serviceProviderConnections"]["ais-sql"]["parameterSetName"], "ManagedServiceIdentity");
-        assert_eq!(conn["serviceProviderConnections"]["vault"]["parameterSetName"], "ManagedServiceIdentity");
+        assert_eq!(
+            conn["serviceProviderConnections"]["IgniteBlob"]["parameterSetName"],
+            "ManagedServiceIdentity"
+        );
+        assert_eq!(
+            conn["serviceProviderConnections"]["ais-sql"]["parameterSetName"],
+            "ManagedServiceIdentity"
+        );
+        assert_eq!(
+            conn["serviceProviderConnections"]["vault"]["parameterSetName"],
+            "ManagedServiceIdentity"
+        );
 
         // Pure analysis: a second pass reports the same thing rather than
         // going quiet, because nothing was mutated to make it quiet.
@@ -313,30 +343,44 @@ mod localize_e2e {
         let dir = tmp.path();
         let base = dir.to_str().unwrap();
 
-        std::fs::write(dir.join("connections.json"),
-            serde_json::to_string_pretty(&json!({ "serviceProviderConnections": {} })).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("connections.json"),
+            serde_json::to_string_pretty(&json!({ "serviceProviderConnections": {} })).unwrap(),
+        )
+        .unwrap();
 
         // Real, well-formed managed-API connector URLs + one genuinely cloud value.
-        let teams  = "https://acme-prod.azure-apim.net/apim/teams/teams-1a2b/";
+        let teams = "https://acme-prod.azure-apim.net/apim/teams/teams-1a2b/";
         let logan  = "https://logic-apis-northeurope.azure-apim.net/apim/azureloganalyticsdatacollector/conn/";
-        std::fs::write(dir.join("local.settings.json"), serde_json::to_string_pretty(&json!({
-            "IsEncrypted": false,
-            "Values": {
-                "Teams_connectionUrl": teams,
-                "LogAnalytics_connectionUrl": logan,
-                "SomeDb_cs": "Server=tcp:corp.database.windows.net,1433;Database=x;"
-            }
-        })).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("local.settings.json"),
+            serde_json::to_string_pretty(&json!({
+                "IsEncrypted": false,
+                "Values": {
+                    "Teams_connectionUrl": teams,
+                    "LogAnalytics_connectionUrl": logan,
+                    "SomeDb_cs": "Server=tcp:corp.database.windows.net,1433;Database=x;"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
 
         let r = localize(base);
 
-        let settings: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("local.settings.json")).unwrap()).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("local.settings.json")).unwrap(),
+        )
+        .unwrap();
         // Connector URLs left exactly as they were — not rewritten to the mock URL.
         assert_eq!(settings["Values"]["Teams_connectionUrl"], teams);
         assert_eq!(settings["Values"]["LogAnalytics_connectionUrl"], logan);
-        assert!(!r.settings_localized.contains(&"Teams_connectionUrl".to_string()));
-        assert!(!r.settings_localized.contains(&"LogAnalytics_connectionUrl".to_string()));
+        assert!(!r
+            .settings_localized
+            .contains(&"Teams_connectionUrl".to_string()));
+        assert!(!r
+            .settings_localized
+            .contains(&"LogAnalytics_connectionUrl".to_string()));
         // The genuinely-cloud SQL value was still redirected.
         assert!(r.settings_localized.contains(&"SomeDb_cs".to_string()));
     }

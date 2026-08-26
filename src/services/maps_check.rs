@@ -2,10 +2,10 @@ use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapFile {
-    pub name:     String,   // filename without extension, e.g. "my-transform"
-    pub filename: String,   // full filename, e.g. "my-transform.liquid"
-    pub path:     String,   // absolute path
-    pub kind:     MapKind,
+    pub name: String,     // filename without extension, e.g. "my-transform"
+    pub filename: String, // full filename, e.g. "my-transform.liquid"
+    pub path: String,     // absolute path
+    pub kind: MapKind,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,15 +21,15 @@ impl MapKind {
     pub fn label(&self) -> &'static str {
         match self {
             MapKind::Liquid => "Liquid",
-            MapKind::Xslt   => "XSLT",
-            MapKind::Other  => "Map",
+            MapKind::Xslt => "XSLT",
+            MapKind::Other => "Map",
         }
     }
     pub fn icon(&self) -> &'static str {
         match self {
             MapKind::Liquid => "🔄",
-            MapKind::Xslt   => "📄",
-            MapKind::Other  => "🗂",
+            MapKind::Xslt => "📄",
+            MapKind::Other => "🗂",
         }
     }
 }
@@ -46,36 +46,44 @@ pub fn scan_maps(logic_apps_dir: &str) -> Vec<MapFile> {
 }
 
 fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<MapFile>) {
-    if depth > 6 { return; }
+    if depth > 6 {
+        return;
+    }
     let entries = match std::fs::read_dir(dir) {
-        Ok(e)  => e,
+        Ok(e) => e,
         Err(_) => return,
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let fname = path.file_name()
+        let fname = path
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
 
         // skip hidden dirs, node_modules, .git
-        if fname.starts_with('.') || fname == "node_modules" { continue; }
+        if fname.starts_with('.') || fname == "node_modules" {
+            continue;
+        }
 
         if path.is_dir() {
             walk(root, &path, depth + 1, out);
         } else if path.is_file() {
-            let ext = path.extension()
+            let ext = path
+                .extension()
                 .map(|e| e.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
             let kind = match ext.as_str() {
-                "liquid"        => MapKind::Liquid,
+                "liquid" => MapKind::Liquid,
                 "xslt" | "xsl" => MapKind::Xslt,
-                _               => continue,   // skip non-map files
+                _ => continue, // skip non-map files
             };
-            let name = path.file_stem()
+            let name = path
+                .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
             // show path relative to root for clarity
-            let rel = path.strip_prefix(root)
+            let rel = path
+                .strip_prefix(root)
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| fname.clone());
 
@@ -89,8 +97,8 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<MapFile>) {
     }
 }
 
-use std::collections::HashMap;
 use crate::services::workflow_analysis;
+use std::collections::HashMap;
 
 /// Scan all workflow.json files under `logic_apps_dir` and return
 /// an inverted index: map_name → Vec<workflow_name>.
@@ -99,18 +107,25 @@ pub fn scan_workflow_map_usages(logic_apps_dir: &str) -> HashMap<String, Vec<Str
     let mut index: HashMap<String, Vec<String>> = HashMap::new();
 
     let entries = match std::fs::read_dir(root) {
-        Ok(e)  => e,
+        Ok(e) => e,
         Err(_) => return index,
     };
 
     for entry in entries.flatten() {
         let wf_dir = entry.path();
-        if !wf_dir.is_dir() { continue; }
+        if !wf_dir.is_dir() {
+            continue;
+        }
         let wf_json = wf_dir.join("workflow.json");
-        let Ok(src) = std::fs::read_to_string(&wf_json) else { continue };
+        let Ok(src) = std::fs::read_to_string(&wf_json) else {
+            continue;
+        };
         let analysis = workflow_analysis::analyse(&src);
-        if analysis.liquid_maps.is_empty() { continue; }
-        let wf_name = wf_dir.file_name()
+        if analysis.liquid_maps.is_empty() {
+            continue;
+        }
+        let wf_name = wf_dir
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         for map in analysis.liquid_maps {
@@ -123,8 +138,8 @@ pub fn scan_workflow_map_usages(logic_apps_dir: &str) -> HashMap<String, Vec<Str
 /// Which engine was used for the last eval.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LiquidEngine {
-    DotLiquid,   // via `dotnet` CLI — exact Azure Logic Apps behaviour
-    Stdlib,      // liquid 0.26 + DotLiquid-compat filters — covers most cases
+    DotLiquid, // via `dotnet` CLI — exact Azure Logic Apps behaviour
+    Stdlib,    // liquid 0.26 + DotLiquid-compat filters — covers most cases
 }
 
 /// Returns true if `dotnet` CLI is available on PATH.
@@ -174,8 +189,7 @@ pub fn eval_liquid(template_src: &str, input_json: &str) -> Result<(String, Liqu
         }
     }
 
-    eval_liquid_stdlib(template_src, input_json)
-        .map(|out| (out, LiquidEngine::Stdlib))
+    eval_liquid_stdlib(template_src, input_json).map(|out| (out, LiquidEngine::Stdlib))
 }
 
 // ── DotLiquid via dotnet ──────────────────────────────────────────────────────
@@ -188,13 +202,14 @@ fn eval_liquid_dotnet(template_src: &str, input_json: &str) -> Result<String, St
     std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
 
     // Write template and input to temp files so we don't need shell escaping
-    let tpl_path  = tmp_dir.join("template.liquid");
+    let tpl_path = tmp_dir.join("template.liquid");
     let json_path = tmp_dir.join("input.json");
-    std::fs::write(&tpl_path,  template_src).map_err(|e| e.to_string())?;
+    std::fs::write(&tpl_path, template_src).map_err(|e| e.to_string())?;
     std::fs::write(&json_path, input_json).map_err(|e| e.to_string())?;
 
     // C# script using DotLiquid via NuGet
-    let csx = format!(r#"
+    let csx = format!(
+        r#"
 #r "nuget: DotLiquid, 2.1.0"
 using DotLiquid;
 using System.IO;
@@ -204,7 +219,7 @@ var input    = File.ReadAllText("{json}");
 var hash     = Hash.FromJson(input);
 Console.Write(template.Render(hash));
 "#,
-        tpl  = tpl_path.to_string_lossy().replace('\\', "/"),
+        tpl = tpl_path.to_string_lossy().replace('\\', "/"),
         json = json_path.to_string_lossy().replace('\\', "/"),
     );
 
@@ -226,8 +241,8 @@ Console.Write(template.Render(hash));
 // ── liquid 0.26 + DotLiquid-compat filters ───────────────────────────────────
 
 fn eval_liquid_stdlib(template_src: &str, input_json: &str) -> Result<String, String> {
-    let input: serde_json::Value = serde_json::from_str(input_json)
-        .map_err(|e| format!("Invalid JSON input: {}", e))?;
+    let input: serde_json::Value =
+        serde_json::from_str(input_json).map_err(|e| format!("Invalid JSON input: {}", e))?;
 
     // Strip empty whitespace-control tags like {{-  -}} or {{  }} that are valid
     // in Azure's DotLiquid but rejected by the liquid 0.26 parser.
@@ -241,13 +256,14 @@ fn eval_liquid_stdlib(template_src: &str, input_json: &str) -> Result<String, St
         .build()
         .map_err(|e| format!("Parser build: {}", e))?;
 
-    let template = parser.parse(template_src.as_ref())
+    let template = parser
+        .parse(template_src.as_ref())
         .map_err(|e| format!("Template parse: {}", e))?;
 
-    let globals = json_to_liquid(&input)
-        .map_err(|e| format!("Input conversion: {}", e))?;
+    let globals = json_to_liquid(&input).map_err(|e| format!("Input conversion: {}", e))?;
 
-    template.render(&globals)
+    template
+        .render(&globals)
         .map_err(|e| format!("Render: {}", e))
 }
 
@@ -260,16 +276,29 @@ macro_rules! simple_filter {
         #[derive(Clone)]
         struct $parser;
         impl FilterReflection for $parser {
-            fn name(&self) -> &'static str { $name }
-            fn description(&self) -> &'static str { $desc }
-            fn positional_parameters(&self) -> &'static [liquid_core::parser::ParameterReflection] { &[] }
-            fn keyword_parameters(&self)    -> &'static [liquid_core::parser::ParameterReflection] { &[] }
+            fn name(&self) -> &'static str {
+                $name
+            }
+            fn description(&self) -> &'static str {
+                $desc
+            }
+            fn positional_parameters(&self) -> &'static [liquid_core::parser::ParameterReflection] {
+                &[]
+            }
+            fn keyword_parameters(&self) -> &'static [liquid_core::parser::ParameterReflection] {
+                &[]
+            }
         }
         impl ParseFilter for $parser {
-            fn parse(&self, _: liquid_core::parser::FilterArguments) -> liquid_core::Result<Box<dyn Filter>> {
+            fn parse(
+                &self,
+                _: liquid_core::parser::FilterArguments,
+            ) -> liquid_core::Result<Box<dyn Filter>> {
                 Ok(Box::new($eval))
             }
-            fn reflection(&self) -> &dyn FilterReflection { self }
+            fn reflection(&self) -> &dyn FilterReflection {
+                self
+            }
         }
         #[derive(Debug)]
         struct $eval;
@@ -279,47 +308,78 @@ macro_rules! simple_filter {
             }
         }
         impl Filter for $eval {
-            fn evaluate(&self, input: &dyn ValueView, _: &dyn Runtime) -> liquid_core::Result<Value> {
+            fn evaluate(
+                &self,
+                input: &dyn ValueView,
+                _: &dyn Runtime,
+            ) -> liquid_core::Result<Value> {
                 $body(input)
             }
         }
     };
 }
 
-simple_filter!(JsonFilterParser, JsonFilterEval, "json", "Serialize as JSON string (DotLiquid compat)", |input: &dyn ValueView| {
-    let v = input.to_value();
-    let s = serde_json::to_string(&liquid_val_to_json(&v)).unwrap_or_default();
-    Ok(Value::Scalar(s.into()))
-});
+simple_filter!(
+    JsonFilterParser,
+    JsonFilterEval,
+    "json",
+    "Serialize as JSON string (DotLiquid compat)",
+    |input: &dyn ValueView| {
+        let v = input.to_value();
+        let s = serde_json::to_string(&liquid_val_to_json(&v)).unwrap_or_default();
+        Ok(Value::Scalar(s.into()))
+    }
+);
 
-simple_filter!(Base64EncodeParser, Base64EncodeEval, "Base64Encode", "Base64-encode a string (DotLiquid compat)", |input: &dyn ValueView| {
-    use base64::Engine;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(input.to_kstr().as_bytes());
-    Ok(Value::Scalar(encoded.into()))
-});
+simple_filter!(
+    Base64EncodeParser,
+    Base64EncodeEval,
+    "Base64Encode",
+    "Base64-encode a string (DotLiquid compat)",
+    |input: &dyn ValueView| {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(input.to_kstr().as_bytes());
+        Ok(Value::Scalar(encoded.into()))
+    }
+);
 
-simple_filter!(Base64DecodeParser, Base64DecodeEval, "Base64Decode", "Base64-decode a string (DotLiquid compat)", |input: &dyn ValueView| {
-    use base64::Engine;
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(input.to_kstr().as_bytes()).ok()
-        .and_then(|b| String::from_utf8(b).ok())
-        .unwrap_or_default();
-    Ok(Value::Scalar(decoded.into()))
-});
+simple_filter!(
+    Base64DecodeParser,
+    Base64DecodeEval,
+    "Base64Decode",
+    "Base64-decode a string (DotLiquid compat)",
+    |input: &dyn ValueView| {
+        use base64::Engine;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(input.to_kstr().as_bytes())
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .unwrap_or_default();
+        Ok(Value::Scalar(decoded.into()))
+    }
+);
 
 fn liquid_val_to_json(v: &Value) -> serde_json::Value {
     match v {
-        Value::Nil        => serde_json::Value::Null,
-        Value::Scalar(s)  => {
-            if let Some(b) = s.to_bool()    { return serde_json::Value::Bool(b); }
-            if let Some(i) = s.to_integer() { return serde_json::json!(i); }
-            if let Some(f) = s.to_float()   { return serde_json::json!(f); }
+        Value::Nil => serde_json::Value::Null,
+        Value::Scalar(s) => {
+            if let Some(b) = s.to_bool() {
+                return serde_json::Value::Bool(b);
+            }
+            if let Some(i) = s.to_integer() {
+                return serde_json::json!(i);
+            }
+            if let Some(f) = s.to_float() {
+                return serde_json::json!(f);
+            }
             serde_json::Value::String(s.to_kstr().to_string())
         }
-        Value::Array(arr)  => serde_json::Value::Array(arr.iter().map(liquid_val_to_json).collect()),
+        Value::Array(arr) => serde_json::Value::Array(arr.iter().map(liquid_val_to_json).collect()),
         Value::Object(obj) => {
             let mut map = serde_json::Map::new();
-            for (k, v) in obj.iter() { map.insert(k.to_string(), liquid_val_to_json(v)); }
+            for (k, v) in obj.iter() {
+                map.insert(k.to_string(), liquid_val_to_json(v));
+            }
             serde_json::Value::Object(map)
         }
         Value::State(_) => serde_json::Value::Null,
@@ -346,7 +406,7 @@ fn json_to_liquid(v: &serde_json::Value) -> Result<liquid::Object, String> {
 fn json_val_to_liquid(v: &serde_json::Value) -> Result<liquid::model::Value, String> {
     use liquid::model::Value;
     Ok(match v {
-        serde_json::Value::Null    => Value::Nil,
+        serde_json::Value::Null => Value::Nil,
         serde_json::Value::Bool(b) => Value::Scalar((*b).into()),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
@@ -398,8 +458,14 @@ pub fn suggest_liquid_input(template_src: &str) -> String {
         }
 
         // Build nested path: "content.event.source" → nested object
-        let parts: Vec<&str> = var_part.split('.').map(str::trim).filter(|s| !s.is_empty()).collect();
-        if parts.is_empty() { continue; }
+        let parts: Vec<&str> = var_part
+            .split('.')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if parts.is_empty() {
+            continue;
+        }
 
         insert_path(&mut root, &parts);
     }
@@ -407,17 +473,22 @@ pub fn suggest_liquid_input(template_src: &str) -> String {
     if root.is_empty() {
         "{}".to_string()
     } else {
-        serde_json::to_string_pretty(&serde_json::Value::Object(root)).unwrap_or_else(|_| "{}".to_string())
+        serde_json::to_string_pretty(&serde_json::Value::Object(root))
+            .unwrap_or_else(|_| "{}".to_string())
     }
 }
 
 fn insert_path(obj: &mut serde_json::Map<String, serde_json::Value>, parts: &[&str]) {
-    if parts.is_empty() { return; }
+    if parts.is_empty() {
+        return;
+    }
     let key = parts[0].to_string();
     if parts.len() == 1 {
         obj.entry(key.clone()).or_insert_with(|| fake_value(&key));
     } else {
-        let child = obj.entry(key).or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        let child = obj
+            .entry(key)
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
         if let serde_json::Value::Object(nested) = child {
             insert_path(nested, &parts[1..]);
         }
@@ -430,7 +501,9 @@ fn fake_value(field: &str) -> serde_json::Value {
     let k = field.to_lowercase();
 
     // UUIDs / correlation IDs
-    if k.contains("id") && (k.contains("correlation") || k.contains("trace") || k.contains("request")) {
+    if k.contains("id")
+        && (k.contains("correlation") || k.contains("trace") || k.contains("request"))
+    {
         return Value::String("3fa85f64-5717-4562-b3fc-2c963f66afa6".into());
     }
     if k == "id" || k.ends_with("id") {
@@ -438,20 +511,34 @@ fn fake_value(field: &str) -> serde_json::Value {
     }
 
     // Dates / times
-    if k.contains("date") || k.contains("time") || k.contains("createdon") || k.contains("modifiedon") {
+    if k.contains("date")
+        || k.contains("time")
+        || k.contains("createdon")
+        || k.contains("modifiedon")
+    {
         return Value::String("2026-01-15T10:00:00Z".into());
     }
 
     // Booleans
-    if k.starts_with("is") || k.starts_with("has") || k.starts_with("can")
-        || k == "enabled" || k == "active" || k == "success" || k == "valid"
+    if k.starts_with("is")
+        || k.starts_with("has")
+        || k.starts_with("can")
+        || k == "enabled"
+        || k == "active"
+        || k == "success"
+        || k == "valid"
     {
         return Value::Bool(true);
     }
 
     // Numbers
-    if k == "count" || k == "total" || k == "amount" || k == "size"
-        || k == "version" || k == "revision" || k == "rank"
+    if k == "count"
+        || k == "total"
+        || k == "amount"
+        || k == "size"
+        || k == "version"
+        || k == "revision"
+        || k == "rank"
     {
         return Value::Number(0.into());
     }
@@ -472,18 +559,34 @@ fn fake_value(field: &str) -> serde_json::Value {
     }
 
     // Source / type / status
-    if k == "source"   { return Value::String("LogicApp".into()); }
-    if k == "type"     { return Value::String("Event".into()); }
-    if k == "status"   { return Value::String("active".into()); }
-    if k == "module"   { return Value::String("Companies".into()); }
-    if k == "method"   { return Value::String("POST".into()); }
-    if k == "protocol" { return Value::String("https".into()); }
+    if k == "source" {
+        return Value::String("LogicApp".into());
+    }
+    if k == "type" {
+        return Value::String("Event".into());
+    }
+    if k == "status" {
+        return Value::String("active".into());
+    }
+    if k == "module" {
+        return Value::String("Companies".into());
+    }
+    if k == "method" {
+        return Value::String("POST".into());
+    }
+    if k == "protocol" {
+        return Value::String("https".into());
+    }
 
     // Name / display / description
     if k.contains("name") || k.contains("title") || k.contains("label") {
         return Value::String(format!("Sample {}", capitalise(field)));
     }
-    if k.contains("description") || k.contains("message") || k.contains("text") || k.contains("content") {
+    if k.contains("description")
+        || k.contains("message")
+        || k.contains("text")
+        || k.contains("content")
+    {
         return Value::String(format!("Sample {} value", field));
     }
 
@@ -494,7 +597,7 @@ fn fake_value(field: &str) -> serde_json::Value {
 fn capitalise(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
-        None    => String::new(),
+        None => String::new(),
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
     }
 }

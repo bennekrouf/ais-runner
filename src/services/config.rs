@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::collections::{HashMap, HashSet};
 
 const MAX_RECENT: usize = 5;
 
@@ -19,13 +19,13 @@ pub struct GraphPrefs {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct WorkspaceLink {
     pub subscription_id: String,
-    pub resource_group:  String,
+    pub resource_group: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tenant_id:       Option<String>,
-    pub logic_app_name:  Option<String>,
-    pub sb_namespace:    Option<String>,
+    pub tenant_id: Option<String>,
+    pub logic_app_name: Option<String>,
+    pub sb_namespace: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub devops_org:     Option<String>,
+    pub devops_org: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub devops_project: Option<String>,
 }
@@ -46,7 +46,7 @@ pub struct AppConfig {
 impl AppConfig {
     pub fn push_dir(&mut self, dir: String) {
         self.recent_dirs.retain(|d| d != &dir); // remove duplicate
-        self.recent_dirs.insert(0, dir);         // most recent first
+        self.recent_dirs.insert(0, dir); // most recent first
         self.recent_dirs.truncate(MAX_RECENT);
     }
 
@@ -67,11 +67,17 @@ impl AppConfig {
     }
 
     pub fn get_last_payload(&self, dir: &str, workflow: &str) -> Option<String> {
-        self.last_payloads.get(dir).and_then(|m| m.get(workflow)).cloned()
+        self.last_payloads
+            .get(dir)
+            .and_then(|m| m.get(workflow))
+            .cloned()
     }
 
     pub fn set_last_payload(&mut self, dir: String, workflow: String, body: String) {
-        self.last_payloads.entry(dir).or_default().insert(workflow, body);
+        self.last_payloads
+            .entry(dir)
+            .or_default()
+            .insert(workflow, body);
     }
 }
 
@@ -106,5 +112,7 @@ pub fn pick_folder(current: Option<&str>) -> Option<String> {
     if let Some(dir) = current {
         dialog = dialog.set_directory(dir);
     }
-    dialog.pick_folder().map(|p| p.to_string_lossy().to_string())
+    dialog
+        .pick_folder()
+        .map(|p| p.to_string_lossy().to_string())
 }

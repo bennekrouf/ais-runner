@@ -64,7 +64,11 @@ pub fn cache_dirs() -> Vec<PathBuf> {
     {
         // %TMP%\Functions\ExtensionBundles and %LOCALAPPDATA%\Temp\Functions\...
         if let Some(tmp) = std::env::var_os("TMP").or_else(|| std::env::var_os("TEMP")) {
-            dirs.push(PathBuf::from(tmp).join("Functions").join("ExtensionBundles"));
+            dirs.push(
+                PathBuf::from(tmp)
+                    .join("Functions")
+                    .join("ExtensionBundles"),
+            );
         }
         if let Some(la) = std::env::var_os("LOCALAPPDATA") {
             dirs.push(
@@ -107,9 +111,15 @@ mod tests {
 
     #[test]
     fn detects_bundle_failures_only() {
-        assert!(is_bundle_error("A host error has occurred: File already exists in ExtensionBundles"));
-        assert!(is_bundle_error("Could not download Extension bundle: SSL handshake failed"));
-        assert!(is_bundle_error("Unable to find ExtensionBundle Microsoft...Workflows"));
+        assert!(is_bundle_error(
+            "A host error has occurred: File already exists in ExtensionBundles"
+        ));
+        assert!(is_bundle_error(
+            "Could not download Extension bundle: SSL handshake failed"
+        ));
+        assert!(is_bundle_error(
+            "Unable to find ExtensionBundle Microsoft...Workflows"
+        ));
         // Unrelated lines must not trip it.
         assert!(!is_bundle_error("Loaded 42 workflows"));
         assert!(!is_bundle_error("Host unavailable after check"));
@@ -137,7 +147,9 @@ mod tests {
     #[test]
     fn cache_dirs_includes_the_core_tools_path() {
         let dirs = cache_dirs();
-        assert!(dirs.iter().any(|d| d.ends_with("Functions/ExtensionBundles")
-            || d.ends_with("Functions\\ExtensionBundles")));
+        assert!(dirs
+            .iter()
+            .any(|d| d.ends_with("Functions/ExtensionBundles")
+                || d.ends_with("Functions\\ExtensionBundles")));
     }
 }

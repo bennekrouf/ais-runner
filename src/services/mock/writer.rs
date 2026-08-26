@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use crate::services::mock::contract::MockContract;
 use crate::services::mock::scanner::ScanError;
 
-pub const CACHE_DIR_NAME:        &str = ".ais-cache";
-pub const CONTRACT_FILE_NAME:    &str = "mock-contract.json";
+pub const CACHE_DIR_NAME: &str = ".ais-cache";
+pub const CONTRACT_FILE_NAME: &str = "mock-contract.json";
 
 pub fn cache_dir(workspace: &Path) -> PathBuf {
     workspace.join(CACHE_DIR_NAME)
@@ -42,6 +42,6 @@ pub fn write(contract: &MockContract, workspace: &Path) -> Result<PathBuf, ScanE
 /// Load a cached contract, if one exists. Returns `None` if absent or invalid.
 pub fn read(workspace: &Path) -> Option<MockContract> {
     let path = contract_path(workspace);
-    let raw  = std::fs::read_to_string(&path).ok()?;
+    let raw = std::fs::read_to_string(&path).ok()?;
     serde_json::from_str(&raw).ok()
 }

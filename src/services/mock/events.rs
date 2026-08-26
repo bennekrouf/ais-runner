@@ -28,23 +28,26 @@ pub enum MockEvent {
     /// Graceful shutdown completed.
     ServerStopped,
     /// Local settings rewritten (URLs pointed at the mock).
-    SettingsRewritten { rewritten_count: usize, backup_path: String },
+    SettingsRewritten {
+        rewritten_count: usize,
+        backup_path: String,
+    },
     /// Local settings restored from the backup.
     SettingsRestored,
     /// Incoming HTTP request received from a workflow.
     Request {
-        id:     String,            // correlation id between Request and Response
+        id: String, // correlation id between Request and Response
         method: String,
-        url:    String,             // the full incoming URL the workflow asked for
-        target: Option<String>,     // resolved original URL (pre-rewrite), if known
-        body:   Option<serde_json::Value>,
+        url: String,            // the full incoming URL the workflow asked for
+        target: Option<String>, // resolved original URL (pre-rewrite), if known
+        body: Option<serde_json::Value>,
     },
     /// Response we returned to the workflow.
     Response {
-        id:          String,
-        status:      u16,
-        source:      ResponseSource,
-        elapsed_ms:  u64,
+        id: String,
+        status: u16,
+        source: ResponseSource,
+        elapsed_ms: u64,
         body_excerpt: Option<String>,
     },
     /// Free-text status line — scan progress, info, etc.
@@ -70,7 +73,11 @@ pub enum ResponseSource {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum LogLevel { Info, Warn, Error }
+pub enum LogLevel {
+    Info,
+    Warn,
+    Error,
+}
 
 /// Thin wrapper around `broadcast::Sender` so the rest of the codebase doesn't
 /// have to import tokio types directly. Cloning is cheap (Arc inside).
@@ -80,7 +87,9 @@ pub struct EventBus {
 }
 
 impl Default for EventBus {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EventBus {
@@ -102,6 +111,9 @@ impl EventBus {
 
     /// Convenience: emit a single Log event.
     pub fn log(&self, level: LogLevel, msg: impl Into<String>) {
-        self.publish(MockEvent::Log { level, message: msg.into() });
+        self.publish(MockEvent::Log {
+            level,
+            message: msg.into(),
+        });
     }
 }

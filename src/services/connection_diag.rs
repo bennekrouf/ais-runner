@@ -5,15 +5,22 @@ use serde_json::Value;
 fn collect_appsetting_refs(val: &Value, out: &mut Vec<String>) {
     match val {
         Value::String(s) => {
-            if let Some(key) = s.strip_prefix("@appsetting('").and_then(|s| s.strip_suffix("')")) {
+            if let Some(key) = s
+                .strip_prefix("@appsetting('")
+                .and_then(|s| s.strip_suffix("')"))
+            {
                 out.push(key.to_string());
             }
         }
         Value::Object(map) => {
-            for v in map.values() { collect_appsetting_refs(v, out); }
+            for v in map.values() {
+                collect_appsetting_refs(v, out);
+            }
         }
         Value::Array(arr) => {
-            for v in arr { collect_appsetting_refs(v, out); }
+            for v in arr {
+                collect_appsetting_refs(v, out);
+            }
         }
         _ => {}
     }
@@ -31,18 +38,25 @@ pub fn scan_startup_risks(logic_apps_dir: &str) -> Vec<(String, Vec<String>)> {
     let dir = crate::services::workflows::resolve_logic_apps_dir(logic_apps_dir);
 
     let conn_text = std::fs::read_to_string(dir.join("connections.json")).unwrap_or_default();
-    let settings_text = std::fs::read_to_string(dir.join("local.settings.json")).unwrap_or_default();
-    let conn: Value     = serde_json::from_str(&conn_text).unwrap_or_default();
+    let settings_text =
+        std::fs::read_to_string(dir.join("local.settings.json")).unwrap_or_default();
+    let conn: Value = serde_json::from_str(&conn_text).unwrap_or_default();
     let settings: Value = serde_json::from_str(&settings_text).unwrap_or_default();
 
-    let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return vec![];
+    };
     let mut risks = Vec::new();
 
     for entry in entries.flatten() {
         let wf_path = entry.path().join("workflow.json");
-        if !wf_path.exists() { continue; }
+        if !wf_path.exists() {
+            continue;
+        }
         let name = entry.file_name().to_string_lossy().into_owned();
-        let Ok(wf_text) = std::fs::read_to_string(&wf_path) else { continue };
+        let Ok(wf_text) = std::fs::read_to_string(&wf_path) else {
+            continue;
+        };
         let Ok(wf) = serde_json::from_str::<Value>(&wf_text) else {
             risks.push((name, vec!["invalid JSON — will crash func startup".into()]));
             continue;
@@ -70,16 +84,25 @@ pub fn scan_startup_risks(logic_apps_dir: &str) -> Vec<(String, Vec<String>)> {
 
                     for key in appsetting_keys {
                         if settings["Values"][&key].as_str().unwrap_or("").is_empty() {
-                            issues.push(format!("connection '{}': setting '{}' is empty", conn_name, key));
+                            issues.push(format!(
+                                "connection '{}': setting '{}' is empty",
+                                conn_name, key
+                            ));
                         }
                     }
                 } else {
-                    issues.push(format!("connection '{}' used but not in connections.json", conn_name));
+                    issues.push(format!(
+                        "connection '{}' used but not in connections.json",
+                        conn_name
+                    ));
                 }
             }
         } else if !used.is_empty() {
             for conn_name in &used {
-                issues.push(format!("connection '{}' used but connections.json is missing", conn_name));
+                issues.push(format!(
+                    "connection '{}' used but connections.json is missing",
+                    conn_name
+                ));
             }
         }
 
@@ -97,7 +120,7 @@ pub fn scan_startup_risks(logic_apps_dir: &str) -> Vec<(String, Vec<String>)> {
 /// Returns pairs of (connection_name, empty_appsetting_key).
 pub fn missing_endpoints_for_workflow(
     logic_apps_dir: &str,
-    workflow_name:  &str,
+    workflow_name: &str,
 ) -> Vec<(String, String)> {
     let dir = crate::services::workflows::resolve_logic_apps_dir(logic_apps_dir);
 
@@ -109,11 +132,12 @@ pub fn missing_endpoints_for_workflow(
         Ok(t) => t,
         Err(_) => return vec![],
     };
-    let settings_text = std::fs::read_to_string(dir.join("local.settings.json")).unwrap_or_default();
+    let settings_text =
+        std::fs::read_to_string(dir.join("local.settings.json")).unwrap_or_default();
 
-    let wf: Value        = serde_json::from_str(&wf_text).unwrap_or_default();
-    let conn: Value      = serde_json::from_str(&conn_text).unwrap_or_default();
-    let settings: Value  = serde_json::from_str(&settings_text).unwrap_or_default();
+    let wf: Value = serde_json::from_str(&wf_text).unwrap_or_default();
+    let conn: Value = serde_json::from_str(&conn_text).unwrap_or_default();
+    let settings: Value = serde_json::from_str(&settings_text).unwrap_or_default();
 
     // Collect all connectionName values referenced in the workflow actions
     let wf_str = wf.to_string();
@@ -129,13 +153,20 @@ pub fn missing_endpoints_for_workflow(
     let empty_providers = conn["serviceProviderConnections"].as_object();
     if let Some(providers) = empty_providers {
         for (name, provider) in providers {
-            if !used_connections.contains(name) { continue; }
+            if !used_connections.contains(name) {
+                continue;
+            }
 
             // Find the appsetting key for the primary endpoint field
             let pv = &provider["parameterValues"];
-            let endpoint_fields = ["blobStorageEndpoint", "fullyQualifiedNamespace",
-                                   "connectionString", "topicEndpoint", "VaultUri",
-                                   "sshHostAddress"];
+            let endpoint_fields = [
+                "blobStorageEndpoint",
+                "fullyQualifiedNamespace",
+                "connectionString",
+                "topicEndpoint",
+                "VaultUri",
+                "sshHostAddress",
+            ];
             for field in &endpoint_fields {
                 if let Some(raw) = pv[field].as_str() {
                     let key = raw
@@ -166,9 +197,10 @@ pub fn missing_endpoints_for_workflow(
 pub fn scan_msi_local_trigger_workflows(logic_apps_dir: &str) -> std::collections::HashSet<String> {
     let dir = crate::services::workflows::resolve_logic_apps_dir(logic_apps_dir);
 
-    let conn_text    = std::fs::read_to_string(dir.join("connections.json")).unwrap_or_default();
-    let settings_text = std::fs::read_to_string(dir.join("local.settings.json")).unwrap_or_default();
-    let conn: Value     = serde_json::from_str(&conn_text).unwrap_or_default();
+    let conn_text = std::fs::read_to_string(dir.join("connections.json")).unwrap_or_default();
+    let settings_text =
+        std::fs::read_to_string(dir.join("local.settings.json")).unwrap_or_default();
+    let conn: Value = serde_json::from_str(&conn_text).unwrap_or_default();
     let settings: Value = serde_json::from_str(&settings_text).unwrap_or_default();
 
     // Build a set of connection names that use MSI + local Azurite endpoint
@@ -176,16 +208,25 @@ pub fn scan_msi_local_trigger_workflows(logic_apps_dir: &str) -> std::collection
     if let Some(providers) = conn["serviceProviderConnections"].as_object() {
         for (conn_name, provider) in providers {
             let param_set = provider["parameterSetName"].as_str().unwrap_or("");
-            if !param_set.eq_ignore_ascii_case("ManagedServiceIdentity") { continue; }
+            if !param_set.eq_ignore_ascii_case("ManagedServiceIdentity") {
+                continue;
+            }
 
             // Check if any endpoint appsetting resolves to a local URL
             let pv = &provider["parameterValues"];
-            let endpoint_fields = ["blobStorageEndpoint", "fullyQualifiedNamespace",
-                                   "topicEndpoint", "VaultUri", "sshHostAddress", "accountEndpoint"];
+            let endpoint_fields = [
+                "blobStorageEndpoint",
+                "fullyQualifiedNamespace",
+                "topicEndpoint",
+                "VaultUri",
+                "sshHostAddress",
+                "accountEndpoint",
+            ];
             for field in &endpoint_fields {
                 if let Some(raw) = pv[field].as_str() {
                     let key = raw
-                        .strip_prefix("@appsetting('").and_then(|s| s.strip_suffix("')"))
+                        .strip_prefix("@appsetting('")
+                        .and_then(|s| s.strip_suffix("')"))
                         .unwrap_or(raw);
                     let val = settings["Values"][key].as_str().unwrap_or("");
                     if val.contains("127.0.0.1") || val.contains("localhost") {
@@ -197,7 +238,9 @@ pub fn scan_msi_local_trigger_workflows(logic_apps_dir: &str) -> std::collection
         }
     }
 
-    if msi_local.is_empty() { return std::collections::HashSet::new(); }
+    if msi_local.is_empty() {
+        return std::collections::HashSet::new();
+    }
 
     // Return workflows whose TRIGGER uses one of those MSI-local connections
     let entries = match std::fs::read_dir(&dir) {
@@ -207,14 +250,21 @@ pub fn scan_msi_local_trigger_workflows(logic_apps_dir: &str) -> std::collection
     let mut affected = std::collections::HashSet::new();
     for entry in entries.flatten() {
         let wf_path = entry.path().join("workflow.json");
-        if !wf_path.exists() { continue; }
-        let Ok(wf_text) = std::fs::read_to_string(&wf_path) else { continue };
-        let Ok(wf) = serde_json::from_str::<Value>(&wf_text) else { continue };
+        if !wf_path.exists() {
+            continue;
+        }
+        let Ok(wf_text) = std::fs::read_to_string(&wf_path) else {
+            continue;
+        };
+        let Ok(wf) = serde_json::from_str::<Value>(&wf_text) else {
+            continue;
+        };
 
         if let Some(triggers) = wf["definition"]["triggers"].as_object() {
             for trigger in triggers.values() {
                 let conn_name = trigger["inputs"]["serviceProviderConfiguration"]["connectionName"]
-                    .as_str().unwrap_or("");
+                    .as_str()
+                    .unwrap_or("");
                 if msi_local.contains(conn_name) {
                     affected.insert(entry.file_name().to_string_lossy().into_owned());
                     break;

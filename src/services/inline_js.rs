@@ -46,7 +46,9 @@ mod tests {
         assert!(is_inline_js_worker_error(
             "System.Net.Http: No connection could be made because the target machine actively refused it (localhost:52344)"
         ));
-        assert!(is_inline_js_worker_error("connect ECONNREFUSED — actively refused"));
+        assert!(is_inline_js_worker_error(
+            "connect ECONNREFUSED — actively refused"
+        ));
         assert!(!is_inline_js_worker_error("Loaded 10 workflows"));
         assert!(!is_inline_js_worker_error("Host unavailable after check"));
     }

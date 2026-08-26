@@ -1,19 +1,41 @@
+use crate::components::app_config_panel::AppConfigPanel;
+use crate::components::security_compare_panel::SecurityComparePanel;
+use crate::services::{
+    azure_cli, config,
+    env_compare::{self, EnvValues, VarGroup},
+};
 use dioxus::prelude::*;
 use indexmap::IndexMap;
 use std::collections::HashSet;
-use crate::services::{env_compare::{self, EnvValues, VarGroup}, config, azure_cli};
-use crate::components::security_compare_panel::SecurityComparePanel;
-use crate::components::app_config_panel::AppConfigPanel;
 
 // ── Fetch state ───────────────────────────────────────────────────────────────
 
 #[derive(Clone, PartialEq, Debug)]
-enum FetchState { Idle, Loading, Done(EnvValues), Err(String) }
+enum FetchState {
+    Idle,
+    Loading,
+    Done(EnvValues),
+    Err(String),
+}
 
 impl FetchState {
-    fn values(&self) -> Option<&EnvValues> { if let FetchState::Done(v) = self { Some(v) } else { None } }
-    fn is_loading(&self) -> bool { matches!(self, FetchState::Loading) }
-    fn err(&self) -> Option<&str>  { if let FetchState::Err(e) = self { Some(e) } else { None } }
+    fn values(&self) -> Option<&EnvValues> {
+        if let FetchState::Done(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+    fn is_loading(&self) -> bool {
+        matches!(self, FetchState::Loading)
+    }
+    fn err(&self) -> Option<&str> {
+        if let FetchState::Err(e) = self {
+            Some(e)
+        } else {
+            None
+        }
+    }
 }
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -21,7 +43,7 @@ impl FetchState {
 #[derive(Props, Clone, PartialEq)]
 pub struct EnvComparePanelProps {
     pub logic_apps_dir: String,
-    pub local_pairs:    Signal<IndexMap<String, String>>,
+    pub local_pairs: Signal<IndexMap<String, String>>,
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -30,39 +52,48 @@ pub struct EnvComparePanelProps {
 pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
     let dir = props.logic_apps_dir.clone();
 
-    let app_cfg  = config::load();
-    let link     = app_cfg.get_link(&props.logic_apps_dir).cloned();
-    let sub_def  = link.as_ref().map(|l| l.subscription_id.clone()).unwrap_or_default();
-    let rg_def   = link.as_ref().map(|l| l.resource_group.clone()).unwrap_or_default();
-    let site_def = link.as_ref().and_then(|l| l.logic_app_name.clone()).unwrap_or_default();
+    let app_cfg = config::load();
+    let link = app_cfg.get_link(&props.logic_apps_dir).cloned();
+    let sub_def = link
+        .as_ref()
+        .map(|l| l.subscription_id.clone())
+        .unwrap_or_default();
+    let rg_def = link
+        .as_ref()
+        .map(|l| l.resource_group.clone())
+        .unwrap_or_default();
+    let site_def = link
+        .as_ref()
+        .and_then(|l| l.logic_app_name.clone())
+        .unwrap_or_default();
 
     // DevOps project URL (e.g. https://dev.azure.com/org/project)
     let mut ado_url: Signal<String> = use_signal(String::new);
     // All groups fetched from DevOps — used for the browse dropdown
-    let mut vg_all:     Signal<Vec<VarGroup>> = use_signal(Vec::new);
-    let mut vg_loading: Signal<bool>          = use_signal(|| false);
-    let mut vg_error:   Signal<String>        = use_signal(String::new);
-    let mut browse_open: Signal<bool>         = use_signal(|| false);
+    let mut vg_all: Signal<Vec<VarGroup>> = use_signal(Vec::new);
+    let mut vg_loading: Signal<bool> = use_signal(|| false);
+    let mut vg_error: Signal<String> = use_signal(String::new);
+    let mut browse_open: Signal<bool> = use_signal(|| false);
 
     // Active extra columns: ordered list of group names
-    let mut col_order:  Signal<Vec<String>>                    = use_signal(Vec::new);
+    let mut col_order: Signal<Vec<String>> = use_signal(Vec::new);
     // Azure Cloud column
-    let mut az_state:   Signal<FetchState>                     = use_signal(|| FetchState::Idle);
+    let mut az_state: Signal<FetchState> = use_signal(|| FetchState::Idle);
     // Filter + diff toggle
-    let mut filter:     Signal<String>                         = use_signal(String::new);
-    let mut only_diff:  Signal<bool>                           = use_signal(|| false);
+    let mut filter: Signal<String> = use_signal(String::new);
+    let mut only_diff: Signal<bool> = use_signal(|| false);
     // Per-column diff toggle: columns active for "Differences only" comparison.
     // "azure" = Azure cloud column; group names for DevOps columns.
     // All columns are active by default (added when the column is created).
-    let mut diff_cols:  Signal<HashSet<String>>                = use_signal(|| {
+    let mut diff_cols: Signal<HashSet<String>> = use_signal(|| {
         let mut s = HashSet::new();
         s.insert("local".into());
         s
     });
     // Secret key visibility
-    let mut show_keys:  Signal<HashSet<String>>                = use_signal(HashSet::new);
+    let mut show_keys: Signal<HashSet<String>> = use_signal(HashSet::new);
     // Clipboard flash: stores "key::col_index" of the last copied cell
-    let mut copied_cell: Signal<Option<String>>                = use_signal(|| None);
+    let mut copied_cell: Signal<Option<String>> = use_signal(|| None);
     // Cell detail popup: (key, column_label, full_value)
     let mut detail_cell: Signal<Option<(String, String, String)>> = use_signal(|| None);
 
@@ -75,8 +106,11 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
         move || {
             let dir2 = dir2.clone();
             spawn(async move {
-                if let Some(url) = tokio::task::spawn_blocking(move || env_compare::detect_ado_url(&dir2))
-                    .await.ok().and_then(|u| u)
+                if let Some(url) =
+                    tokio::task::spawn_blocking(move || env_compare::detect_ado_url(&dir2))
+                        .await
+                        .ok()
+                        .and_then(|u| u)
                 {
                     ado_url.set(url);
                 }
@@ -86,18 +120,29 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
 
     // Fetch Azure App Settings
     let fetch_azure = {
-        let sub = sub_def.clone(); let rg = rg_def.clone(); let site = site_def.clone();
+        let sub = sub_def.clone();
+        let rg = rg_def.clone();
+        let site = site_def.clone();
         move |_| {
-            if site.is_empty() { return; }
+            if site.is_empty() {
+                return;
+            }
             az_state.set(FetchState::Loading);
             let (s, r, n) = (sub.clone(), rg.clone(), site.clone());
             spawn(async move {
                 let res = tokio::task::spawn_blocking(move || {
                     env_compare::fetch_azure_app_settings(&s, &r, &n)
-                }).await.unwrap_or_else(|_| Err(azure_cli::AzError::Other("task failed".into())));
+                })
+                .await
+                .unwrap_or_else(|_| Err(azure_cli::AzError::Other("task failed".into())));
                 match res {
-                    Ok(v)  => { az_state.set(FetchState::Done(v)); diff_cols.write().insert("azure".into()); }
-                    Err(e) => { az_state.set(FetchState::Err(format!("{:?}", e))); }
+                    Ok(v) => {
+                        az_state.set(FetchState::Done(v));
+                        diff_cols.write().insert("azure".into());
+                    }
+                    Err(e) => {
+                        az_state.set(FetchState::Err(format!("{:?}", e)));
+                    }
                 };
             });
         }
@@ -107,17 +152,25 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
     let do_browse = {
         move |_| {
             let url = ado_url.read().clone();
-            if url.is_empty() { return; }
+            if url.is_empty() {
+                return;
+            }
             vg_loading.set(true);
             vg_error.set(String::new());
             browse_open.set(false);
             spawn(async move {
-                let res = tokio::task::spawn_blocking(move || env_compare::list_ado_variable_groups(&url))
-                    .await.unwrap_or_else(|_| Err("task failed".into()));
+                let res = tokio::task::spawn_blocking(move || {
+                    env_compare::list_ado_variable_groups(&url)
+                })
+                .await
+                .unwrap_or_else(|_| Err("task failed".into()));
                 vg_loading.set(false);
                 match res {
-                    Ok(groups) => { vg_all.set(groups); browse_open.set(true); }
-                    Err(e)     => vg_error.set(e),
+                    Ok(groups) => {
+                        vg_all.set(groups);
+                        browse_open.set(true);
+                    }
+                    Err(e) => vg_error.set(e),
                 }
             });
         }
@@ -126,7 +179,9 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
     // Add a group as a column (data is already in vg_all)
     let mut add_column = move |name: String| {
         let mut order = col_order.write();
-        if !order.contains(&name) { order.push(name.clone()); }
+        if !order.contains(&name) {
+            order.push(name.clone());
+        }
         diff_cols.write().insert(name);
         browse_open.set(false);
     };
@@ -137,18 +192,22 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
 
     // ── Derived table data ────────────────────────────────────────────────────
 
-    let local      = props.local_pairs.read().clone();
-    let az_vals    = az_state.read().values().cloned();
-    let order      = col_order.read().clone();
+    let local = props.local_pairs.read().clone();
+    let az_vals = az_state.read().values().cloned();
+    let order = col_order.read().clone();
     let all_groups = vg_all.read();
-    let query      = filter.read().to_lowercase();
+    let query = filter.read().to_lowercase();
     let active_diff = diff_cols.read().clone();
-    let diff_on    = *only_diff.read() && (az_vals.is_some() || !order.is_empty());
+    let diff_on = *only_diff.read() && (az_vals.is_some() || !order.is_empty());
 
     // Build column value maps in order
-    let col_maps: Vec<(String, Option<EnvValues>)> = order.iter()
+    let col_maps: Vec<(String, Option<EnvValues>)> = order
+        .iter()
         .map(|name| {
-            let vals = all_groups.iter().find(|g| &g.name == name).map(|g| g.variables.clone());
+            let vals = all_groups
+                .iter()
+                .find(|g| &g.name == name)
+                .map(|g| g.variables.clone());
             (name.clone(), vals)
         })
         .collect();
@@ -156,41 +215,67 @@ pub fn EnvComparePanel(props: EnvComparePanelProps) -> Element {
     // Collect all keys from all sources
     let mut all_keys: Vec<String> = {
         let mut seen: IndexMap<String, ()> = local.keys().map(|k| (k.clone(), ())).collect();
-        if let Some(ref az) = az_vals { for k in az.keys() { seen.entry(k.clone()).or_default(); } }
+        if let Some(ref az) = az_vals {
+            for k in az.keys() {
+                seen.entry(k.clone()).or_default();
+            }
+        }
         for (_, vals) in &col_maps {
-            if let Some(v) = vals { for k in v.keys() { seen.entry(k.clone()).or_default(); } }
+            if let Some(v) = vals {
+                for k in v.keys() {
+                    seen.entry(k.clone()).or_default();
+                }
+            }
         }
         seen.into_keys().collect()
     };
     all_keys.sort();
 
-    let visible_keys: Vec<String> = all_keys.into_iter()
+    let visible_keys: Vec<String> = all_keys
+        .into_iter()
         .filter(|k| query.is_empty() || k.to_lowercase().contains(&query))
         .filter(|k| {
-            if !diff_on { return true; }
+            if !diff_on {
+                return true;
+            }
             let local_active = active_diff.contains("local");
             if local_active {
                 // Compare each active column against local
                 let lv = local.get(k).map(|s| s.as_str()).unwrap_or("");
-                let az_diff = active_diff.contains("azure") && az_vals.as_ref()
-                    .map(|m| m.get(k).map(|v| v.as_str()).unwrap_or("") != lv)
-                    .unwrap_or(false);
+                let az_diff = active_diff.contains("azure")
+                    && az_vals
+                        .as_ref()
+                        .map(|m| m.get(k).map(|v| v.as_str()).unwrap_or("") != lv)
+                        .unwrap_or(false);
                 let col_diff = col_maps.iter().any(|(name, vals)| {
-                    active_diff.contains(name) &&
-                    vals.as_ref().map(|m| m.get(k).map(|v| v.as_str()).unwrap_or("") != lv).unwrap_or(false)
+                    active_diff.contains(name)
+                        && vals
+                            .as_ref()
+                            .map(|m| m.get(k).map(|v| v.as_str()).unwrap_or("") != lv)
+                            .unwrap_or(false)
                 });
                 az_diff || col_diff
             } else {
                 // Local unchecked: compare active columns against each other
                 let mut vals: Vec<&str> = Vec::new();
                 if active_diff.contains("azure") {
-                    vals.push(az_vals.as_ref()
-                        .and_then(|az| az.get(k)).map(|v| v.as_str()).unwrap_or(""));
+                    vals.push(
+                        az_vals
+                            .as_ref()
+                            .and_then(|az| az.get(k))
+                            .map(|v| v.as_str())
+                            .unwrap_or(""),
+                    );
                 }
                 for (name, col_vals) in &col_maps {
                     if active_diff.contains(name) {
-                        vals.push(col_vals.as_ref()
-                            .and_then(|v| v.get(k)).map(|v| v.as_str()).unwrap_or(""));
+                        vals.push(
+                            col_vals
+                                .as_ref()
+                                .and_then(|v| v.get(k))
+                                .map(|v| v.as_str())
+                                .unwrap_or(""),
+                        );
                     }
                 }
                 vals.len() >= 2 && vals.iter().any(|v| *v != vals[0])
@@ -632,11 +717,15 @@ fn render_local(val: &str, masked: bool) -> Element {
 fn render_diff(local_val: &str, cell: Option<&str>, masked: bool) -> Element {
     match cell {
         // Key absent from this environment entirely — muted dash
-        None => rsx! { span { class: "env-val-missing", title: "Key not present in this environment", "—" } },
+        None => {
+            rsx! { span { class: "env-val-missing", title: "Key not present in this environment", "—" } }
+        }
         // Values match — quiet confirmation
         Some(v) if v == local_val => rsx! { span { class: "env-val-same", "≡" } },
         // Value differs but masked (secret)
-        Some(_) if masked => rsx! { span { class: "env-val-differs", title: "Value differs", "≠ •••" } },
+        Some(_) if masked => {
+            rsx! { span { class: "env-val-differs", title: "Value differs", "≠ •••" } }
+        }
         // Value differs — amber, show the remote value
         Some(v) => {
             let d = trunc(v, 38);
@@ -649,11 +738,18 @@ fn render_diff(local_val: &str, cell: Option<&str>, masked: bool) -> Element {
 
 fn is_secret(key: &str) -> bool {
     let k = key.to_lowercase();
-    k.contains("secret") || k.contains("password") || k.contains("_key")
-        || k.contains("connectionstring") || k.contains("sharedaccesskey") || k.contains("apikey")
+    k.contains("secret")
+        || k.contains("password")
+        || k.contains("_key")
+        || k.contains("connectionstring")
+        || k.contains("sharedaccesskey")
+        || k.contains("apikey")
 }
 
 fn trunc(s: &str, max: usize) -> String {
-    if s.chars().count() <= max { s.to_string() }
-    else { format!("{}…", s.chars().take(max).collect::<String>()) }
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    }
 }

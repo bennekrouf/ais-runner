@@ -55,8 +55,8 @@ fn auth_header(
         date_rfc1123.to_lowercase(),
     );
 
-    let mut mac = HmacSha256::new_from_slice(&key_bytes)
-        .map_err(|e| format!("hmac init failed: {e}"))?;
+    let mut mac =
+        HmacSha256::new_from_slice(&key_bytes).map_err(|e| format!("hmac init failed: {e}"))?;
     mac.update(to_sign.as_bytes());
     let sig = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
 
@@ -84,7 +84,9 @@ fn percent_encode(s: &str) -> String {
 
 /// RFC 1123 in GMT, the format Cosmos demands in `x-ms-date`.
 fn now_rfc1123() -> String {
-    chrono::Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string()
+    chrono::Utc::now()
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string()
 }
 
 fn normalize_endpoint(endpoint: &str) -> String {
@@ -115,9 +117,10 @@ async fn send_with_http_fallback(
     let primary = format!("{}{}", endpoint, path);
     match try_send(primary).await {
         Ok(r) => Ok(r),
-        Err(ref e) if e.to_string().contains("wrong version number")
-                   || e.to_string().to_lowercase().contains("tls")
-                   || e.to_string().to_lowercase().contains("ssl") =>
+        Err(ref e)
+            if e.to_string().contains("wrong version number")
+                || e.to_string().to_lowercase().contains("tls")
+                || e.to_string().to_lowercase().contains("ssl") =>
         {
             let http = format!("{}{}", endpoint.replacen("https://", "http://", 1), path);
             try_send(http).await.map_err(|e| e.to_string())
@@ -139,12 +142,13 @@ pub async fn list_databases(endpoint: &str, key: &str) -> Result<Vec<String>, St
         &endpoint,
         "/dbs",
         vec![
-            ("authorization",  auth),
-            ("x-ms-date",      date),
-            ("x-ms-version",   API_VERSION.to_string()),
+            ("authorization", auth),
+            ("x-ms-date", date),
+            ("x-ms-version", API_VERSION.to_string()),
         ],
         None,
-    ).await?;
+    )
+    .await?;
 
     let status = resp.status();
     let text = resp.text().await.map_err(|e| e.to_string())?;
@@ -152,9 +156,14 @@ pub async fn list_databases(endpoint: &str, key: &str) -> Result<Vec<String>, St
         return Err(format!("HTTP {status}: {text}"));
     }
     let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    Ok(v["Databases"].as_array().map(|a| {
-        a.iter().filter_map(|d| d["id"].as_str().map(str::to_string)).collect()
-    }).unwrap_or_default())
+    Ok(v["Databases"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|d| d["id"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 /// `GET /dbs/{db}/colls` — returns the list of container IDs in a database.
@@ -172,11 +181,12 @@ pub async fn list_containers(endpoint: &str, key: &str, db: &str) -> Result<Vec<
         &format!("/dbs/{db}/colls"),
         vec![
             ("authorization", auth),
-            ("x-ms-date",     date),
-            ("x-ms-version",  API_VERSION.to_string()),
+            ("x-ms-date", date),
+            ("x-ms-version", API_VERSION.to_string()),
         ],
         None,
-    ).await?;
+    )
+    .await?;
 
     let status = resp.status();
     let text = resp.text().await.map_err(|e| e.to_string())?;
@@ -184,9 +194,14 @@ pub async fn list_containers(endpoint: &str, key: &str, db: &str) -> Result<Vec<
         return Err(format!("HTTP {status}: {text}"));
     }
     let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    Ok(v["DocumentCollections"].as_array().map(|a| {
-        a.iter().filter_map(|d| d["id"].as_str().map(str::to_string)).collect()
-    }).unwrap_or_default())
+    Ok(v["DocumentCollections"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|d| d["id"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 /// `POST /dbs/{db}/colls/{coll}/docs` with the query payload — returns the
@@ -211,16 +226,20 @@ pub async fn run_query(
         &endpoint,
         &format!("/dbs/{db}/colls/{coll}/docs"),
         vec![
-            ("authorization",                              auth),
-            ("x-ms-date",                                  date),
-            ("x-ms-version",                               API_VERSION.to_string()),
-            ("x-ms-documentdb-isquery",                    "true".to_string()),
-            ("x-ms-documentdb-query-enablecrosspartition", "true".to_string()),
-            ("x-ms-max-item-count",                        "100".to_string()),
-            ("content-type",                               "application/query+json".to_string()),
+            ("authorization", auth),
+            ("x-ms-date", date),
+            ("x-ms-version", API_VERSION.to_string()),
+            ("x-ms-documentdb-isquery", "true".to_string()),
+            (
+                "x-ms-documentdb-query-enablecrosspartition",
+                "true".to_string(),
+            ),
+            ("x-ms-max-item-count", "100".to_string()),
+            ("content-type", "application/query+json".to_string()),
         ],
         Some(body),
-    ).await?;
+    )
+    .await?;
 
     let status = resp.status();
     let text = resp.text().await.map_err(|e| e.to_string())?;

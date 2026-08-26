@@ -32,8 +32,8 @@ pub struct WorkflowItem {
     pub name: String,
     pub healthy: bool,
     pub disabled: bool,
-    pub trigger_name:     String,       // JSON key — used in listCallbackUrl
-    pub trigger_type:     String,       // type field — used for display icon
+    pub trigger_name: String, // JSON key — used in listCallbackUrl
+    pub trigger_type: String, // type field — used for display icon
     pub trigger_provider: Option<String>, // serviceProviderId for ServiceProvider triggers
     pub health_error: Option<String>,
 }
@@ -56,35 +56,47 @@ impl ConnectorKind {
     pub fn icon(&self) -> &'static str {
         match self {
             Self::ServiceBus => "📨",
-            Self::Blob       => "📦",
-            Self::CosmosDb   => "🌌",
-            Self::Sql        => "🗄",
-            Self::Sftp       => "📂",
-            Self::EventGrid  => "⚡",
-            Self::Http       => "🔗",
+            Self::Blob => "📦",
+            Self::CosmosDb => "🌌",
+            Self::Sql => "🗄",
+            Self::Sftp => "📂",
+            Self::EventGrid => "⚡",
+            Self::Http => "🔗",
         }
     }
 
     pub fn label(&self) -> &'static str {
         match self {
             Self::ServiceBus => "Service Bus",
-            Self::Blob       => "Blob Storage",
-            Self::CosmosDb   => "Cosmos DB",
-            Self::Sql        => "SQL",
-            Self::Sftp       => "SFTP",
-            Self::EventGrid  => "Event Grid",
-            Self::Http       => "HTTP (outbound)",
+            Self::Blob => "Blob Storage",
+            Self::CosmosDb => "Cosmos DB",
+            Self::Sql => "SQL",
+            Self::Sftp => "SFTP",
+            Self::EventGrid => "Event Grid",
+            Self::Http => "HTTP (outbound)",
         }
     }
 
     fn from_provider_id(id: &str) -> Option<Self> {
         let id = id.to_lowercase();
-        if id.contains("servicebus")            { return Some(Self::ServiceBus); }
-        if id.contains("azureblob") || id.contains("/blob") { return Some(Self::Blob); }
-        if id.contains("documentdb") || id.contains("cosmos") { return Some(Self::CosmosDb); }
-        if id.contains("/sql")                  { return Some(Self::Sql); }
-        if id.contains("sftp")                  { return Some(Self::Sftp); }
-        if id.contains("eventgrid")             { return Some(Self::EventGrid); }
+        if id.contains("servicebus") {
+            return Some(Self::ServiceBus);
+        }
+        if id.contains("azureblob") || id.contains("/blob") {
+            return Some(Self::Blob);
+        }
+        if id.contains("documentdb") || id.contains("cosmos") {
+            return Some(Self::CosmosDb);
+        }
+        if id.contains("/sql") {
+            return Some(Self::Sql);
+        }
+        if id.contains("sftp") {
+            return Some(Self::Sftp);
+        }
+        if id.contains("eventgrid") {
+            return Some(Self::EventGrid);
+        }
         None
     }
 }
@@ -102,23 +114,31 @@ fn collect_connectors(v: &serde_json::Value, out: &mut std::collections::HashSet
                 }
             }
             // Outbound HTTP actions
-            if map.get("type").and_then(|t| t.as_str())
+            if map
+                .get("type")
+                .and_then(|t| t.as_str())
                 .map(|t| t.eq_ignore_ascii_case("http"))
                 .unwrap_or(false)
             {
                 out.insert(ConnectorKind::Http);
             }
-            for val in map.values() { collect_connectors(val, out); }
+            for val in map.values() {
+                collect_connectors(val, out);
+            }
         }
         serde_json::Value::Array(arr) => {
-            for item in arr { collect_connectors(item, out); }
+            for item in arr {
+                collect_connectors(item, out);
+            }
         }
         _ => {}
     }
 }
 
 /// Scans every workflow.json and returns the connector set for each workflow name.
-pub fn scan_all_connectors(logic_apps_dir: &str) -> std::collections::HashMap<String, Vec<ConnectorKind>> {
+pub fn scan_all_connectors(
+    logic_apps_dir: &str,
+) -> std::collections::HashMap<String, Vec<ConnectorKind>> {
     let dir = resolve_logic_apps_dir(logic_apps_dir);
     let mut result = std::collections::HashMap::new();
     let entries = match std::fs::read_dir(&dir) {
@@ -127,7 +147,9 @@ pub fn scan_all_connectors(logic_apps_dir: &str) -> std::collections::HashMap<St
     };
     for entry in entries.flatten() {
         let wf_path = entry.path().join("workflow.json");
-        if !wf_path.exists() { continue; }
+        if !wf_path.exists() {
+            continue;
+        }
         let name = entry.file_name().to_string_lossy().into_owned();
         if let Ok(text) = std::fs::read_to_string(&wf_path) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -159,20 +181,25 @@ pub async fn list_workflows() -> Result<Vec<WorkflowItem>, String> {
     }
 
     // Strip ASCII control characters that the func host sometimes embeds in error payloads
-    let sanitized: String = raw.chars().filter(|c| !c.is_control() || *c == '\n' || *c == '\r' || *c == '\t').collect();
+    let sanitized: String = raw
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\r' || *c == '\t')
+        .collect();
 
-    let body: serde_json::Value = serde_json::from_str(&sanitized)
-        .map_err(|e| {
-            let snippet = sanitized.chars().take(400).collect::<String>();
-            format!("Parse error: {} — host returned: {}", e, snippet)
-        })?;
+    let body: serde_json::Value = serde_json::from_str(&sanitized).map_err(|e| {
+        let snippet = sanitized.chars().take(400).collect::<String>();
+        format!("Parse error: {} — host returned: {}", e, snippet)
+    })?;
 
     // local func runtime returns a bare array; Azure mgmt API returns {"value":[...]}
     let arr = body
         .as_array()
         .cloned()
         .or_else(|| body["value"].as_array().cloned())
-        .ok_or_else(|| { let s = body.to_string(); format!("Unexpected response shape: {}", &s[..s.len().min(200)]) })?;
+        .ok_or_else(|| {
+            let s = body.to_string();
+            format!("Unexpected response shape: {}", &s[..s.len().min(200)])
+        })?;
 
     let mut items: Vec<WorkflowItem> = arr
         .iter()
@@ -193,13 +220,24 @@ pub async fn list_workflows() -> Result<Vec<WorkflowItem>, String> {
                 .unwrap_or("Unknown")
                 .to_string();
             let trigger_provider = trigger_entry
-                .and_then(|t| t["inputs"]["serviceProviderConfiguration"]["serviceProviderId"].as_str())
+                .and_then(|t| {
+                    t["inputs"]["serviceProviderConfiguration"]["serviceProviderId"].as_str()
+                })
                 .map(|s| s.to_string());
-            let health_error = v["health"]["error"]["message"].as_str()
+            let health_error = v["health"]["error"]["message"]
+                .as_str()
                 .or_else(|| v["health"]["error"].as_str())
                 .map(|s| s.to_string());
 
-            Some(WorkflowItem { name, healthy, disabled, trigger_name, trigger_type, trigger_provider, health_error })
+            Some(WorkflowItem {
+                name,
+                healthy,
+                disabled,
+                trigger_name,
+                trigger_type,
+                trigger_provider,
+                health_error,
+            })
         })
         .collect();
 
@@ -215,7 +253,9 @@ pub async fn wait_for_workflows(timeout_secs: u64) -> Result<Vec<WorkflowItem>, 
     for _ in 0..attempts {
         match list_workflows().await {
             Ok(list) => return Ok(list),
-            Err(e)   => { last_err = e; }
+            Err(e) => {
+                last_err = e;
+            }
         }
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
@@ -227,11 +267,17 @@ pub async fn wait_for_workflows(timeout_secs: u64) -> Result<Vec<WorkflowItem>, 
 pub fn scan_trigger_providers(logic_apps_dir: &str) -> std::collections::HashMap<String, String> {
     let dir = resolve_logic_apps_dir(logic_apps_dir);
     let mut map = std::collections::HashMap::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else { return map };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return map;
+    };
     for entry in entries.flatten() {
         let wf_path = entry.path().join("workflow.json");
-        let Ok(text) = std::fs::read_to_string(&wf_path) else { continue };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        let Ok(text) = std::fs::read_to_string(&wf_path) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
         let name = entry.file_name().to_string_lossy().into_owned();
         if let Some(provider) = v["definition"]["triggers"]
             .as_object()
@@ -268,7 +314,9 @@ pub fn scan_local_workflows(logic_apps_dir: &str) -> Vec<WorkflowItem> {
     };
     for entry in entries.flatten() {
         let wf_path = entry.path().join("workflow.json");
-        if !wf_path.exists() { continue; }
+        if !wf_path.exists() {
+            continue;
+        }
         let name = entry.file_name().to_string_lossy().into_owned();
         let text = match std::fs::read_to_string(&wf_path) {
             Ok(t) => t,
@@ -290,7 +338,15 @@ pub fn scan_local_workflows(logic_apps_dir: &str) -> Vec<WorkflowItem> {
         let trigger_provider = trigger_entry
             .and_then(|t| t["inputs"]["serviceProviderConfiguration"]["serviceProviderId"].as_str())
             .map(|s| s.to_string());
-        items.push(WorkflowItem { name, healthy: true, disabled: false, trigger_name, trigger_type, trigger_provider, health_error: None });
+        items.push(WorkflowItem {
+            name,
+            healthy: true,
+            disabled: false,
+            trigger_name,
+            trigger_type,
+            trigger_provider,
+            health_error: None,
+        });
     }
     items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     items
@@ -306,12 +362,20 @@ pub fn scan_broken_workflows(logic_apps_dir: &str) -> Vec<(String, String)> {
     };
     for entry in entries.flatten() {
         let wf_path = entry.path().join("workflow.json");
-        if !wf_path.exists() { continue; }
+        if !wf_path.exists() {
+            continue;
+        }
         match std::fs::read_to_string(&wf_path) {
-            Err(e) => broken.push((entry.file_name().to_string_lossy().into_owned(), format!("cannot read: {}", e))),
+            Err(e) => broken.push((
+                entry.file_name().to_string_lossy().into_owned(),
+                format!("cannot read: {}", e),
+            )),
             Ok(text) => {
                 if let Err(e) = serde_json::from_str::<serde_json::Value>(&text) {
-                    broken.push((entry.file_name().to_string_lossy().into_owned(), format!("JSON error at line {}: {}", e.line(), e)));
+                    broken.push((
+                        entry.file_name().to_string_lossy().into_owned(),
+                        format!("JSON error at line {}: {}", e.line(), e),
+                    ));
                 }
             }
         }
@@ -357,7 +421,9 @@ fn collect_action_names(block: &serde_json::Value, out: &mut std::collections::H
 pub fn workflows_containing_action(logic_apps_dir: &str, action: &str) -> Vec<String> {
     let dir = resolve_logic_apps_dir(logic_apps_dir);
     let mut found = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else { return found };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return found;
+    };
     for entry in entries.flatten() {
         if !entry.path().join("workflow.json").exists() {
             continue;
@@ -401,7 +467,10 @@ pub async fn get_callback_url(workflow: &str, trigger: &str) -> Result<String, S
         .as_str()
         .or_else(|| body.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| { let s = body.to_string(); format!("Unexpected callbackUrl shape: {}", &s[..s.len().min(300)]) })
+        .ok_or_else(|| {
+            let s = body.to_string();
+            format!("Unexpected callbackUrl shape: {}", &s[..s.len().min(300)])
+        })
 }
 
 /// For Recurrence / push triggers that have no callback URL — call /run directly.
@@ -423,8 +492,14 @@ pub async fn run_trigger_direct(workflow: &str, trigger: &str, body: &str) -> Re
         let code = b["error"]["code"].as_str().unwrap_or("");
         let hint = if code == "WorkflowNotFound" {
             " — if all workflows fail, check AzureWebJobsStorage in Connections → Blob (set to 'UseDevelopmentStorage=true' for Azurite) and restart func"
-        } else { "" };
-        Err(format!("{}{}", extract_api_error(&b).unwrap_or_else(|| format!("HTTP {}", status)), hint))
+        } else {
+            ""
+        };
+        Err(format!(
+            "{}{}",
+            extract_api_error(&b).unwrap_or_else(|| format!("HTTP {}", status)),
+            hint
+        ))
     }
 }
 
@@ -457,7 +532,10 @@ pub async fn trigger_workflow(callback_url: &str, body: &str) -> Result<String, 
 /// (the management API's generic trigger-run endpoint) can't be used for
 /// this: it fires the trigger asynchronously and never returns the
 /// workflow's own synchronous response.
-pub async fn trigger_workflow_capture_body(callback_url: &str, body: &str) -> Result<String, String> {
+pub async fn trigger_workflow_capture_body(
+    callback_url: &str,
+    body: &str,
+) -> Result<String, String> {
     let body_val: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
     let resp = http_client()
         .post(callback_url)
@@ -491,7 +569,9 @@ pub struct RunProperties {
     pub end_time: Option<String>,
 }
 
-fn parse_value_array<T: for<'de> Deserialize<'de>>(body: serde_json::Value) -> Result<Vec<T>, String> {
+fn parse_value_array<T: for<'de> Deserialize<'de>>(
+    body: serde_json::Value,
+) -> Result<Vec<T>, String> {
     if let Some(code) = body["error"]["code"].as_str() {
         let msg = body["error"]["message"].as_str().unwrap_or(code);
         if code == "WorkflowNotFound" {
@@ -499,18 +579,24 @@ fn parse_value_array<T: for<'de> Deserialize<'de>>(body: serde_json::Value) -> R
                 "Workflow not found — if this happens for every workflow, \
                  AzureWebJobsStorage is likely pointing to Azure instead of Azurite. \
                  Open Connections → Blob, check AzureWebJobsStorage, set it to \
-                 'UseDevelopmentStorage=true', save, and restart func. ({})", msg
+                 'UseDevelopmentStorage=true', save, and restart func. ({})",
+                msg
             ));
         }
         return Err(format!("{}: {}", code, msg));
     }
-    let arr = body.as_array().cloned()
+    let arr = body
+        .as_array()
+        .cloned()
         .or_else(|| body["value"].as_array().cloned())
         .ok_or_else(|| {
             let s = body.to_string();
             format!("Unexpected response shape: {}", &s[..s.len().min(300)])
         })?;
-    Ok(arr.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
+    Ok(arr
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect())
 }
 
 /// Status of one run, or None when it cannot be read. Used to tell "the action
@@ -527,8 +613,11 @@ pub async fn run_status(workflow: &str, run_id: &str) -> Option<String> {
 pub async fn list_runs(workflow: &str) -> Result<Vec<RunItem>, String> {
     let url = format!("{}/workflows/{}/runs", BASE, workflow);
     let body: serde_json::Value = reqwest::get(&url)
-        .await.map_err(|e| e.to_string())?
-        .json().await.map_err(|e| e.to_string())?;
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
 
     if body["error"]["code"].as_str() == Some("WorkflowNotFound") {
         // Check whether the workflow itself is accessible (design-time vs runtime split).
@@ -538,8 +627,7 @@ pub async fn list_runs(workflow: &str) -> Result<Vec<RunItem>, String> {
         } else {
             serde_json::Value::Null
         };
-        let in_runtime = wf_body["name"].as_str().is_some()
-            && wf_body["error"].is_null();
+        let in_runtime = wf_body["name"].as_str().is_some() && wf_body["error"].is_null();
         if in_runtime {
             return Err(format!(
                 "Workflow is defined but its runtime state is missing — \
@@ -576,31 +664,35 @@ pub async fn not_found_hints(workflow: &str) -> Vec<String> {
         } else {
             None
         }
-    }.await;
+    }
+    .await;
 
     match in_runtime {
-        Some(true) => vec![
-            format!(
-                "  hint: workflow IS registered in the runtime but run history is inaccessible — \
+        Some(true) => vec![format!(
+            "  hint: workflow IS registered in the runtime but run history is inaccessible — \
                  Azurite table storage may be corrupted. {AZURITE_RESET_HINT}"
-            ),
-        ],
+        )],
         Some(false) => vec![
             "  hint: workflow is NOT in the runtime registry — a failing connection likely \
              blocked registration at startup. Check func start output for errors, \
-             fix the connection, and restart func.".to_string(),
+             fix the connection, and restart func."
+                .to_string(),
         ],
-        None => vec![
-            "  hint: func management API did not respond — is func still running?".to_string(),
-        ],
+        None => {
+            vec!["  hint: func management API did not respond — is func still running?".to_string()]
+        }
     }
 }
 
 /// Lightweight existence check — fetches at most 1 run to minimise data transfer.
 pub async fn check_has_runs(workflow: &str) -> bool {
     let url = format!("{}/workflows/{}/runs?$top=1", BASE, workflow);
-    let Ok(resp) = reqwest::get(&url).await else { return false };
-    let Ok(body) = resp.json::<serde_json::Value>().await else { return false };
+    let Ok(resp) = reqwest::get(&url).await else {
+        return false;
+    };
+    let Ok(body) = resp.json::<serde_json::Value>().await else {
+        return false;
+    };
     body.as_array()
         .or_else(|| body["value"].as_array())
         .map(|a| !a.is_empty())
@@ -637,25 +729,42 @@ pub struct ActionError {
 /// blobs referenced by `inputsLink.uri` / `outputsLink.uri`. The actual error
 /// message for a failed connector call (e.g. SQL exception text) lives in the
 /// outputs blob, not in the action record itself.
-pub async fn get_action_detail(workflow: &str, run_id: &str, action: &str) -> Result<serde_json::Value, String> {
-    let url = format!("{}/workflows/{}/runs/{}/actions/{}", BASE, workflow, run_id, action);
+pub async fn get_action_detail(
+    workflow: &str,
+    run_id: &str,
+    action: &str,
+) -> Result<serde_json::Value, String> {
+    let url = format!(
+        "{}/workflows/{}/runs/{}/actions/{}",
+        BASE, workflow, run_id, action
+    );
     let mut detail: serde_json::Value = reqwest::get(&url)
-        .await.map_err(|e| e.to_string())?
-        .json().await.map_err(|e| e.to_string())?;
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
 
     async fn fetch_blob(uri: &str) -> serde_json::Value {
         match reqwest::get(uri).await {
             Ok(resp) => match resp.text().await {
-                Ok(text) => serde_json::from_str(&text)
-                    .unwrap_or_else(|_| serde_json::Value::String(text)),
+                Ok(text) => {
+                    serde_json::from_str(&text).unwrap_or_else(|_| serde_json::Value::String(text))
+                }
                 Err(e) => serde_json::Value::String(format!("<fetch error: {}>", e)),
             },
             Err(e) => serde_json::Value::String(format!("<fetch error: {}>", e)),
         }
     }
 
-    let inputs_uri  = detail.pointer("/properties/inputsLink/uri").and_then(|v| v.as_str()).map(str::to_string);
-    let outputs_uri = detail.pointer("/properties/outputsLink/uri").and_then(|v| v.as_str()).map(str::to_string);
+    let inputs_uri = detail
+        .pointer("/properties/inputsLink/uri")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let outputs_uri = detail
+        .pointer("/properties/outputsLink/uri")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
 
     if let Some(uri) = inputs_uri {
         let body = fetch_blob(&uri).await;
@@ -675,10 +784,16 @@ pub async fn get_action_detail(workflow: &str, run_id: &str, action: &str) -> Re
 
 pub async fn list_actions(workflow: &str, run_id: &str) -> Result<Vec<ActionItem>, String> {
     // $expand=outputLinks makes the runtime include child actions of scopes
-    let url = format!("{}/workflows/{}/runs/{}/actions?$expand=outputLinks", BASE, workflow, run_id);
+    let url = format!(
+        "{}/workflows/{}/runs/{}/actions?$expand=outputLinks",
+        BASE, workflow, run_id
+    );
     let body: serde_json::Value = reqwest::get(&url)
-        .await.map_err(|e| e.to_string())?
-        .json().await.map_err(|e| e.to_string())?;
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
     parse_value_array(body)
 }
 
@@ -701,7 +816,11 @@ pub struct ActionPayload {
 /// action record itself only reports an aggregate status. Without the
 /// repetition fallback, asserting on anything inside a loop silently sees an
 /// empty payload.
-pub async fn action_payload(workflow: &str, run_id: &str, action: &str) -> Result<ActionPayload, String> {
+pub async fn action_payload(
+    workflow: &str,
+    run_id: &str,
+    action: &str,
+) -> Result<ActionPayload, String> {
     let detail = get_action_detail(workflow, run_id, action).await?;
     let status = detail
         .pointer("/properties/status")
@@ -719,7 +838,10 @@ pub async fn action_payload(workflow: &str, run_id: &str, action: &str) -> Resul
 
     // Nested-in-Foreach case: pull every iteration's payload instead.
     if text.trim().is_empty() {
-        let url = format!("{}/workflows/{}/runs/{}/actions/{}/repetitions", BASE, workflow, run_id, action);
+        let url = format!(
+            "{}/workflows/{}/runs/{}/actions/{}/repetitions",
+            BASE, workflow, run_id, action
+        );
         if let Ok(resp) = reqwest::get(&url).await {
             if let Ok(body) = resp.text().await {
                 let parsed: serde_json::Value =
@@ -727,7 +849,10 @@ pub async fn action_payload(workflow: &str, run_id: &str, action: &str) -> Resul
                 let reps = parsed["value"].as_array().cloned().unwrap_or_default();
                 for rep in reps {
                     for link in ["inputsLink", "outputsLink"] {
-                        if let Some(uri) = rep.pointer(&format!("/properties/{link}/uri")).and_then(|v| v.as_str()) {
+                        if let Some(uri) = rep
+                            .pointer(&format!("/properties/{link}/uri"))
+                            .and_then(|v| v.as_str())
+                        {
                             if let Ok(r) = reqwest::get(uri).await {
                                 if let Ok(t) = r.text().await {
                                     text.push_str(&t);
@@ -762,29 +887,60 @@ pub struct RepetitionProperties {
 }
 
 /// Lists the iterations of a ForEach action.
-pub async fn list_repetitions(workflow: &str, run_id: &str, action: &str) -> Result<Vec<RepetitionItem>, String> {
-    let url = format!("{}/workflows/{}/runs/{}/actions/{}/repetitions", BASE, workflow, run_id, action);
+pub async fn list_repetitions(
+    workflow: &str,
+    run_id: &str,
+    action: &str,
+) -> Result<Vec<RepetitionItem>, String> {
+    let url = format!(
+        "{}/workflows/{}/runs/{}/actions/{}/repetitions",
+        BASE, workflow, run_id, action
+    );
     let body: serde_json::Value = reqwest::get(&url)
-        .await.map_err(|e| e.to_string())?
-        .json().await.map_err(|e| e.to_string())?;
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
     parse_value_array(body)
 }
 
 /// Lists the actions executed within a single ForEach iteration.
-pub async fn list_repetition_actions(workflow: &str, run_id: &str, action: &str, rep: &str) -> Result<Vec<ActionItem>, String> {
-    let url = format!("{}/workflows/{}/runs/{}/actions/{}/repetitions/{}/actions", BASE, workflow, run_id, action, rep);
+pub async fn list_repetition_actions(
+    workflow: &str,
+    run_id: &str,
+    action: &str,
+    rep: &str,
+) -> Result<Vec<ActionItem>, String> {
+    let url = format!(
+        "{}/workflows/{}/runs/{}/actions/{}/repetitions/{}/actions",
+        BASE, workflow, run_id, action, rep
+    );
     let body: serde_json::Value = reqwest::get(&url)
-        .await.map_err(|e| e.to_string())?
-        .json().await.map_err(|e| e.to_string())?;
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
     parse_value_array(body)
 }
 
 /// Lists the child actions of a Scope action.
-pub async fn list_scoped_repetitions(workflow: &str, run_id: &str, action: &str) -> Result<Vec<ActionItem>, String> {
-    let url = format!("{}/workflows/{}/runs/{}/actions/{}/scopedRepetitions", BASE, workflow, run_id, action);
+pub async fn list_scoped_repetitions(
+    workflow: &str,
+    run_id: &str,
+    action: &str,
+) -> Result<Vec<ActionItem>, String> {
+    let url = format!(
+        "{}/workflows/{}/runs/{}/actions/{}/scopedRepetitions",
+        BASE, workflow, run_id, action
+    );
     let body: serde_json::Value = reqwest::get(&url)
-        .await.map_err(|e| e.to_string())?
-        .json().await.map_err(|e| e.to_string())?;
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
     parse_value_array(body)
 }
 
@@ -806,11 +962,17 @@ pub fn duration_ms(start: &Option<String>, end: &Option<String>) -> Option<i64> 
 pub fn scan_all_blob_triggers(logic_apps_dir: &str) -> Vec<(String, String)> {
     let dir = resolve_logic_apps_dir(logic_apps_dir);
     let mut result = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else { return result };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return result;
+    };
     for entry in entries.flatten() {
         let wf_path = entry.path().join("workflow.json");
-        if !wf_path.exists() { continue; }
-        let Ok(json) = std::fs::read_to_string(&wf_path) else { continue };
+        if !wf_path.exists() {
+            continue;
+        }
+        let Ok(json) = std::fs::read_to_string(&wf_path) else {
+            continue;
+        };
         if let Some((container, _)) = read_blob_trigger_info(&json) {
             result.push((container, entry.file_name().to_string_lossy().into_owned()));
         }
@@ -834,7 +996,9 @@ pub fn extract_all_blob_containers(workflow_json: &str) -> Vec<String> {
     if let Some(triggers) = v["definition"]["triggers"].as_object() {
         for t in triggers.values() {
             if let Some(p) = t["inputs"]["parameters"]["path"].as_str() {
-                if !p.is_empty() && !p.starts_with('@') { out.insert(p.to_string()); }
+                if !p.is_empty() && !p.starts_with('@') {
+                    out.insert(p.to_string());
+                }
             }
         }
     }
@@ -844,11 +1008,19 @@ pub fn extract_all_blob_containers(workflow_json: &str) -> Vec<String> {
         match val {
             serde_json::Value::Object(map) => {
                 if let Some(name) = map.get("containerName").and_then(|v| v.as_str()) {
-                    if !name.is_empty() && !name.starts_with('@') { out.insert(name.to_string()); }
+                    if !name.is_empty() && !name.starts_with('@') {
+                        out.insert(name.to_string());
+                    }
                 }
-                for v in map.values() { collect(v, out); }
+                for v in map.values() {
+                    collect(v, out);
+                }
             }
-            serde_json::Value::Array(arr) => { for v in arr { collect(v, out); } }
+            serde_json::Value::Array(arr) => {
+                for v in arr {
+                    collect(v, out);
+                }
+            }
             _ => {}
         }
     }
@@ -858,9 +1030,13 @@ pub fn extract_all_blob_containers(workflow_json: &str) -> Vec<String> {
     if let Some(params) = v["definition"]["parameters"].as_object() {
         for param in params.values() {
             if let Some(dv) = param["defaultValue"].as_str() {
-                if !dv.is_empty() && !dv.starts_with('@')
-                    && dv.len() >= 3 && dv.len() <= 63
-                    && dv.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                if !dv.is_empty()
+                    && !dv.starts_with('@')
+                    && dv.len() >= 3
+                    && dv.len() <= 63
+                    && dv
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
                 {
                     out.insert(dv.to_string());
                 }
@@ -889,7 +1065,6 @@ pub fn read_blob_trigger_info(workflow_json: &str) -> Option<(String, String)> {
     Some((container, conn))
 }
 
-
 #[cfg(test)]
 mod tests {
     include!("workflows/tests.rs");
@@ -912,17 +1087,28 @@ mod definition_scan_tests {
         std::fs::create_dir_all(&la).unwrap();
 
         // caller no longer posts the card; it moved into the callee
-        fixture(&la, "Check-Ignite-Payment-File", r#"{"definition":{"actions":{
+        fixture(
+            &la,
+            "Check-Ignite-Payment-File",
+            r#"{"definition":{"actions":{
             "Scope_Processing":{"type":"Scope","actions":{
                 "Verify":{"type":"If","actions":{"Fail":{"type":"Terminate"}},
-                          "else":{"actions":{"Send_message_to_queue":{"type":"ServiceProvider"}}}}}}}}}"#);
-        fixture(&la, "Send-Kyriba-files", r#"{"definition":{"actions":{
+                          "else":{"actions":{"Send_message_to_queue":{"type":"ServiceProvider"}}}}}}}}}"#,
+        );
+        fixture(
+            &la,
+            "Send-Kyriba-files",
+            r#"{"definition":{"actions":{
             "Scope_Processing":{"type":"Scope","actions":{
-                "Send_success_notification":{"type":"ServiceProvider"}}}}}}"#);
+                "Send_success_notification":{"type":"ServiceProvider"}}}}}}"#,
+        );
 
         let root = tmp.to_string_lossy().into_owned();
         let names = definition_action_names(&root, "Check-Ignite-Payment-File").unwrap();
-        assert!(names.contains("Send_message_to_queue"), "must see into else-branches");
+        assert!(
+            names.contains("Send_message_to_queue"),
+            "must see into else-branches"
+        );
         assert!(names.contains("Fail"), "must see into if-branches");
         assert!(!names.contains("Send_success_notification"));
 

@@ -148,14 +148,19 @@ mod tests {
     fn belongs_to_matches_same_project_only() {
         let o = PortOwner {
             pid: 123,
-            detail: "/Users/x/code/oryx/ais_platform/function_apps/target/azure-functions/ais-functions".into(),
+            detail:
+                "/Users/x/code/oryx/ais_platform/function_apps/target/azure-functions/ais-functions"
+                    .into(),
         };
         assert!(belongs_to(&o, "/Users/x/code/oryx/ais_platform"));
         assert!(belongs_to(&o, "/Users/x/code/oryx/ais_platform/")); // trailing slash tolerated
-        // A different clone must NOT match.
+                                                                     // A different clone must NOT match.
         assert!(!belongs_to(&o, "/Users/x/code/oryx/ais_tom_platform"));
         // Empty / unknown detail never matches.
-        let unknown = PortOwner { pid: 1, detail: String::new() };
+        let unknown = PortOwner {
+            pid: 1,
+            detail: String::new(),
+        };
         assert!(!belongs_to(&unknown, "/Users/x/code/oryx/ais_tom_platform"));
     }
 }

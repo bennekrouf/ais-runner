@@ -33,11 +33,12 @@ use crate::services::azure_cli::BlobInfo;
 
 type HmacSha256 = Hmac<Sha256>;
 
-const ACCOUNT:       &str = "devstoreaccount1";
-const ACCOUNT_KEY:   &str = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
+const ACCOUNT: &str = "devstoreaccount1";
+const ACCOUNT_KEY: &str =
+    "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
 const BLOB_ENDPOINT: &str = "http://127.0.0.1:10000/devstoreaccount1";
 /// Pinned to a version that every recent Azurite release supports.
-const API_VERSION:   &str = "2021-08-06";
+const API_VERSION: &str = "2021-08-06";
 
 // ── Shared Key auth ───────────────────────────────────────────────────────────
 
@@ -50,13 +51,13 @@ fn make_date() -> String {
 /// `x_ms_extras` is any additional `x-ms-*` headers beyond date/version,
 /// provided pre-lowercased and sorted, e.g. `&[("x-ms-blob-type", "BlockBlob")]`.
 fn auth_header(
-    method:        &str,
-    content_type:  &str,
+    method: &str,
+    content_type: &str,
     content_length: Option<u64>,
-    date:          &str,
-    resource_path: &str,           // path after /devstoreaccount1, e.g. "/my-container"
-    query_pairs:   &[(&str, &str)],// query params (will be sorted)
-    x_ms_extras:   &[(&str, &str)],// extra x-ms-* headers (sorted)
+    date: &str,
+    resource_path: &str, // path after /devstoreaccount1, e.g. "/my-container"
+    query_pairs: &[(&str, &str)], // query params (will be sorted)
+    x_ms_extras: &[(&str, &str)], // extra x-ms-* headers (sorted)
 ) -> String {
     // ── Canonicalized headers ───────────────────────────────────────────────
     // All x-ms-* headers, lower-case, alphabetical order, each "name:value\n".
@@ -68,10 +69,7 @@ fn auth_header(
     hdrs.push(("x-ms-date".into(), date.to_string()));
     hdrs.push(("x-ms-version".into(), API_VERSION.to_string()));
     hdrs.sort_by(|a, b| a.0.cmp(&b.0));
-    let canon_hdrs: String = hdrs
-        .iter()
-        .map(|(k, v)| format!("{}:{}\n", k, v))
-        .collect();
+    let canon_hdrs: String = hdrs.iter().map(|(k, v)| format!("{}:{}\n", k, v)).collect();
 
     // ── Canonicalized resource ──────────────────────────────────────────────
     // Azurite uses path-based routing (host:10000/devstoreaccount1/…), so the
@@ -156,11 +154,14 @@ pub fn list_containers() -> Result<Vec<String>, String> {
 
 /// List blobs inside a container (name + size).
 pub fn list_blobs(container: &str) -> Result<Vec<BlobInfo>, String> {
-    let date  = make_date();
-    let path  = format!("/{}", container);
+    let date = make_date();
+    let path = format!("/{}", container);
     let query = &[("comp", "list"), ("restype", "container")];
-    let auth  = auth_header("GET", "", None, &date, &path, query, &[]);
-    let url   = format!("{}/{}?comp=list&restype=container", BLOB_ENDPOINT, container);
+    let auth = auth_header("GET", "", None, &date, &path, query, &[]);
+    let url = format!(
+        "{}/{}?comp=list&restype=container",
+        BLOB_ENDPOINT, container
+    );
 
     let resp = client()
         .get(&url)
@@ -177,10 +178,11 @@ pub fn list_blobs(container: &str) -> Result<Vec<BlobInfo>, String> {
     }
 
     // Each blob: <Blob><Name>…</Name><Properties>…<Content-Length>…</Content-Length>
-    let re = regex::Regex::new(
-        r"<Blob><Name>([^<]+)</Name>.*?<Content-Length>(\d+)</Content-Length>"
-    ).unwrap();
-    Ok(re.captures_iter(&body)
+    let re =
+        regex::Regex::new(r"<Blob><Name>([^<]+)</Name>.*?<Content-Length>(\d+)</Content-Length>")
+            .unwrap();
+    Ok(re
+        .captures_iter(&body)
         .map(|c| BlobInfo {
             name: c[1].to_string(),
             size: c[2].parse().unwrap_or(0),
@@ -204,7 +206,9 @@ pub fn suggest_container_name(name: &str) -> String {
             prev_dash = true;
         }
     }
-    while out.ends_with('-') { out.pop(); }
+    while out.ends_with('-') {
+        out.pop();
+    }
     out
 }
 
@@ -216,7 +220,11 @@ pub fn suggest_container_name(name: &str) -> String {
 pub fn validate_container_name(name: &str) -> Result<(), String> {
     let hint = || {
         let s = suggest_container_name(name);
-        if s.len() >= 3 { format!(" Try '{s}'.") } else { String::new() }
+        if s.len() >= 3 {
+            format!(" Try '{s}'.")
+        } else {
+            String::new()
+        }
     };
     if name.len() < 3 || name.len() > 63 {
         return Err(format!("Container name must be 3–63 characters.{}", hint()));
@@ -227,19 +235,28 @@ pub fn validate_container_name(name: &str) -> Result<(), String> {
             hint()
         ));
     }
-    if name.chars().any(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')) {
+    if name
+        .chars()
+        .any(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+    {
         return Err(format!(
             "Container names allow only lowercase letters, digits, and hyphens.{}",
             hint()
         ));
     }
     let first = name.chars().next().unwrap();
-    let last  = name.chars().last().unwrap();
+    let last = name.chars().last().unwrap();
     if !first.is_ascii_alphanumeric() || !last.is_ascii_alphanumeric() {
-        return Err(format!("Container name must start and end with a letter or digit.{}", hint()));
+        return Err(format!(
+            "Container name must start and end with a letter or digit.{}",
+            hint()
+        ));
     }
     if name.contains("--") {
-        return Err(format!("Container name can't contain consecutive hyphens.{}", hint()));
+        return Err(format!(
+            "Container name can't contain consecutive hyphens.{}",
+            hint()
+        ));
     }
     Ok(())
 }
@@ -250,11 +267,11 @@ pub fn create_container(name: &str) -> Result<(), String> {
     // suggested name, not Azurite's opaque "invalid characters" 400.
     validate_container_name(name)?;
 
-    let date  = make_date();
-    let path  = format!("/{}", name);
+    let date = make_date();
+    let path = format!("/{}", name);
     let query = &[("restype", "container")];
-    let auth  = auth_header("PUT", "", None, &date, &path, query, &[]);
-    let url   = format!("{}/{}?restype=container", BLOB_ENDPOINT, name);
+    let auth = auth_header("PUT", "", None, &date, &path, query, &[]);
+    let url = format!("{}/{}?restype=container", BLOB_ENDPOINT, name);
 
     let resp = client()
         .put(&url)
@@ -281,7 +298,8 @@ pub fn create_container(name: &str) -> Result<(), String> {
 fn rewrite_prefix(name: &str, old_prefix: &str, new_prefix: &str) -> Option<String> {
     let old = format!("{}/", old_prefix.trim_end_matches('/'));
     let new = format!("{}/", new_prefix.trim_end_matches('/'));
-    name.strip_prefix(old.as_str()).map(|rest| format!("{new}{rest}"))
+    name.strip_prefix(old.as_str())
+        .map(|rest| format!("{new}{rest}"))
 }
 
 /// Server-side `Copy Blob` within the same account — the payload never passes
@@ -291,19 +309,19 @@ fn copy_blob(container: &str, src: &str, dst: &str) -> Result<(), String> {
     // Sign the same encoded paths we send (see delete_blob).
     let src_enc = percent_encode(src);
     let dst_enc = percent_encode(dst);
-    let source  = format!("{}/{}/{}", BLOB_ENDPOINT, container, src_enc);
-    let path    = format!("/{}/{}", container, dst_enc);
+    let source = format!("{}/{}/{}", BLOB_ENDPOINT, container, src_enc);
+    let path = format!("/{}/{}", container, dst_enc);
     let extras: &[(&str, &str)] = &[("x-ms-copy-source", source.as_str())];
-    let auth    = auth_header("PUT", "", None, &date, &path, &[], extras);
-    let url     = format!("{}/{}/{}", BLOB_ENDPOINT, container, dst_enc);
+    let auth = auth_header("PUT", "", None, &date, &path, &[], extras);
+    let url = format!("{}/{}/{}", BLOB_ENDPOINT, container, dst_enc);
 
     let resp = client()
         .put(&url)
-        .header("x-ms-date",        &date)
-        .header("x-ms-version",     API_VERSION)
+        .header("x-ms-date", &date)
+        .header("x-ms-version", API_VERSION)
         .header("x-ms-copy-source", &source)
-        .header("Authorization",    auth)
-        .header("Content-Length",   "0")
+        .header("Authorization", auth)
+        .header("Content-Length", "0")
         .send()
         .map_err(transport_error)?;
 
@@ -312,7 +330,10 @@ fn copy_blob(container: &str, src: &str, dst: &str) -> Result<(), String> {
     }
     let status = resp.status();
     let body = resp.text().unwrap_or_default();
-    Err(format!("Copy '{src}' → '{dst}': HTTP {status}: {}", extract_error_message(&body)))
+    Err(format!(
+        "Copy '{src}' → '{dst}': HTTP {status}: {}",
+        extract_error_message(&body)
+    ))
 }
 
 /// Rename a virtual folder by moving every blob under `old_prefix/` to
@@ -347,8 +368,7 @@ pub fn rename_virtual_folder(
     }
 
     let all = list_blobs(container)?;
-    let existing: std::collections::HashSet<&str> =
-        all.iter().map(|b| b.name.as_str()).collect();
+    let existing: std::collections::HashSet<&str> = all.iter().map(|b| b.name.as_str()).collect();
 
     let moves: Vec<(String, String)> = all
         .iter()
@@ -359,7 +379,9 @@ pub fn rename_virtual_folder(
         return Err(format!("No folder '{old}/' in container '{container}'"));
     }
     if let Some((_, dst)) = moves.iter().find(|(_, d)| existing.contains(d.as_str())) {
-        return Err(format!("Destination '{dst}' already exists — rename aborted"));
+        return Err(format!(
+            "Destination '{dst}' already exists — rename aborted"
+        ));
     }
 
     let mut moved = 0u64;
@@ -386,7 +408,11 @@ pub fn clear_container(container: &str) -> Result<u64, String> {
     for blob in blobs {
         match delete_blob(container, &blob.name) {
             Ok(()) => deleted += 1,
-            Err(e) => if first_err.is_none() { first_err = Some(e) },
+            Err(e) => {
+                if first_err.is_none() {
+                    first_err = Some(e)
+                }
+            }
         }
     }
 
@@ -403,15 +429,15 @@ pub fn clear_container(container: &str) -> Result<u64, String> {
 pub fn download_blob(container: &str, blob_name: &str, dest_path: &str) -> Result<(), String> {
     let date = make_date();
     // Sign the encoded path — see delete_blob for why.
-    let enc  = percent_encode(blob_name);
+    let enc = percent_encode(blob_name);
     let path = format!("/{}/{}", container, enc);
     let auth = auth_header("GET", "", None, &date, &path, &[], &[]);
-    let url  = format!("{}/{}/{}", BLOB_ENDPOINT, container, enc);
+    let url = format!("{}/{}/{}", BLOB_ENDPOINT, container, enc);
 
     let resp = client()
         .get(&url)
-        .header("x-ms-date",     &date)
-        .header("x-ms-version",  API_VERSION)
+        .header("x-ms-date", &date)
+        .header("x-ms-version", API_VERSION)
         .header("Authorization", auth)
         .send()
         .map_err(transport_error)?;
@@ -432,33 +458,45 @@ pub fn upload_blob(container: &str, file_path: &str, blob_name: &str) -> Result<
 }
 
 /// Upload raw bytes as a BlockBlob. Used by the async trigger path.
-pub fn upload_blob_bytes_sync(container: &str, blob_name: &str, data: Vec<u8>) -> Result<(), String> {
+pub fn upload_blob_bytes_sync(
+    container: &str,
+    blob_name: &str,
+    data: Vec<u8>,
+) -> Result<(), String> {
     let content_length = data.len() as u64;
-    let content_type   = "application/octet-stream";
-    let date           = make_date();
+    let content_type = "application/octet-stream";
+    let date = make_date();
     // Sign the encoded path — see delete_blob for why.
-    let enc            = percent_encode(blob_name);
-    let path           = format!("/{}/{}", container, enc);
-    let extras         = &[("x-ms-blob-type", "BlockBlob")];
+    let enc = percent_encode(blob_name);
+    let path = format!("/{}/{}", container, enc);
+    let extras = &[("x-ms-blob-type", "BlockBlob")];
     let auth = auth_header(
-        "PUT", content_type, Some(content_length), &date, &path, &[], extras,
+        "PUT",
+        content_type,
+        Some(content_length),
+        &date,
+        &path,
+        &[],
+        extras,
     );
     let url = format!("{}/{}/{}", BLOB_ENDPOINT, container, enc);
 
     let resp = client()
         .put(&url)
-        .header("x-ms-date",       &date)
-        .header("x-ms-version",    API_VERSION)
-        .header("x-ms-blob-type",  "BlockBlob")
-        .header("Authorization",   auth)
-        .header("Content-Type",    content_type)
-        .header("Content-Length",  content_length)
+        .header("x-ms-date", &date)
+        .header("x-ms-version", API_VERSION)
+        .header("x-ms-blob-type", "BlockBlob")
+        .header("Authorization", auth)
+        .header("Content-Type", content_type)
+        .header("Content-Length", content_length)
         .body(data)
         .send()
         .map_err(transport_error)?;
 
     let status = resp.status();
-    if status.is_success() { return Ok(()); }
+    if status.is_success() {
+        return Ok(());
+    }
     let body = resp.text().unwrap_or_default();
     Err(format!("HTTP {}: {}", status, extract_error_message(&body)))
 }
@@ -471,33 +509,39 @@ fn delete_blob(container: &str, blob_name: &str) -> Result<(), String> {
     // canonicalized resource from the request path as received, so signing the
     // raw name while sending an encoded one is a signature mismatch → HTTP 403.
     // Bites any blob whose name contains ':' etc. (e.g. ISO-timestamp prefixes).
-    let enc  = percent_encode(blob_name);
+    let enc = percent_encode(blob_name);
     let path = format!("/{}/{}", container, enc);
     let auth = auth_header("DELETE", "", None, &date, &path, &[], &[]);
-    let url  = format!("{}/{}/{}", BLOB_ENDPOINT, container, enc);
+    let url = format!("{}/{}/{}", BLOB_ENDPOINT, container, enc);
 
     let resp = client()
         .delete(&url)
-        .header("x-ms-date",     &date)
-        .header("x-ms-version",  API_VERSION)
+        .header("x-ms-date", &date)
+        .header("x-ms-version", API_VERSION)
         .header("Authorization", auth)
         .send()
         .map_err(transport_error)?;
 
     let status = resp.status();
-    if status.is_success() || status.as_u16() == 404 { return Ok(()); }
+    if status.is_success() || status.as_u16() == 404 {
+        return Ok(());
+    }
     let body = resp.text().unwrap_or_default();
-    Err(format!("Delete '{}': HTTP {}: {}", blob_name, status, extract_error_message(&body)))
+    Err(format!(
+        "Delete '{}': HTTP {}: {}",
+        blob_name,
+        status,
+        extract_error_message(&body)
+    ))
 }
 
 /// Minimal percent-encoding: encodes only characters that break URL paths.
 fn percent_encode(s: &str) -> String {
     s.chars()
         .map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9'
-            | '-' | '_' | '.' | '~' | '/' => c.to_string(),
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' | '/' => c.to_string(),
             ' ' => "%20".to_string(),
-            c   => format!("%{:02X}", c as u32),
+            c => format!("%{:02X}", c as u32),
         })
         .collect()
 }
@@ -536,7 +580,10 @@ mod rename_folder_tests {
     fn does_not_capture_sibling_folders_sharing_a_stem() {
         // renaming "pay" must NOT sweep up "payments/…"
         assert_eq!(rewrite_prefix("payments/a.csv", "pay", "x"), None);
-        assert_eq!(rewrite_prefix("pay/a.csv", "pay", "x").as_deref(), Some("x/a.csv"));
+        assert_eq!(
+            rewrite_prefix("pay/a.csv", "pay", "x").as_deref(),
+            Some("x/a.csv")
+        );
     }
 
     #[test]
@@ -588,9 +635,18 @@ mod rename_folder_live_tests {
         let names: Vec<String> = list_blobs(C).unwrap().into_iter().map(|b| b.name).collect();
         assert!(names.contains(&"newfolder/.keep".to_string()));
         assert!(names.contains(&"newfolder/a.txt".to_string()));
-        assert!(names.contains(&"newfolder/sub/b.txt".to_string()), "nested path preserved");
-        assert!(names.contains(&"oldfolderX/c.txt".to_string()), "sibling untouched");
-        assert!(!names.iter().any(|n| n.starts_with("oldfolder/")), "originals removed");
+        assert!(
+            names.contains(&"newfolder/sub/b.txt".to_string()),
+            "nested path preserved"
+        );
+        assert!(
+            names.contains(&"oldfolderX/c.txt".to_string()),
+            "sibling untouched"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("oldfolder/")),
+            "originals removed"
+        );
 
         // content survived the server-side copy
         let tmp = std::env::temp_dir().join("ais-rename-selftest-a.txt");
@@ -628,8 +684,14 @@ mod container_name_tests {
 
     #[test]
     fn suggestion_is_blob_safe() {
-        assert_eq!(suggest_container_name("ais.ignite.kyriba.payment"), "ais-ignite-kyriba-payment");
-        assert_eq!(suggest_container_name("My_Container.Name"), "my-container-name");
+        assert_eq!(
+            suggest_container_name("ais.ignite.kyriba.payment"),
+            "ais-ignite-kyriba-payment"
+        );
+        assert_eq!(
+            suggest_container_name("My_Container.Name"),
+            "my-container-name"
+        );
         assert_eq!(suggest_container_name("a...b"), "a-b");
         assert_eq!(suggest_container_name("--lead.trail--"), "lead-trail");
     }
@@ -644,10 +706,16 @@ mod container_name_tests {
 
     #[test]
     fn other_rule_violations_are_caught() {
-        assert!(validate_container_name("ab").is_err());                 // too short
-        assert!(validate_container_name("UPPER").unwrap_err().contains("lowercase"));
-        assert!(validate_container_name("-lead").unwrap_err().contains("start and end"));
-        assert!(validate_container_name("a--b").unwrap_err().contains("consecutive"));
+        assert!(validate_container_name("ab").is_err()); // too short
+        assert!(validate_container_name("UPPER")
+            .unwrap_err()
+            .contains("lowercase"));
+        assert!(validate_container_name("-lead")
+            .unwrap_err()
+            .contains("start and end"));
+        assert!(validate_container_name("a--b")
+            .unwrap_err()
+            .contains("consecutive"));
     }
 }
 

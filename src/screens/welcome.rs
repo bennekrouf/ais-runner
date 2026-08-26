@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 
-use crate::services::{azure_sync, azure_cli, config};
+use crate::services::{azure_cli, azure_sync, config};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct WelcomeScreenProps {
@@ -12,11 +12,11 @@ pub struct WelcomeScreenProps {
 pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
     let app_cfg = props.app_cfg;
     let on_open = props.on_open.clone();
-    let recent  = app_cfg.read().recent_dirs.clone();
+    let recent = app_cfg.read().recent_dirs.clone();
 
     let mut picked_dir: Signal<Option<String>> = use_signal(|| None);
     let mut rg_list: Signal<Vec<azure_sync::LogicAppSite>> = use_signal(Vec::new);
-    let mut fetching: Signal<bool>        = use_signal(|| false);
+    let mut fetching: Signal<bool> = use_signal(|| false);
     let mut error: Signal<Option<String>> = use_signal(|| None);
     // true once the user explicitly asks to link to Azure
     let mut linking: Signal<bool> = use_signal(|| false);

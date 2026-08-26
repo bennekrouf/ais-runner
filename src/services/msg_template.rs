@@ -222,7 +222,14 @@ fn to_iso8601(v: &str) -> Result<String, String> {
             &digits[10..12],
             &digits[12..14],
         ),
-        8 => (&digits[0..4], &digits[4..6], &digits[6..8], "00", "00", "00"),
+        8 => (
+            &digits[0..4],
+            &digits[4..6],
+            &digits[6..8],
+            "00",
+            "00",
+            "00",
+        ),
         _ => {
             return Err(format!(
                 "iso8601 expects 8 or 14 digits, got '{v}' ({} digits)",
@@ -293,7 +300,9 @@ mod tests {
             r"^F\.(?P<ts>\d{14})\.(?P<flow>\w+)\.xlsx$",
             json!({ "when": "{{ts}}", "flow": "{{flow}}" }),
         );
-        let out = t.render("F.20260804101545.PY_TRANSFER.xlsx", &ctx()).unwrap();
+        let out = t
+            .render("F.20260804101545.PY_TRANSFER.xlsx", &ctx())
+            .unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["when"], "20260804101545");
         assert_eq!(v["flow"], "PY_TRANSFER");
@@ -301,7 +310,10 @@ mod tests {
 
     #[test]
     fn builtins_are_available() {
-        let t = tpl(r"^(?P<n>.+)$", json!({ "f": "{{filename}}", "e": "{{env}}" }));
+        let t = tpl(
+            r"^(?P<n>.+)$",
+            json!({ "f": "{{filename}}", "e": "{{env}}" }),
+        );
         let out = t.render("anything.xlsx", &ctx()).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["f"], "anything.xlsx");
@@ -344,7 +356,10 @@ mod tests {
 
     #[test]
     fn non_string_values_are_preserved() {
-        let t = tpl(r"^(?P<n>\w+)$", json!({ "num": 42, "yes": true, "nil": null }));
+        let t = tpl(
+            r"^(?P<n>\w+)$",
+            json!({ "num": 42, "yes": true, "nil": null }),
+        );
         let out = t.render("x", &ctx()).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["num"], 42);
@@ -404,11 +419,20 @@ mod integration_tests {
             .expect("Ignite Kyriba event template");
         assert_eq!(t.queue, "ais.apim.event");
 
-        let ctx = RenderContext { env: "DEV".into(), blob_endpoint: String::new() };
+        let ctx = RenderContext {
+            env: "DEV".into(),
+            blob_endpoint: String::new(),
+        };
 
         for (file, flow) in [
-            ("ORYX.NC4.IMPORT.20260804101545.PY_TRANSFER.PY_MT101.NULL.NULL.xlsx", "PY_TRANSFER"),
-            ("ORYX.NC4.IMPORT.20260731124240.CA_FLOW.CF_INTEGRATION.NULL.NULL.xlsx", "CA_FLOW"),
+            (
+                "ORYX.NC4.IMPORT.20260804101545.PY_TRANSFER.PY_MT101.NULL.NULL.xlsx",
+                "PY_TRANSFER",
+            ),
+            (
+                "ORYX.NC4.IMPORT.20260731124240.CA_FLOW.CF_INTEGRATION.NULL.NULL.xlsx",
+                "CA_FLOW",
+            ),
         ] {
             assert!(t.matches(file), "should match {file}");
             let v: Value = serde_json::from_str(&t.render(file, &ctx).unwrap()).unwrap();
@@ -418,7 +442,9 @@ mod integration_tests {
             assert_eq!(v["object"]["resourceURI"], file);
             assert_eq!(v["object"]["composite-keys"][0]["value"], file);
             assert!(v["object"]["composite-keys"][1]["value"]
-                .as_str().unwrap().contains(flow));
+                .as_str()
+                .unwrap()
+                .contains(flow));
         }
 
         // The 2026-07-28 incident: a space inside the filename. It must still
@@ -433,8 +459,13 @@ mod integration_tests {
 
     #[test]
     fn iso8601_matches_the_payloads_used_in_testing() {
-        assert_eq!(to_iso8601("20260804101545").unwrap(), "2026-08-04T10:15:45.000Z");
-        assert_eq!(to_iso8601("20260731124240").unwrap(), "2026-07-31T12:42:40.000Z");
+        assert_eq!(
+            to_iso8601("20260804101545").unwrap(),
+            "2026-08-04T10:15:45.000Z"
+        );
+        assert_eq!(
+            to_iso8601("20260731124240").unwrap(),
+            "2026-07-31T12:42:40.000Z"
+        );
     }
 }
-

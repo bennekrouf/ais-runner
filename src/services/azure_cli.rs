@@ -6,7 +6,6 @@ pub enum AzError {
     Other(String),
 }
 
-
 /// Resolve the full path to the `az` CLI on Windows.
 ///
 /// Azure CLI on Windows installs as `az.cmd` (a batch wrapper) in a
@@ -21,9 +20,12 @@ pub enum AzError {
 #[cfg(target_os = "windows")]
 fn resolve_az_windows() -> String {
     let candidates: &[(&str, &str)] = &[
-        ("ProgramFiles(x86)", r"Microsoft SDKs\Azure\CLI2\wbin\az.cmd"),
-        ("ProgramFiles",      r"Microsoft SDKs\Azure\CLI2\wbin\az.cmd"),
-        ("LOCALAPPDATA",      r"Programs\Azure CLI\wbin\az.cmd"),
+        (
+            "ProgramFiles(x86)",
+            r"Microsoft SDKs\Azure\CLI2\wbin\az.cmd",
+        ),
+        ("ProgramFiles", r"Microsoft SDKs\Azure\CLI2\wbin\az.cmd"),
+        ("LOCALAPPDATA", r"Programs\Azure CLI\wbin\az.cmd"),
     ];
     for (env_var, suffix) in candidates {
         if let Ok(base) = std::env::var(env_var) {
@@ -76,7 +78,10 @@ fn run(args: &[&str]) -> Result<String, AzError> {
 
     if !out.status.success() {
         let combined = format!("{} {}", stdout, stderr);
-        if combined.contains("AADSTS") || combined.contains("az login") || combined.contains("refresh token") {
+        if combined.contains("AADSTS")
+            || combined.contains("az login")
+            || combined.contains("refresh token")
+        {
             return Err(AzError::NotLoggedIn);
         }
         return Err(AzError::Other(stderr));
@@ -104,8 +109,7 @@ pub fn launch_az_login(subscription_id: Option<String>, tenant_id: Option<String
         _ => String::new(),
     };
     let sub_cmd = match subscription_id {
-        Some(id) if !id.is_empty() =>
-            format!(" && az account set --subscription {}", id),
+        Some(id) if !id.is_empty() => format!(" && az account set --subscription {}", id),
         _ => String::new(),
     };
     let inner = format!(
@@ -186,11 +190,17 @@ pub fn logout() {
 /// Finds the resource group of a Service Bus namespace by name (searches across the subscription).
 pub fn find_servicebus_rg(subscription: &str, namespace: &str) -> Result<String, AzError> {
     run(&[
-        "servicebus", "namespace", "show",
-        "--subscription", subscription,
-        "--name", namespace,
-        "--query", "resourceGroup",
-        "-o", "tsv",
+        "servicebus",
+        "namespace",
+        "show",
+        "--subscription",
+        subscription,
+        "--name",
+        namespace,
+        "--query",
+        "resourceGroup",
+        "-o",
+        "tsv",
     ])
 }
 
@@ -198,16 +208,24 @@ pub fn find_servicebus_rg(subscription: &str, namespace: &str) -> Result<String,
 /// Returns (id, name) pairs.
 pub fn list_subscriptions() -> Result<Vec<(String, String)>, AzError> {
     let out = run(&[
-        "account", "list",
-        "--query", "[].{id:id,name:name}",
-        "-o", "tsv",
+        "account",
+        "list",
+        "--query",
+        "[].{id:id,name:name}",
+        "-o",
+        "tsv",
     ])?;
-    Ok(out.lines()
+    Ok(out
+        .lines()
         .filter_map(|line| {
             let mut cols = line.splitn(2, '\t');
-            let id   = cols.next()?.trim().to_string();
+            let id = cols.next()?.trim().to_string();
             let name = cols.next().unwrap_or("").trim().to_string();
-            if id.is_empty() { None } else { Some((id, name)) }
+            if id.is_empty() {
+                None
+            } else {
+                Some((id, name))
+            }
         })
         .collect())
 }
@@ -215,50 +233,68 @@ pub fn list_subscriptions() -> Result<Vec<(String, String)>, AzError> {
 /// Lists all Service Bus namespaces in a subscription (no resource group needed).
 pub fn list_all_servicebus_namespaces(subscription: &str) -> Result<Vec<String>, AzError> {
     let out = run(&[
-        "servicebus", "namespace", "list",
-        "--subscription", subscription,
-        "--query", "[].name",
-        "-o", "tsv",
+        "servicebus",
+        "namespace",
+        "list",
+        "--subscription",
+        subscription,
+        "--query",
+        "[].name",
+        "-o",
+        "tsv",
     ])?;
-    Ok(out.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+    Ok(out
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
 }
-
 
 /// Fetches the Subscription ID that a given Resource Group belongs to.
 /// Useful for "self-healing" when a user enters a broken sub ID but has the right RG.
 pub fn get_subscription_id_by_group(resource_group: &str) -> Result<String, AzError> {
     let out = run(&[
-        "group", "show",
-        "--name", resource_group,
-        "--query", "id",
-        "-o", "tsv",
+        "group",
+        "show",
+        "--name",
+        resource_group,
+        "--query",
+        "id",
+        "-o",
+        "tsv",
     ])?;
     // The ID looks like: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-name
     let parts: Vec<&str> = out.split('/').collect();
     if parts.len() >= 3 && parts[1] == "subscriptions" {
         Ok(parts[2].to_string())
     } else {
-        Err(AzError::Other(format!("Could not parse subscription ID from group metadata: {}", out)))
+        Err(AzError::Other(format!(
+            "Could not parse subscription ID from group metadata: {}",
+            out
+        )))
     }
 }
-
 
 // ── Service Bus data-plane helpers ─────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SbQueueStats {
     pub active_message_count: u64,
-    pub dead_letter_count:    u64,
-    pub size_bytes:           u64,
+    pub dead_letter_count: u64,
+    pub size_bytes: u64,
 }
 
 /// List all Service Bus namespaces accessible in the current subscription.
 /// Returns (short_name, fqdn, resource_group) triples.
 pub fn sb_list_namespaces() -> Result<Vec<(String, String, String)>, AzError> {
     let out = run(&[
-        "servicebus", "namespace", "list",
-        "--query", "[].{name:name,fqdn:serviceBusEndpoint,rg:resourceGroup}",
-        "-o", "json",
+        "servicebus",
+        "namespace",
+        "list",
+        "--query",
+        "[].{name:name,fqdn:serviceBusEndpoint,rg:resourceGroup}",
+        "-o",
+        "json",
     ])?;
     let arr: serde_json::Value =
         serde_json::from_str(&out).map_err(|e| AzError::Other(e.to_string()))?;
@@ -266,7 +302,7 @@ pub fn sb_list_namespaces() -> Result<Vec<(String, String, String)>, AzError> {
     if let Some(items) = arr.as_array() {
         for item in items {
             let name = item["name"].as_str().unwrap_or("").to_string();
-            let rg   = item["rg"].as_str().unwrap_or("").to_string();
+            let rg = item["rg"].as_str().unwrap_or("").to_string();
             // fqdn from the API looks like "https://sbns-xxx.servicebus.windows.net:443/"
             // strip to bare hostname
             let raw_fqdn = item["fqdn"].as_str().unwrap_or("");
@@ -289,11 +325,16 @@ pub fn sb_find_rg(namespace_fqdn: &str, subscription: Option<&str>) -> Result<St
     let short_name = namespace_fqdn.split('.').next().unwrap_or(namespace_fqdn);
     // Use a more global search that doesn't require --resource-group itself to find the group
     let mut args = vec![
-        "resource", "list",
-        "--name", short_name,
-        "--resource-type", "Microsoft.ServiceBus/namespaces",
-        "--query", "[0].resourceGroup",
-        "-o", "tsv",
+        "resource",
+        "list",
+        "--name",
+        short_name,
+        "--resource-type",
+        "Microsoft.ServiceBus/namespaces",
+        "--query",
+        "[0].resourceGroup",
+        "-o",
+        "tsv",
     ];
     if let Some(sub) = subscription {
         args.push("--subscription");
@@ -311,7 +352,11 @@ pub fn sb_find_rg(namespace_fqdn: &str, subscription: Option<&str>) -> Result<St
 }
 
 /// Fetch active + DLQ message counts and size for one queue.
-pub fn sb_queue_stats(rg: &str, namespace_fqdn: &str, queue: &str) -> Result<SbQueueStats, AzError> {
+pub fn sb_queue_stats(
+    rg: &str,
+    namespace_fqdn: &str,
+    queue: &str,
+) -> Result<SbQueueStats, AzError> {
     let short_name = namespace_fqdn.split('.').next().unwrap_or(namespace_fqdn);
     let out = run(&[
         "servicebus", "queue", "show",
@@ -326,15 +371,18 @@ pub fn sb_queue_stats(rg: &str, namespace_fqdn: &str, queue: &str) -> Result<SbQ
         serde_json::from_str(&out).map_err(|e| AzError::Other(e.to_string()))?;
     Ok(SbQueueStats {
         active_message_count: v["active"].as_u64().unwrap_or(0),
-        dead_letter_count:    v["dlq"].as_u64().unwrap_or(0),
-        size_bytes:           v["size"].as_u64().unwrap_or(0),
+        dead_letter_count: v["dlq"].as_u64().unwrap_or(0),
+        size_bytes: v["size"].as_u64().unwrap_or(0),
     })
 }
 
-
 /// List all queues in a Service Bus namespace.
 /// Returns queue names sorted alphabetically.
-pub fn sb_list_queues(subscription: &str, rg: &str, namespace: &str) -> Result<Vec<SbQueueDetail>, AzError> {
+pub fn sb_list_queues(
+    subscription: &str,
+    rg: &str,
+    namespace: &str,
+) -> Result<Vec<SbQueueDetail>, AzError> {
     let short_name = namespace.split('.').next().unwrap_or(namespace);
     let out = run(&[
         "servicebus", "queue", "list",
@@ -350,16 +398,16 @@ pub fn sb_list_queues(subscription: &str, rg: &str, namespace: &str) -> Result<V
     if let Some(items) = arr.as_array() {
         for item in items {
             result.push(SbQueueDetail {
-                name:             item["name"].as_str().unwrap_or("").to_string(),
-                status:           item["status"].as_str().unwrap_or("Active").to_string(),
-                max_size_mb:      item["maxSize"].as_u64().unwrap_or(0),
-                active_messages:  item["msgCount"].as_u64().unwrap_or(0),
-                dead_letter:      item["dlq"].as_u64().unwrap_or(0),
+                name: item["name"].as_str().unwrap_or("").to_string(),
+                status: item["status"].as_str().unwrap_or("Active").to_string(),
+                max_size_mb: item["maxSize"].as_u64().unwrap_or(0),
+                active_messages: item["msgCount"].as_u64().unwrap_or(0),
+                dead_letter: item["dlq"].as_u64().unwrap_or(0),
                 requires_session: item["requiresSession"].as_bool().unwrap_or(false),
-                max_delivery:     item["maxDelivery"].as_u64().unwrap_or(10) as u32,
-                lock_duration:    item["lockDuration"].as_str().unwrap_or("").to_string(),
-                default_ttl:      item["defaultTtl"].as_str().unwrap_or("").to_string(),
-                auto_delete:      item["autoDelete"].as_str().unwrap_or("").to_string(),
+                max_delivery: item["maxDelivery"].as_u64().unwrap_or(10) as u32,
+                lock_duration: item["lockDuration"].as_str().unwrap_or("").to_string(),
+                default_ttl: item["defaultTtl"].as_str().unwrap_or("").to_string(),
+                auto_delete: item["autoDelete"].as_str().unwrap_or("").to_string(),
             });
         }
     }
@@ -369,16 +417,16 @@ pub fn sb_list_queues(subscription: &str, rg: &str, namespace: &str) -> Result<V
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SbQueueDetail {
-    pub name:             String,
-    pub status:           String,
-    pub max_size_mb:      u64,
-    pub active_messages:  u64,
-    pub dead_letter:      u64,
+    pub name: String,
+    pub status: String,
+    pub max_size_mb: u64,
+    pub active_messages: u64,
+    pub dead_letter: u64,
     pub requires_session: bool,
-    pub max_delivery:     u32,
-    pub lock_duration:    String,
-    pub default_ttl:      String,
-    pub auto_delete:      String,
+    pub max_delivery: u32,
+    pub lock_duration: String,
+    pub default_ttl: String,
+    pub auto_delete: String,
 }
 
 /// Sets the active subscription for subsequent az commands.
@@ -386,20 +434,30 @@ pub fn set_subscription(subscription_id: &str) -> Result<(), AzError> {
     run(&["account", "set", "--subscription", subscription_id]).map(|_| ())
 }
 
-
-
-
-
 /// Fetches the primary connection string for a Service Bus namespace.
-pub fn fetch_servicebus_connection_string(subscription: &str, rg: &str, namespace: &str) -> Result<String, AzError> {
+pub fn fetch_servicebus_connection_string(
+    subscription: &str,
+    rg: &str,
+    namespace: &str,
+) -> Result<String, AzError> {
     run(&[
-        "servicebus", "namespace", "authorization-rule", "keys", "list",
-        "--subscription", subscription,
-        "--resource-group", rg,
-        "--namespace-name", namespace,
-        "--name", "RootManageSharedAccessKey",
-        "--query", "primaryConnectionString",
-        "-o", "tsv",
+        "servicebus",
+        "namespace",
+        "authorization-rule",
+        "keys",
+        "list",
+        "--subscription",
+        subscription,
+        "--resource-group",
+        rg,
+        "--namespace-name",
+        namespace,
+        "--name",
+        "RootManageSharedAccessKey",
+        "--query",
+        "primaryConnectionString",
+        "-o",
+        "tsv",
     ])
 }
 
@@ -416,28 +474,52 @@ pub struct BlobInfo {
 
 #[allow(dead_code)]
 pub fn storage_create_container(conn_str: &str, container: &str) -> Result<(), AzError> {
-    run(&["storage", "container", "create", "--connection-string", conn_str, "--name", container]).map(|_| ())
+    run(&[
+        "storage",
+        "container",
+        "create",
+        "--connection-string",
+        conn_str,
+        "--name",
+        container,
+    ])
+    .map(|_| ())
 }
 
 #[allow(dead_code)]
 pub fn storage_list_containers(conn_str: &str) -> Result<Vec<String>, AzError> {
     let out = run(&[
-        "storage", "container", "list",
-        "--connection-string", conn_str,
-        "--query", "[].name",
-        "-o", "tsv",
+        "storage",
+        "container",
+        "list",
+        "--connection-string",
+        conn_str,
+        "--query",
+        "[].name",
+        "-o",
+        "tsv",
     ])?;
-    Ok(out.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+    Ok(out
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
 }
 
 #[allow(dead_code)]
 pub fn storage_list_blobs(conn_str: &str, container: &str) -> Result<Vec<BlobInfo>, AzError> {
     let out = run(&[
-        "storage", "blob", "list",
-        "--container-name", container,
-        "--connection-string", conn_str,
-        "--query", "[].{name:name,size:properties.contentLength}",
-        "-o", "json",
+        "storage",
+        "blob",
+        "list",
+        "--container-name",
+        container,
+        "--connection-string",
+        conn_str,
+        "--query",
+        "[].{name:name,size:properties.contentLength}",
+        "-o",
+        "json",
     ])?;
     let arr: serde_json::Value =
         serde_json::from_str(&out).map_err(|e| AzError::Other(e.to_string()))?;
@@ -457,22 +539,38 @@ pub fn storage_list_blobs(conn_str: &str, container: &str) -> Result<Vec<BlobInf
 #[allow(dead_code)]
 pub fn storage_clear_container(conn_str: &str, container: &str) -> Result<u64, AzError> {
     let out = run(&[
-        "storage", "blob", "delete-batch",
-        "--source", container,
-        "--connection-string", conn_str,
+        "storage",
+        "blob",
+        "delete-batch",
+        "--source",
+        container,
+        "--connection-string",
+        conn_str,
     ])?;
     Ok(out.trim().parse().unwrap_or(0))
 }
 
 #[allow(dead_code)]
-pub fn storage_upload_blob(conn_str: &str, container: &str, file_path: &str, blob_name: &str) -> Result<(), AzError> {
+pub fn storage_upload_blob(
+    conn_str: &str,
+    container: &str,
+    file_path: &str,
+    blob_name: &str,
+) -> Result<(), AzError> {
     run(&[
-        "storage", "blob", "upload",
-        "--file", file_path,
-        "--container-name", container,
-        "--name", blob_name,
-        "--connection-string", conn_str,
-        "--overwrite", "true",
-    ]).map(|_| ())
+        "storage",
+        "blob",
+        "upload",
+        "--file",
+        file_path,
+        "--container-name",
+        container,
+        "--name",
+        blob_name,
+        "--connection-string",
+        conn_str,
+        "--overwrite",
+        "true",
+    ])
+    .map(|_| ())
 }
-

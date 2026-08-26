@@ -33,10 +33,7 @@ pub fn managed_api_names(connections_json: &str) -> BTreeSet<String> {
 
 /// Which managed API connections a workflow references, via the
 /// `"referenceName"` used by `ApiConnection` actions.
-pub fn referenced_managed_apis(
-    workflow_json: &str,
-    managed: &BTreeSet<String>,
-) -> Vec<String> {
+pub fn referenced_managed_apis(workflow_json: &str, managed: &BTreeSet<String>) -> Vec<String> {
     if managed.is_empty() {
         return Vec::new();
     }
@@ -83,8 +80,14 @@ pub fn managed_api_names_in(func_cwd: &str) -> BTreeSet<String> {
 }
 
 /// The managed APIs a named workflow references, read from its workflow.json.
-pub fn workflow_managed_apis(func_cwd: &str, workflow: &str, managed: &BTreeSet<String>) -> Vec<String> {
-    let path = std::path::Path::new(func_cwd).join(workflow).join("workflow.json");
+pub fn workflow_managed_apis(
+    func_cwd: &str,
+    workflow: &str,
+    managed: &BTreeSet<String>,
+) -> Vec<String> {
+    let path = std::path::Path::new(func_cwd)
+        .join(workflow)
+        .join("workflow.json");
     std::fs::read_to_string(path)
         .map(|s| referenced_managed_apis(&s, managed))
         .unwrap_or_default()
@@ -140,7 +143,10 @@ mod tests {
         let wf = r#"{"definition":{"actions":{"If":{"else":{"actions":[
             {"inputs":{"host":{"connection":{"referenceName":"sharepointonline"}}}}
         ]}}}}}"#;
-        assert_eq!(referenced_managed_apis(wf, &managed()), vec!["sharepointonline"]);
+        assert_eq!(
+            referenced_managed_apis(wf, &managed()),
+            vec!["sharepointonline"]
+        );
     }
 
     #[test]
@@ -159,7 +165,10 @@ mod tests {
             "B":{"inputs":{"host":{"connection":{"referenceName":"teams"}}}},
             "C":{"inputs":{"host":{"connection":{"referenceName":"sharepointonline"}}}}
         }}}"#;
-        assert_eq!(referenced_managed_apis(wf, &managed()), vec!["sharepointonline", "teams"]);
+        assert_eq!(
+            referenced_managed_apis(wf, &managed()),
+            vec!["sharepointonline", "teams"]
+        );
     }
 
     #[test]

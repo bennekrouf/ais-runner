@@ -9,12 +9,18 @@ pub fn handle_initialize(
     mut setup_status: Signal<setup_manager::SetupStatus>,
     log_lines: Signal<Vec<LogLine>>,
 ) {
-    let d  = dir.to_string();
+    let d = dir.to_string();
     let d2 = dir.to_string();
     let mut push = make_push(log_lines);
     spawn(async move {
-        match tokio::task::spawn_blocking(move || setup_manager::initialize_from_template(&d)).await.unwrap_or(Err("task panicked".into())) {
-            Ok(_)  => { push("Settings initialized from template.".into(), LogLevel::Ok); setup_status.set(setup_manager::check_setup(&d2)); }
+        match tokio::task::spawn_blocking(move || setup_manager::initialize_from_template(&d))
+            .await
+            .unwrap_or(Err("task panicked".into()))
+        {
+            Ok(_) => {
+                push("Settings initialized from template.".into(), LogLevel::Ok);
+                setup_status.set(setup_manager::check_setup(&d2));
+            }
             Err(e) => push(format!("Failed to initialize: {}", e), LogLevel::Error),
         }
     });
@@ -26,16 +32,22 @@ pub fn handle_initialize_default(
     log_lines: Signal<Vec<LogLine>>,
     workspace_link: Option<config::WorkspaceLink>,
 ) {
-    let d    = dir.to_string();
-    let d2   = dir.to_string();
-    let d3   = dir.to_string();
+    let d = dir.to_string();
+    let d2 = dir.to_string();
+    let d3 = dir.to_string();
     let mut push = make_push(log_lines);
     spawn(async move {
-        match tokio::task::spawn_blocking(move || setup_manager::initialize_default(&d)).await.unwrap_or(Err("task panicked".into())) {
+        match tokio::task::spawn_blocking(move || setup_manager::initialize_default(&d))
+            .await
+            .unwrap_or(Err("task panicked".into()))
+        {
             Ok(_) => {
                 push("✅ Setup complete — connections.json patched (AzureBlob MSI → connectionString), local.settings.json ready.".into(), LogLevel::Ok);
                 if let Some(l) = workspace_link {
-                    push(format!("Auto-detecting resources in {}...", l.resource_group), LogLevel::Info);
+                    push(
+                        format!("Auto-detecting resources in {}...", l.resource_group),
+                        LogLevel::Info,
+                    );
                     match tokio::task::spawn_blocking(move || {
                         setup_manager::auto_detect_resources(
                             &d3,
@@ -43,14 +55,20 @@ pub fn handle_initialize_default(
                             &l.resource_group,
                             l.logic_app_name.as_deref(),
                         )
-                    }).await.unwrap_or(Err("task panicked".into())) {
+                    })
+                    .await
+                    .unwrap_or(Err("task panicked".into()))
+                    {
                         Ok(msg) => push(msg, LogLevel::Ok),
-                        Err(e)  => push(format!("Auto-detect failed: {}", e), LogLevel::Error),
+                        Err(e) => push(format!("Auto-detect failed: {}", e), LogLevel::Error),
                     }
                 }
                 setup_status.set(setup_manager::check_setup(&d2));
             }
-            Err(e) => push(format!("Failed to create default settings: {}", e), LogLevel::Error),
+            Err(e) => push(
+                format!("Failed to create default settings: {}", e),
+                LogLevel::Error,
+            ),
         }
     });
 }
@@ -62,19 +80,25 @@ pub fn handle_auto_detect(
     workspace_link: Option<config::WorkspaceLink>,
 ) {
     let Some(l) = workspace_link else { return };
-    let d      = dir.to_string();
-    let d2     = dir.to_string();
-    let rg     = l.resource_group.clone();
+    let d = dir.to_string();
+    let d2 = dir.to_string();
+    let rg = l.resource_group.clone();
     let sub_id = l.subscription_id.clone();
     let mut push = make_push(log_lines);
     spawn(async move {
-        push(format!("Auto-detecting resources in {}...", rg), LogLevel::Info);
+        push(
+            format!("Auto-detecting resources in {}...", rg),
+            LogLevel::Info,
+        );
         let app_name = l.logic_app_name.clone();
         match tokio::task::spawn_blocking(move || {
             setup_manager::auto_detect_resources(&d, Some(&sub_id), &rg, app_name.as_deref())
-        }).await.unwrap_or(Err("task panicked".into())) {
+        })
+        .await
+        .unwrap_or(Err("task panicked".into()))
+        {
             Ok(msg) => push(msg, LogLevel::Ok),
-            Err(e)  => push(format!("Auto-detect failed: {}", e), LogLevel::Error),
+            Err(e) => push(format!("Auto-detect failed: {}", e), LogLevel::Error),
         }
         setup_status.set(setup_manager::check_setup(&d2));
     });

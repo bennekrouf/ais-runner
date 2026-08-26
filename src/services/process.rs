@@ -7,7 +7,11 @@ use std::sync::{Arc, Mutex};
 /// set on the child, so binaries in non-standard locations aren't found when
 /// ais-runner is launched from the desktop without a full shell PATH.
 pub fn resolve_bin(program: &str) -> String {
-    let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+    let sep = if cfg!(target_os = "windows") {
+        ';'
+    } else {
+        ':'
+    };
     // Already absolute
     if std::path::Path::new(program).is_absolute() {
         return program.to_string();
@@ -44,9 +48,9 @@ pub fn rich_path() -> String {
 fn rich_path_unix() -> String {
     let inherited = std::env::var("PATH").unwrap_or_default();
     let extras = [
-        "/opt/homebrew/bin",    // Homebrew on Apple Silicon
+        "/opt/homebrew/bin", // Homebrew on Apple Silicon
         "/opt/homebrew/sbin",
-        "/usr/local/bin",       // Homebrew on Intel + npm global + func CLI
+        "/usr/local/bin", // Homebrew on Intel + npm global + func CLI
         "/usr/local/sbin",
         "/usr/bin",
         "/usr/sbin",
@@ -83,26 +87,26 @@ fn rich_path_windows() -> String {
     };
 
     // Azure Functions Core Tools (npm global install)
-    push("APPDATA",      r"npm");                          // npm global on Windows
-    push("ProgramFiles", r"nodejs");                       // Node / npm bundled
+    push("APPDATA", r"npm"); // npm global on Windows
+    push("ProgramFiles", r"nodejs"); // Node / npm bundled
 
     // Azure CLI
     push("ProgramFiles(x86)", r"Microsoft SDKs\Azure\CLI2\wbin");
-    push("ProgramFiles",      r"Microsoft SDKs\Azure\CLI2\wbin");
-    push("LOCALAPPDATA",      r"Programs\Azure CLI\wbin");
+    push("ProgramFiles", r"Microsoft SDKs\Azure\CLI2\wbin");
+    push("LOCALAPPDATA", r"Programs\Azure CLI\wbin");
 
     // Azurite (npm global or standalone)
-    push("APPDATA",      r"npm");                          // already added above, idempotent
+    push("APPDATA", r"npm"); // already added above, idempotent
     push("ProgramFiles", r"Microsoft\Azurite");
 
     // Node.js itself (needed by func)
-    push("ProgramFiles",      r"nodejs");
+    push("ProgramFiles", r"nodejs");
     push("ProgramFiles(x86)", r"nodejs");
 
     // Common catch-all locations
-    push("ProgramFiles",      r"Git\usr\bin");             // Git-bash utilities
-    push("SystemRoot",        r"System32");
-    push("SystemRoot",        "");
+    push("ProgramFiles", r"Git\usr\bin"); // Git-bash utilities
+    push("SystemRoot", r"System32");
+    push("SystemRoot", "");
 
     parts.join(";")
 }
@@ -133,9 +137,12 @@ impl ManagedProcess {
     }
 
     /// Spawn the process and return its stdout/stderr handles for the caller to stream.
-    pub fn start(&self, program: &str, args: &[&str], workdir: Option<&str>)
-        -> Result<(ChildStdout, ChildStderr), String>
-    {
+    pub fn start(
+        &self,
+        program: &str,
+        args: &[&str],
+        workdir: Option<&str>,
+    ) -> Result<(ChildStdout, ChildStderr), String> {
         let mut guard = self.child.lock().map_err(|e| e.to_string())?;
         if guard.is_some() {
             return Err("Process already started".into());
@@ -151,9 +158,9 @@ impl ManagedProcess {
         let resolved = resolve_bin(program);
         let mut cmd = Command::new(&resolved);
         cmd.args(args)
-           .stdout(Stdio::piped())
-           .stderr(Stdio::piped())
-           .env("PATH", rich_path());
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("PATH", rich_path());
         if let Some(dir) = workdir {
             cmd.current_dir(dir);
         }
@@ -167,11 +174,17 @@ impl ManagedProcess {
     }
 
     /// Like `start` but also injects extra environment variables.
-    pub fn start_with_env(&self, program: &str, args: &[&str], workdir: Option<&str>, extra_env: &[(String, String)])
-        -> Result<(ChildStdout, ChildStderr), String>
-    {
+    pub fn start_with_env(
+        &self,
+        program: &str,
+        args: &[&str],
+        workdir: Option<&str>,
+        extra_env: &[(String, String)],
+    ) -> Result<(ChildStdout, ChildStderr), String> {
         let mut guard = self.child.lock().map_err(|e| e.to_string())?;
-        if guard.is_some() { return Err("Process already started".into()); }
+        if guard.is_some() {
+            return Err("Process already started".into());
+        }
         if let Some(dir) = workdir {
             if !std::path::Path::new(dir).is_dir() {
                 return Err(format!("Working directory '{}' does not exist.", dir));
@@ -180,12 +193,17 @@ impl ManagedProcess {
         let resolved = resolve_bin(program);
         let mut cmd = Command::new(&resolved);
         cmd.args(args)
-           .stdout(Stdio::piped())
-           .stderr(Stdio::piped())
-           .env("PATH", rich_path());
-        for (k, v) in extra_env { cmd.env(k, v); }
-        if let Some(dir) = workdir { cmd.current_dir(dir); }
-        let mut child = cmd.spawn()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("PATH", rich_path());
+        for (k, v) in extra_env {
+            cmd.env(k, v);
+        }
+        if let Some(dir) = workdir {
+            cmd.current_dir(dir);
+        }
+        let mut child = cmd
+            .spawn()
             .map_err(|e| format!("Failed to spawn '{}': {}", resolved, e))?;
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
@@ -245,7 +263,12 @@ fn line_is_suppressed(line: &str) -> bool {
 
 fn line_is_notable(line: &str) -> bool {
     let l = line.to_lowercase();
-    l.contains("error") || l.contains("warn") || l.contains("fail")
-        || l.contains("exception") || l.contains("loaded") || l.contains("listening")
-        || l.contains("started") || l.contains("starting")
+    l.contains("error")
+        || l.contains("warn")
+        || l.contains("fail")
+        || l.contains("exception")
+        || l.contains("loaded")
+        || l.contains("listening")
+        || l.contains("started")
+        || l.contains("starting")
 }

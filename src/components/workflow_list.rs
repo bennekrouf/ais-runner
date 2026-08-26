@@ -1,20 +1,20 @@
-use dioxus::prelude::*;
-use std::collections::{HashSet, HashMap};
-use crate::services::workflows::{WorkflowItem, ConnectorKind};
 use crate::components::tooltip::Tooltip;
+use crate::services::workflows::{ConnectorKind, WorkflowItem};
+use dioxus::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct WorkflowListProps {
-    pub workflows:   Vec<WorkflowItem>,
-    pub selected:    Option<String>,
-    pub traced:      HashSet<String>,
-    pub running:     HashSet<String>,
-    pub sql_wfs:     HashSet<String>,
-    pub msi_wfs:     HashSet<String>,
-    pub connectors:  HashMap<String, Vec<ConnectorKind>>,
-    pub last_ran:    HashMap<String, u64>,
-    pub on_select:   EventHandler<String>,
-    pub on_run:      EventHandler<(String, String, String)>,
+    pub workflows: Vec<WorkflowItem>,
+    pub selected: Option<String>,
+    pub traced: HashSet<String>,
+    pub running: HashSet<String>,
+    pub sql_wfs: HashSet<String>,
+    pub msi_wfs: HashSet<String>,
+    pub connectors: HashMap<String, Vec<ConnectorKind>>,
+    pub last_ran: HashMap<String, u64>,
+    pub on_select: EventHandler<String>,
+    pub on_run: EventHandler<(String, String, String)>,
 }
 
 /// Classify a workflow by its trigger type.
@@ -38,18 +38,26 @@ impl TriggerCategory {
         let p = trigger_provider.unwrap_or("").to_lowercase();
         match t.as_str() {
             "recurrence" | "schedule" => Self::Recurrence,
-            "request" | "http"        => Self::Http,
-            "blob"                    => Self::Blob,
-            "servicebustrigger"       => Self::ServiceBus,
-            "apiconnection"           => Self::ApiConnection,
+            "request" | "http" => Self::Http,
+            "blob" => Self::Blob,
+            "servicebustrigger" => Self::ServiceBus,
+            "apiconnection" => Self::ApiConnection,
             "serviceprovider" => {
-                if      p.contains("servicebus")                     { Self::ServiceBus }
-                else if p.contains("azureblob") || p.contains("/blob") { Self::Blob }
-                else if p.contains("eventgrid")                      { Self::EventGrid }
-                else if p.contains("documentdb") || p.contains("cosmos") { Self::CosmosDb }
-                else if p.contains("/sql")                           { Self::Sql }
-                else if p.contains("sftp")                           { Self::Sftp }
-                else                                                 { Self::Unknown }
+                if p.contains("servicebus") {
+                    Self::ServiceBus
+                } else if p.contains("azureblob") || p.contains("/blob") {
+                    Self::Blob
+                } else if p.contains("eventgrid") {
+                    Self::EventGrid
+                } else if p.contains("documentdb") || p.contains("cosmos") {
+                    Self::CosmosDb
+                } else if p.contains("/sql") {
+                    Self::Sql
+                } else if p.contains("sftp") {
+                    Self::Sftp
+                } else {
+                    Self::Unknown
+                }
             }
             _ => Self::Unknown,
         }
@@ -57,31 +65,31 @@ impl TriggerCategory {
 
     fn icon(self) -> &'static str {
         match self {
-            Self::Recurrence    => "⏱",
-            Self::Http          => "🌐",
-            Self::ServiceBus    => "📨",
-            Self::Blob          => "📦",
-            Self::EventGrid     => "⚡",
-            Self::CosmosDb      => "🌌",
-            Self::Sql           => "🗄",
-            Self::Sftp          => "📂",
+            Self::Recurrence => "⏱",
+            Self::Http => "🌐",
+            Self::ServiceBus => "📨",
+            Self::Blob => "📦",
+            Self::EventGrid => "⚡",
+            Self::CosmosDb => "🌌",
+            Self::Sql => "🗄",
+            Self::Sftp => "📂",
             Self::ApiConnection => "🔌",
-            Self::Unknown       => "❓",
+            Self::Unknown => "❓",
         }
     }
 
     fn label(self) -> &'static str {
         match self {
-            Self::Recurrence    => "Recurrence",
-            Self::Http          => "HTTP / Request",
-            Self::ServiceBus    => "Service Bus",
-            Self::Blob          => "Blob Storage",
-            Self::EventGrid     => "Event Grid",
-            Self::CosmosDb      => "Cosmos DB",
-            Self::Sql           => "SQL",
-            Self::Sftp          => "SFTP",
+            Self::Recurrence => "Recurrence",
+            Self::Http => "HTTP / Request",
+            Self::ServiceBus => "Service Bus",
+            Self::Blob => "Blob Storage",
+            Self::EventGrid => "Event Grid",
+            Self::CosmosDb => "Cosmos DB",
+            Self::Sql => "SQL",
+            Self::Sftp => "SFTP",
             Self::ApiConnection => "API Connection",
-            Self::Unknown       => "Unknown trigger",
+            Self::Unknown => "Unknown trigger",
         }
     }
 }
@@ -116,7 +124,7 @@ fn matches_filter(name: &str, terms: &[&str]) -> bool {
 
 #[component]
 pub fn WorkflowList(props: WorkflowListProps) -> Element {
-    let mut filter      = use_signal(|| String::new());
+    let mut filter = use_signal(|| String::new());
     let mut filter_mode = use_signal(|| FilterMode::All);
 
     let query = filter.read().to_lowercase();
@@ -127,44 +135,57 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
     let total = props.workflows.len();
 
     // Pre-compute category for each workflow once (now uses trigger_provider).
-    let with_cat: Vec<(&WorkflowItem, TriggerCategory)> = props.workflows.iter()
-        .map(|wf| (wf, TriggerCategory::from(&wf.trigger_type, wf.trigger_provider.as_deref())))
+    let with_cat: Vec<(&WorkflowItem, TriggerCategory)> = props
+        .workflows
+        .iter()
+        .map(|wf| {
+            (
+                wf,
+                TriggerCategory::from(&wf.trigger_type, wf.trigger_provider.as_deref()),
+            )
+        })
         .collect();
 
     // Counts per filter bucket — only non-zero ones get a filter button.
-    let cnt = |cat: TriggerCategory| with_cat.iter().filter(|(wf, c)| wf.healthy && *c == cat).count();
-    let count_recurrence    = cnt(TriggerCategory::Recurrence);
-    let count_http          = cnt(TriggerCategory::Http);
-    let count_sb            = cnt(TriggerCategory::ServiceBus);
-    let count_blob          = cnt(TriggerCategory::Blob);
-    let count_eventgrid     = cnt(TriggerCategory::EventGrid);
-    let count_cosmos        = cnt(TriggerCategory::CosmosDb);
-    let count_sql           = cnt(TriggerCategory::Sql);
-    let count_sftp          = cnt(TriggerCategory::Sftp);
-    let count_api           = cnt(TriggerCategory::ApiConnection);
-    let count_unknown       = cnt(TriggerCategory::Unknown);
-    let count_unhealthy     = props.workflows.iter().filter(|wf| !wf.healthy).count();
+    let cnt = |cat: TriggerCategory| {
+        with_cat
+            .iter()
+            .filter(|(wf, c)| wf.healthy && *c == cat)
+            .count()
+    };
+    let count_recurrence = cnt(TriggerCategory::Recurrence);
+    let count_http = cnt(TriggerCategory::Http);
+    let count_sb = cnt(TriggerCategory::ServiceBus);
+    let count_blob = cnt(TriggerCategory::Blob);
+    let count_eventgrid = cnt(TriggerCategory::EventGrid);
+    let count_cosmos = cnt(TriggerCategory::CosmosDb);
+    let count_sql = cnt(TriggerCategory::Sql);
+    let count_sftp = cnt(TriggerCategory::Sftp);
+    let count_api = cnt(TriggerCategory::ApiConnection);
+    let count_unknown = cnt(TriggerCategory::Unknown);
+    let count_unhealthy = props.workflows.iter().filter(|wf| !wf.healthy).count();
 
     let mode = *filter_mode.read();
 
-    let mut visible: Vec<_> = with_cat.iter()
+    let mut visible: Vec<_> = with_cat
+        .iter()
         .filter(|(wf, cat)| {
             if !matches_filter(&wf.name, &terms) {
                 return false;
             }
             match mode {
-                FilterMode::All           => true,
-                FilterMode::Recurrence    => wf.healthy && *cat == TriggerCategory::Recurrence,
-                FilterMode::Http          => wf.healthy && *cat == TriggerCategory::Http,
-                FilterMode::ServiceBus    => wf.healthy && *cat == TriggerCategory::ServiceBus,
-                FilterMode::Blob          => wf.healthy && *cat == TriggerCategory::Blob,
-                FilterMode::EventGrid     => wf.healthy && *cat == TriggerCategory::EventGrid,
-                FilterMode::CosmosDb      => wf.healthy && *cat == TriggerCategory::CosmosDb,
-                FilterMode::Sql           => wf.healthy && *cat == TriggerCategory::Sql,
-                FilterMode::Sftp          => wf.healthy && *cat == TriggerCategory::Sftp,
+                FilterMode::All => true,
+                FilterMode::Recurrence => wf.healthy && *cat == TriggerCategory::Recurrence,
+                FilterMode::Http => wf.healthy && *cat == TriggerCategory::Http,
+                FilterMode::ServiceBus => wf.healthy && *cat == TriggerCategory::ServiceBus,
+                FilterMode::Blob => wf.healthy && *cat == TriggerCategory::Blob,
+                FilterMode::EventGrid => wf.healthy && *cat == TriggerCategory::EventGrid,
+                FilterMode::CosmosDb => wf.healthy && *cat == TriggerCategory::CosmosDb,
+                FilterMode::Sql => wf.healthy && *cat == TriggerCategory::Sql,
+                FilterMode::Sftp => wf.healthy && *cat == TriggerCategory::Sftp,
                 FilterMode::ApiConnection => wf.healthy && *cat == TriggerCategory::ApiConnection,
-                FilterMode::Unknown       => wf.healthy && *cat == TriggerCategory::Unknown,
-                FilterMode::Unhealthy     => !wf.healthy,
+                FilterMode::Unknown => wf.healthy && *cat == TriggerCategory::Unknown,
+                FilterMode::Unhealthy => !wf.healthy,
             }
         })
         .collect();
@@ -193,7 +214,7 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
     use_effect(move || {
         document::eval(
             "var el = document.querySelector('#workflow-list .workflow-item.selected');\
-             if (el) el.scrollIntoView({ block: 'nearest', behavior: 'instant' });"
+             if (el) el.scrollIntoView({ block: 'nearest', behavior: 'instant' });",
         );
     });
 
@@ -385,7 +406,10 @@ mod filter_tests {
 
     #[test]
     fn single_word_still_works() {
-        assert!(matches_filter("Rcv-Kyriba-files-broadcast", &terms("kyriba")));
+        assert!(matches_filter(
+            "Rcv-Kyriba-files-broadcast",
+            &terms("kyriba")
+        ));
         assert!(!matches_filter("Verify-Ignite-Voucher", &terms("kyriba")));
     }
 
@@ -400,11 +424,17 @@ mod filter_tests {
         assert!(matches_filter("Anything", &terms("")));
         assert!(matches_filter("Anything", &terms("   ")));
         // trailing/duplicate spaces must not blank the list
-        assert!(matches_filter("Check-Ignite-Payment-File", &terms("  check   ")));
+        assert!(matches_filter(
+            "Check-Ignite-Payment-File",
+            &terms("  check   ")
+        ));
     }
 
     #[test]
     fn non_matching_query_hides_everything() {
-        assert!(!matches_filter("Check-Ignite-Payment-File", &terms("zzz qqq")));
+        assert!(!matches_filter(
+            "Check-Ignite-Payment-File",
+            &terms("zzz qqq")
+        ));
     }
 }
