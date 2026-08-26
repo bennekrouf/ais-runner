@@ -614,32 +614,34 @@ pub async fn poll_for_run(
                                 }
                             }
                             if err > 0 {
+                                let detail = format!("{} ok, {} failed", ok, err);
                                 push(
-                                    format!("Run complete — {}: {} ok, {} failed", wf, ok, err),
+                                    format!("Run complete — {}: {}", wf, detail),
                                     LogLevel::Error,
                                 );
+                                crate::services::notifications::workflow_failed(&wf, &detail);
                             } else if a.is_empty() {
                                 push(
                                     format!("Run complete — {}: {}", wf, run_status),
                                     LogLevel::Ok,
                                 );
-                            } else {
-                                push(
-                                    format!(
-                                        "Run complete — {}: {} actions in {:.1}s",
-                                        wf,
-                                        ok,
-                                        workflows::duration_ms(
-                                            &a.first()
-                                                .and_then(|x| x.properties.start_time.clone()),
-                                            &a.last().and_then(|x| x.properties.end_time.clone()),
-                                        )
-                                        .unwrap_or(0)
-                                            as f64
-                                            / 1000.0
-                                    ),
-                                    LogLevel::Ok,
+                                crate::services::notifications::workflow_succeeded(
+                                    &wf,
+                                    &run_status,
                                 );
+                            } else {
+                                let detail = format!(
+                                    "{} actions in {:.1}s",
+                                    ok,
+                                    workflows::duration_ms(
+                                        &a.first().and_then(|x| x.properties.start_time.clone()),
+                                        &a.last().and_then(|x| x.properties.end_time.clone()),
+                                    )
+                                    .unwrap_or(0) as f64
+                                        / 1000.0
+                                );
+                                push(format!("Run complete — {}: {}", wf, detail), LogLevel::Ok);
+                                crate::services::notifications::workflow_succeeded(&wf, &detail);
                             }
                             break;
                         }
@@ -658,6 +660,10 @@ pub async fn poll_for_run(
                                 ),
                                 LogLevel::Error,
                             );
+                        crate::services::notifications::workflow_failed(
+                            &wf,
+                            &format!("No run appeared after {} s", patience_secs),
+                        );
                         break;
                     }
                 }
@@ -665,6 +671,10 @@ pub async fn poll_for_run(
         }
         if tokio::time::Instant::now() >= deadline {
             push("Live poll timed out after 5 min".into(), LogLevel::Warn);
+            crate::services::notifications::workflow_timed_out(
+                &wf,
+                "Live poll timed out after 5 min",
+            );
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;

@@ -30,7 +30,7 @@ pub struct WorkspaceLink {
     pub devops_project: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub recent_dirs: Vec<String>,
     pub workspace_links: HashMap<String, WorkspaceLink>,
@@ -41,6 +41,27 @@ pub struct AppConfig {
     /// the OS config dir (NOT in the project workspace).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub last_payloads: HashMap<String, HashMap<String, String>>,
+    /// Whether to fire native OS notifications (run succeeded/failed/timed out).
+    /// Defaults to on, both for fresh installs and for existing configs
+    /// written before this field existed.
+    #[serde(default = "default_true")]
+    pub notifications_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            recent_dirs: Vec::new(),
+            workspace_links: HashMap::new(),
+            graph_prefs: HashMap::new(),
+            last_payloads: HashMap::new(),
+            notifications_enabled: true,
+        }
+    }
 }
 
 impl AppConfig {
