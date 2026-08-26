@@ -22,11 +22,12 @@ pub fn suggest_payload(logic_apps_dir: &str, workflow_name: &str) -> String {
     // Detect whether this is a Service Bus triggered workflow.
     // For SB triggers the runtime wraps the message body in { contentData: ... }.
     // The user only needs to provide the inner content — unwrap the envelope below.
-    let is_sb_trigger = defn["triggers"].as_object()
+    let is_sb_trigger = defn["triggers"]
+        .as_object()
         .and_then(|t| t.values().next())
         .map(|trigger| {
-            trigger["inputs"]["serviceProviderConfiguration"]["serviceProviderId"]
-                .as_str() == Some("/serviceProviders/serviceBus")
+            trigger["inputs"]["serviceProviderConfiguration"]["serviceProviderId"].as_str()
+                == Some("/serviceProviders/serviceBus")
         })
         .unwrap_or(false);
 
@@ -267,8 +268,12 @@ fn find_string_field(v: &Value, field: &str) -> Option<String> {
 /// Set `value` at `path` in `root`, creating intermediate objects as needed.
 /// No-op if `root` (or an intermediate we need to descend into) isn't an object.
 fn set_path(root: &mut Value, path: &[String], value: Value) {
-    let Some(obj) = root.as_object_mut() else { return };
-    let Some((first, rest)) = path.split_first() else { return };
+    let Some(obj) = root.as_object_mut() else {
+        return;
+    };
+    let Some((first, rest)) = path.split_first() else {
+        return;
+    };
     if rest.is_empty() {
         obj.insert(first.clone(), value);
     } else {
@@ -517,7 +522,7 @@ fn sample_named(name: &str, schema: &Value) -> Value {
     } else if n == "value" {
         "example"
     } else if n.contains("name") {
-        name   // use the field name itself as a hint
+        name // use the field name itself as a hint
     } else {
         "text"
     };
@@ -528,7 +533,7 @@ fn sample_named(name: &str, schema: &Value) -> Value {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NormalisedSendBody {
     /// What to actually push down the AMQP wire.
-    pub body:   String,
+    pub body: String,
     /// True when we stripped a top-level `contentData` envelope so the UI can
     /// flag that to the user — silently double-wrapped messages cause hours
     /// of "param NULL" debugging downstream.
@@ -556,24 +561,38 @@ pub struct NormalisedSendBody {
 pub fn normalise_send_body(raw: &str) -> NormalisedSendBody {
     let Ok(v) = serde_json::from_str::<Value>(raw) else {
         // Not JSON — send as-is. Plain-text payloads are valid.
-        return NormalisedSendBody { body: raw.to_string(), stripped_envelope: false };
+        return NormalisedSendBody {
+            body: raw.to_string(),
+            stripped_envelope: false,
+        };
     };
     let Value::Object(ref map) = v else {
-        return NormalisedSendBody { body: raw.to_string(), stripped_envelope: false };
+        return NormalisedSendBody {
+            body: raw.to_string(),
+            stripped_envelope: false,
+        };
     };
-    let is_envelope = map.contains_key("contentData") && match map.len() {
-        1 => true,
-        2 => map.keys().all(|k| k == "contentData" || k == "contentType"),
-        3 => map.keys().all(|k| k == "contentData" || k == "contentType" || k == "userProperties"),
-        _ => false,
-    };
+    let is_envelope = map.contains_key("contentData")
+        && match map.len() {
+            1 => true,
+            2 => map.keys().all(|k| k == "contentData" || k == "contentType"),
+            3 => map
+                .keys()
+                .all(|k| k == "contentData" || k == "contentType" || k == "userProperties"),
+            _ => false,
+        };
     if !is_envelope {
-        return NormalisedSendBody { body: raw.to_string(), stripped_envelope: false };
+        return NormalisedSendBody {
+            body: raw.to_string(),
+            stripped_envelope: false,
+        };
     }
     let inner = map.get("contentData").cloned().unwrap_or(Value::Null);
-    let body = serde_json::to_string_pretty(&inner)
-        .unwrap_or_else(|_| raw.to_string());
-    NormalisedSendBody { body, stripped_envelope: true }
+    let body = serde_json::to_string_pretty(&inner).unwrap_or_else(|_| raw.to_string());
+    NormalisedSendBody {
+        body,
+        stripped_envelope: true,
+    }
 }
 
 #[cfg(test)]
@@ -618,7 +637,10 @@ mod branch_literal_tests {
             "data": { "msg": { "content": { "event": { "module": "SageX3" } } } }
         });
         apply_branch_literals(actions.as_object().unwrap(), &mut sample);
-        assert_eq!(sample["data"]["msg"]["content"]["event"]["module"], "Companies");
+        assert_eq!(
+            sample["data"]["msg"]["content"]["event"]["module"],
+            "Companies"
+        );
     }
 
     #[test]
@@ -690,7 +712,10 @@ mod branch_literal_tests {
             "00000000-0000-0000-0000-000000000001"
         );
         // module itself is untouched — it came from a branch literal
-        assert_eq!(sample["data"]["msg"]["content"]["event"]["module"], "Companies");
+        assert_eq!(
+            sample["data"]["msg"]["content"]["event"]["module"],
+            "Companies"
+        );
     }
 
     #[test]

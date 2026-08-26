@@ -32,12 +32,22 @@ enum FetchState {
 
 impl FetchState {
     fn values(&self) -> Option<&AppConfigValues> {
-        if let FetchState::Done(v) = self { Some(v) } else { None }
+        if let FetchState::Done(v) = self {
+            Some(v)
+        } else {
+            None
+        }
     }
     fn err(&self) -> Option<&str> {
-        if let FetchState::Err(e) = self { Some(e) } else { None }
+        if let FetchState::Err(e) = self {
+            Some(e)
+        } else {
+            None
+        }
     }
-    fn is_loading(&self) -> bool { matches!(self, FetchState::Loading) }
+    fn is_loading(&self) -> bool {
+        matches!(self, FetchState::Loading)
+    }
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -50,40 +60,50 @@ pub struct AppConfigPanelProps {
 #[component]
 pub fn AppConfigPanel(props: AppConfigPanelProps) -> Element {
     // ── Discovered stores ──────────────────────────────────────────────────
-    let local         = props.local_pairs.read().clone();
-    let discovered    = app_config::detect_stores(&local);
-    let endpoints     = unique_endpoints(&discovered);
+    let local = props.local_pairs.read().clone();
+    let discovered = app_config::detect_stores(&local);
+    let endpoints = unique_endpoints(&discovered);
 
     // ── State: which store the user has selected ───────────────────────────
     let mut selected_endpoint: Signal<Option<String>> = use_signal(|| endpoints.first().cloned());
 
     // ── State: labels under comparison + their fetched values ──────────────
     // Order preserved so the column layout is stable across re-renders.
-    let mut labels:    Signal<Vec<String>>                  = use_signal(Vec::new);
-    let mut fetches:   Signal<IndexMap<String, FetchState>> = use_signal(IndexMap::new);
-    let mut new_label: Signal<String>                       = use_signal(String::new);
-    let mut filter:    Signal<String>                       = use_signal(String::new);
-    let mut only_diff: Signal<bool>                         = use_signal(|| false);
+    let mut labels: Signal<Vec<String>> = use_signal(Vec::new);
+    let mut fetches: Signal<IndexMap<String, FetchState>> = use_signal(IndexMap::new);
+    let mut new_label: Signal<String> = use_signal(String::new);
+    let mut filter: Signal<String> = use_signal(String::new);
+    let mut only_diff: Signal<bool> = use_signal(|| false);
 
     // ── Actions ────────────────────────────────────────────────────────────
     let mut add_label = move |label: String| {
         let label = label.trim().to_string();
-        let key   = if label.is_empty() { "(none)".to_string() } else { label.clone() };
-        if labels.read().contains(&key) { return; }
+        let key = if label.is_empty() {
+            "(none)".to_string()
+        } else {
+            label.clone()
+        };
+        if labels.read().contains(&key) {
+            return;
+        }
         labels.write().push(key.clone());
         fetches.write().insert(key.clone(), FetchState::Loading);
 
         let endpoint = selected_endpoint.read().clone();
-        let Some(endpoint) = endpoint else { return; };
+        let Some(endpoint) = endpoint else {
+            return;
+        };
         let label_for_call = if label.is_empty() { None } else { Some(label) };
         spawn(async move {
             let endpoint2 = endpoint.clone();
-            let label2    = label_for_call.clone();
+            let label2 = label_for_call.clone();
             let res = tokio::task::spawn_blocking(move || {
                 app_config::fetch_kv(&endpoint2, label2.as_deref())
-            }).await.unwrap_or_else(|_| Err(AzError::Other("task panicked".into())));
+            })
+            .await
+            .unwrap_or_else(|_| Err(AzError::Other("task panicked".into())));
             let state = match res {
-                Ok(v)  => FetchState::Done(v),
+                Ok(v) => FetchState::Done(v),
                 Err(e) => FetchState::Err(format!("{:?}", e)),
             };
             fetches.write().insert(key, state);
@@ -169,7 +189,7 @@ pub fn AppConfigPanel(props: AppConfigPanelProps) -> Element {
     };
 
     // ── Label picker + compare table ──────────────────────────────────────
-    let snap_labels  = labels.read().clone();
+    let snap_labels = labels.read().clone();
     let snap_fetches = fetches.read().clone();
     let q = filter.read().to_lowercase();
 
@@ -179,8 +199,12 @@ pub fn AppConfigPanel(props: AppConfigPanelProps) -> Element {
     for label in snap_labels.iter() {
         if let Some(FetchState::Done(v)) = snap_fetches.get(label) {
             for k in v.keys() {
-                if !q.is_empty() && !k.to_lowercase().contains(&q) { continue; }
-                if seen.insert(k.clone()) { all_keys.push(k.clone()); }
+                if !q.is_empty() && !k.to_lowercase().contains(&q) {
+                    continue;
+                }
+                if seen.insert(k.clone()) {
+                    all_keys.push(k.clone());
+                }
             }
         }
     }
@@ -191,7 +215,8 @@ pub fn AppConfigPanel(props: AppConfigPanelProps) -> Element {
             // values. Missing-in-one-env also counts (effectively `None` vs Some).
             let mut last: Option<Option<&String>> = None;
             for label in snap_labels.iter() {
-                let here = snap_fetches.get(label)
+                let here = snap_fetches
+                    .get(label)
                     .and_then(|s| s.values())
                     .and_then(|v| v.get(k));
                 match last {
@@ -330,7 +355,7 @@ pub fn AppConfigPanel(props: AppConfigPanelProps) -> Element {
 
 fn unique_endpoints(refs: &[AppConfigRef]) -> Vec<String> {
     let mut seen = HashSet::new();
-    let mut out  = Vec::new();
+    let mut out = Vec::new();
     for r in refs {
         if seen.insert(r.endpoint.clone()) {
             out.push(r.endpoint.clone());

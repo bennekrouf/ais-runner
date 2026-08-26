@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+# Formats the Rust files being committed, then re-stages them.
+#
+# CI's fmt job is a hard gate, and every failure it could report is one
+# rustfmt fixes without judgement. Doing it here means the gate never costs
+# a round trip.
+#
+# Only *staged* files are touched — unstaged work is left alone.
+#
+# Enable once, per clone:
+#   git config core.hooksPath .githooks
+set -e
+
+files=$(git diff --name-only --cached --diff-filter=ACM -- '*.rs')
+[ -z "$files" ] && exit 0
+
+command -v rustfmt >/dev/null 2>&1 || {
+    echo "pre-commit: rustfmt not found, skipping format" >&2
+    exit 0
+}
+
+printf '%s\n' "$files" | xargs rustfmt --edition 2021
+printf '%s\n' "$files" | xargs git add --

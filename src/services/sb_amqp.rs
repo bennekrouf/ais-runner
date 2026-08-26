@@ -1,6 +1,6 @@
-use fe2o3_amqp::{Connection, Session, Sender, Receiver};
 use fe2o3_amqp::link::receiver::CreditMode;
-use fe2o3_amqp_types::messaging::{Message, Properties, Data, Body};
+use fe2o3_amqp::{Connection, Receiver, Sender, Session};
+use fe2o3_amqp_types::messaging::{Body, Data, Message, Properties};
 
 /// Returns true if the AMQP broker at `host:5672` is ready to negotiate.
 /// Used during emulator startup to distinguish "port open" from "broker ready".
@@ -9,8 +9,13 @@ pub async fn probe_amqp(host: &str) -> bool {
     match tokio::time::timeout(
         std::time::Duration::from_millis(800),
         Connection::open("ais-runner-probe", url.as_str()),
-    ).await {
-        Ok(Ok(mut conn)) => { conn.close().await.ok(); true }
+    )
+    .await
+    {
+        Ok(Ok(mut conn)) => {
+            conn.close().await.ok();
+            true
+        }
         _ => false,
     }
 }
@@ -72,7 +77,7 @@ pub async fn send_amqp_message_with_type(
 /// to leave the queue browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeekedMessage {
-    pub body:           String,
+    pub body: String,
     /// AMQP `header.delivery-count` — number of *prior* unsuccessful delivery
     /// attempts. A growing delivery-count on a single message is the classic
     /// "poison" signature: the workflow keeps abandoning the message, the
@@ -82,7 +87,11 @@ pub struct PeekedMessage {
 
 /// Peek up to `max` messages from a queue without consuming them.
 /// Receives messages then releases them back to the broker.
-pub async fn peek_amqp_messages(host: &str, queue: &str, max: usize) -> Result<Vec<PeekedMessage>, String> {
+pub async fn peek_amqp_messages(
+    host: &str,
+    queue: &str,
+    max: usize,
+) -> Result<Vec<PeekedMessage>, String> {
     let url = format!("amqp://{}:5672", host);
 
     let mut connection = Connection::open("ais-runner-peek", url.as_str())
@@ -103,7 +112,10 @@ pub async fn peek_amqp_messages(host: &str, queue: &str, max: usize) -> Result<V
         .map_err(|e| format!("AMQP attach receiver on '{}': {e}", queue))?;
 
     // Grant credits for the messages we want to peek
-    receiver.set_credit(max as u32).await.map_err(|e| format!("set_credit: {e}"))?;
+    receiver
+        .set_credit(max as u32)
+        .await
+        .map_err(|e| format!("set_credit: {e}"))?;
 
     let mut messages = Vec::new();
     let timeout = std::time::Duration::from_millis(1500);
@@ -114,7 +126,10 @@ pub async fn peek_amqp_messages(host: &str, queue: &str, max: usize) -> Result<V
                 let body_text = body_to_string(delivery.body());
                 let delivery_count = delivery_count_from(&delivery);
                 receiver.release(&delivery).await.ok();
-                messages.push(PeekedMessage { body: body_text, delivery_count });
+                messages.push(PeekedMessage {
+                    body: body_text,
+                    delivery_count,
+                });
             }
             Ok(Err(_)) => break,
             Err(_) => break,
@@ -176,7 +191,7 @@ pub async fn drain_queue(host: &str, queue: &str) -> Result<u64, String> {
                 }
             }
             Ok(Err(_)) => break, // link/broker error — stop, report what we removed
-            Err(_)      => break, // idle timeout — queue drained
+            Err(_) => break,     // idle timeout — queue drained
         }
     }
 
@@ -211,9 +226,7 @@ fn delivery_count_from<T>(delivery: &fe2o3_amqp::link::delivery::Delivery<T>) ->
 fn body_to_string(body: &Body<String>) -> String {
     let raw = match body {
         Body::Data(batch) => {
-            let bytes: Vec<u8> = batch.iter()
-                .flat_map(|d| d.0.iter().cloned())
-                .collect();
+            let bytes: Vec<u8> = batch.iter().flat_map(|d| d.0.iter().cloned()).collect();
             String::from_utf8_lossy(&bytes).into_owned()
         }
         Body::Value(v) => format!("{:?}", v),
@@ -244,9 +257,7 @@ async fn try_send(url: &str, queue: &str, body: &str, content_type: &str) -> Res
     // The content-type decides the trigger-side envelope: application/json is
     // delivered as a raw string in contentData; non-JSON types arrive
     // base64-wrapped in contentData.$content (what decodeBase64 consumers need).
-    let props = Properties::builder()
-        .content_type(content_type)
-        .build();
+    let props = Properties::builder().content_type(content_type).build();
     let msg = Message::builder()
         .properties(props)
         .data(Data::from(body.as_bytes().to_vec()))
@@ -283,7 +294,9 @@ mod drain_live_tests {
         // Start clean, then seed 5 messages.
         let _ = drain_queue(HOST, Q).await;
         for i in 0..5 {
-            send_amqp_message(HOST, Q, &format!("{{\"n\":{i}}}")).await.expect("send");
+            send_amqp_message(HOST, Q, &format!("{{\"n\":{i}}}"))
+                .await
+                .expect("send");
         }
 
         let removed = drain_queue(HOST, Q).await.expect("drain");
@@ -295,6 +308,10 @@ mod drain_live_tests {
 
         // And peek confirms the queue is empty.
         let peeked = peek_amqp_messages(HOST, Q, 10).await.expect("peek");
-        assert!(peeked.is_empty(), "queue should be empty after flush, got {}", peeked.len());
+        assert!(
+            peeked.is_empty(),
+            "queue should be empty after flush, got {}",
+            peeked.len()
+        );
     }
 }

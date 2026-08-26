@@ -2,14 +2,14 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SftpConnection {
-    pub connection_name: String,  // key in connections.json, e.g. "sftpOryx"
-    pub display_name:    String,
-    pub host_key:        String,  // appsetting key for sshHostAddress
-    pub user_key:        String,  // appsetting key for username
-    pub pass_key:        String,  // appsetting key for password
-    pub host:            String,  // resolved value (empty if not set)
-    pub user:            String,
-    pub configured:      bool,    // host and user are non-empty
+    pub connection_name: String, // key in connections.json, e.g. "sftpOryx"
+    pub display_name: String,
+    pub host_key: String, // appsetting key for sshHostAddress
+    pub user_key: String, // appsetting key for username
+    pub pass_key: String, // appsetting key for password
+    pub host: String,     // resolved value (empty if not set)
+    pub user: String,
+    pub configured: bool, // host and user are non-empty
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,7 +34,8 @@ pub fn detect_sftp_connections(logic_apps_dir: &str) -> Vec<SftpConnection> {
         Err(_) => return vec![],
     };
 
-    let settings_text = std::fs::read_to_string(dir.join("local.settings.json")).unwrap_or_default();
+    let settings_text =
+        std::fs::read_to_string(dir.join("local.settings.json")).unwrap_or_default();
     let settings: Value = serde_json::from_str(&settings_text).unwrap_or_default();
 
     let resolve = |raw: &str| -> (String, String) {
@@ -57,15 +58,12 @@ pub fn detect_sftp_connections(logic_apps_dir: &str) -> Vec<SftpConnection> {
             let pv = &conn["parameterValues"];
             let display = conn["displayName"].as_str().unwrap_or(name).to_string();
 
-            let (host_key, host) = pv["sshHostAddress"].as_str()
+            let (host_key, host) = pv["sshHostAddress"]
+                .as_str()
                 .map(resolve)
                 .unwrap_or_default();
-            let (user_key, user) = pv["username"].as_str()
-                .map(resolve)
-                .unwrap_or_default();
-            let (pass_key, _) = pv["password"].as_str()
-                .map(resolve)
-                .unwrap_or_default();
+            let (user_key, user) = pv["username"].as_str().map(resolve).unwrap_or_default();
+            let (pass_key, _) = pv["password"].as_str().map(resolve).unwrap_or_default();
 
             let configured = !host.is_empty() && !user.is_empty();
 
@@ -95,11 +93,16 @@ pub fn test_sftp_connection(host: &str, user: &str) -> SftpTestResult {
 
     let output = std::process::Command::new("ssh")
         .args([
-            "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=4",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "PasswordAuthentication=no",
-            "-p", "22",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=4",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "PasswordAuthentication=no",
+            "-p",
+            "22",
             &format!("{}@{}", user, host),
             "exit",
         ])

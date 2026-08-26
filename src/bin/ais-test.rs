@@ -137,7 +137,10 @@ async fn main() -> ExitCode {
         .into_iter()
         .filter(|s| {
             args.filters.is_empty()
-                || args.filters.iter().any(|f| s.name.to_lowercase().contains(f))
+                || args
+                    .filters
+                    .iter()
+                    .any(|f| s.name.to_lowercase().contains(f))
         })
         .collect();
 
@@ -157,7 +160,10 @@ async fn main() -> ExitCode {
         // malformed file rather than an empty directory — say so, since the
         // two look identical from the exit code alone.
         if !errors.is_empty() {
-            eprintln!("       ({} file(s) failed to parse — see warnings above)", errors.len());
+            eprintln!(
+                "       ({} file(s) failed to parse — see warnings above)",
+                errors.len()
+            );
         }
         return ExitCode::from(2);
     }
@@ -265,8 +271,17 @@ fn print_summary(suites: &[SuiteReport]) {
     // Repeat the failures at the end: on a long run the first failure has
     // scrolled far out of view by the time the suite finishes.
     for suite in failed_suites {
-        for step in suite.steps.iter().filter(|s| s.status == StepStatus::Failed) {
-            println!("  FAIL  {} → {:02}. {}", suite.scenario, step.index + 1, step.label);
+        for step in suite
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Failed)
+        {
+            println!(
+                "  FAIL  {} → {:02}. {}",
+                suite.scenario,
+                step.index + 1,
+                step.label
+            );
             println!("        {}", step.detail);
         }
     }

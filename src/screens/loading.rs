@@ -1,5 +1,5 @@
+use crate::services::{env_mode, setup_manager, system_check};
 use dioxus::prelude::*;
-use crate::services::{setup_manager, system_check, env_mode};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct LoadingScreenProps {
@@ -44,35 +44,49 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                 //    MSI or cloud-pointing connection is adapted to a local
                 //    emulator/mock now, before the user wastes time debugging a
                 //    run that fails purely on connection config.
-                push_log("Checking connections are local…".to_string(), LogLevel::Info);
+                push_log(
+                    "Checking connections are local…".to_string(),
+                    LogLevel::Info,
+                );
                 let d = dir.clone();
-                let report = tokio::task::spawn_blocking(move || {
-                    crate::services::localize::localize(&d)
-                })
-                .await
-                .unwrap_or_default();
+                let report =
+                    tokio::task::spawn_blocking(move || crate::services::localize::localize(&d))
+                        .await
+                        .unwrap_or_default();
 
                 if report.all_local() {
-                    push_log("✓ All connections already point at local emulators".to_string(), LogLevel::Success);
+                    push_log(
+                        "✓ All connections already point at local emulators".to_string(),
+                        LogLevel::Success,
+                    );
                 } else {
                     if !report.msi_localized.is_empty() {
                         push_log(
-                            format!("🔧 Switched {} MSI connection(s) → local: {}",
-                                report.msi_localized.len(), report.msi_localized.join(", ")),
+                            format!(
+                                "🔧 Switched {} MSI connection(s) → local: {}",
+                                report.msi_localized.len(),
+                                report.msi_localized.join(", ")
+                            ),
                             LogLevel::Success,
                         );
                     }
                     if !report.settings_localized.is_empty() {
                         push_log(
-                            format!("🔧 Redirected {} cloud endpoint(s) → local: {}",
-                                report.settings_localized.len(), report.settings_localized.join(", ")),
+                            format!(
+                                "🔧 Redirected {} cloud endpoint(s) → local: {}",
+                                report.settings_localized.len(),
+                                report.settings_localized.join(", ")
+                            ),
                             LogLevel::Success,
                         );
                     }
                     if !report.keys_stubbed.is_empty() {
                         push_log(
-                            format!("🔧 Filled {} local default(s): {}",
-                                report.keys_stubbed.len(), report.keys_stubbed.join(", ")),
+                            format!(
+                                "🔧 Filled {} local default(s): {}",
+                                report.keys_stubbed.len(),
+                                report.keys_stubbed.join(", ")
+                            ),
                             LogLevel::Info,
                         );
                     }
@@ -92,37 +106,50 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                 //    no history and no error — hours lost looking in the wrong
                 //    place. Repair what we can, then refuse to open the project
                 //    if anything is left.
-                push_log("Validating local configuration…".to_string(), LogLevel::Info);
+                push_log(
+                    "Validating local configuration…".to_string(),
+                    LogLevel::Info,
+                );
                 let d = dir.clone();
-                let (found, sanitized, repairs) = tokio::task::spawn_blocking(move || {
-                    crate::services::preflight::check(&d)
-                })
-                .await
-                .unwrap_or_default();
+                let (found, sanitized, repairs) =
+                    tokio::task::spawn_blocking(move || crate::services::preflight::check(&d))
+                        .await
+                        .unwrap_or_default();
 
                 for r in &repairs {
                     push_log(format!("🔧 {r}"), LogLevel::Success);
                 }
                 if !sanitized.recovered.is_empty() {
                     push_log(
-                        format!("🔧 Recovered {} setting(s) left pointing at a stopped mock server: {}",
-                            sanitized.recovered.len(), sanitized.recovered.join(", ")),
+                        format!(
+                            "🔧 Recovered {} setting(s) left pointing at a stopped mock server: {}",
+                            sanitized.recovered.len(),
+                            sanitized.recovered.join(", ")
+                        ),
                         LogLevel::Success,
                     );
                 }
                 if sanitized.stash_removed > 0 {
                     push_log(
-                        format!("🔧 Cleared {} leftover __mock_original__ key(s) from a previous run",
-                            sanitized.stash_removed),
+                        format!(
+                            "🔧 Cleared {} leftover __mock_original__ key(s) from a previous run",
+                            sanitized.stash_removed
+                        ),
                         LogLevel::Info,
                     );
                 }
 
                 if found.is_empty() {
-                    push_log("✓ Local configuration is usable".to_string(), LogLevel::Success);
+                    push_log(
+                        "✓ Local configuration is usable".to_string(),
+                        LogLevel::Success,
+                    );
                 } else {
                     push_log(
-                        format!("✗ {} blocking problem(s) — this project cannot run locally:", found.len()),
+                        format!(
+                            "✗ {} blocking problem(s) — this project cannot run locally:",
+                            found.len()
+                        ),
                         LogLevel::Error,
                     );
                     for (i, b) in found.iter().enumerate() {
@@ -147,22 +174,26 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                             .version
                             .clone()
                             .unwrap_or_else(|| "unknown".to_string());
-                        push_log(
-                            format!("✓ {} ({})", tool.name, version),
-                            LogLevel::Success,
-                        );
+                        push_log(format!("✓ {} ({})", tool.name, version), LogLevel::Success);
                     } else {
-                        push_log(format!("✗ {} — {}", tool.name, tool.install_hint), LogLevel::Error);
+                        push_log(
+                            format!("✗ {} — {}", tool.name, tool.install_hint),
+                            LogLevel::Error,
+                        );
                     }
                 }
 
                 // 4. Check setup status
                 push_log("Checking project setup...".to_string(), LogLevel::Info);
-                push_log("  → Reading local.settings.json...".to_string(), LogLevel::Info);
+                push_log(
+                    "  → Reading local.settings.json...".to_string(),
+                    LogLevel::Info,
+                );
                 let d = dir.clone();
-                let setup_status = tokio::task::spawn_blocking(move || setup_manager::check_setup(&d))
-                    .await
-                    .unwrap_or(setup_manager::SetupStatus::MissingSettings);
+                let setup_status =
+                    tokio::task::spawn_blocking(move || setup_manager::check_setup(&d))
+                        .await
+                        .unwrap_or(setup_manager::SetupStatus::MissingSettings);
                 push_log("  ✓ Setup check complete".to_string(), LogLevel::Info);
 
                 match setup_status {
@@ -170,19 +201,36 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                         push_log("✓ Project setup is complete".to_string(), LogLevel::Success);
                     }
                     setup_manager::SetupStatus::MissingSettings => {
-                        push_log("⚠ local.settings.json not found — some features unavailable".to_string(), LogLevel::Warn);
+                        push_log(
+                            "⚠ local.settings.json not found — some features unavailable"
+                                .to_string(),
+                            LogLevel::Warn,
+                        );
                     }
                     setup_manager::SetupStatus::NeedsInitialization => {
-                        push_log("⚠ Setup requires initialization".to_string(), LogLevel::Warn);
+                        push_log(
+                            "⚠ Setup requires initialization".to_string(),
+                            LogLevel::Warn,
+                        );
                     }
                     setup_manager::SetupStatus::RemoteStorage => {
-                        push_log("⚠ AzureWebJobsStorage points to remote Azure — local func may fail".to_string(), LogLevel::Warn);
+                        push_log(
+                            "⚠ AzureWebJobsStorage points to remote Azure — local func may fail"
+                                .to_string(),
+                            LogLevel::Warn,
+                        );
                     }
-                    setup_manager::SetupStatus::NeedsConfiguration { ref blank, ref absent } => {
+                    setup_manager::SetupStatus::NeedsConfiguration {
+                        ref blank,
+                        ref absent,
+                    } => {
                         if !blank.is_empty() {
                             push_log(
-                                format!("⚠ {} setting(s) need a value: {}",
-                                    blank.len(), setup_manager::summarize_keys(blank)),
+                                format!(
+                                    "⚠ {} setting(s) need a value: {}",
+                                    blank.len(),
+                                    setup_manager::summarize_keys(blank)
+                                ),
                                 LogLevel::Warn,
                             );
                         }
@@ -198,30 +246,51 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
 
                 // 5. Detect environment mode
                 push_log("Detecting environment...".to_string(), LogLevel::Info);
-                push_log("  → Scanning storage configuration...".to_string(), LogLevel::Info);
+                push_log(
+                    "  → Scanning storage configuration...".to_string(),
+                    LogLevel::Info,
+                );
                 let d = dir.clone();
                 let env_mode = tokio::task::spawn_blocking(move || env_mode::detect_mode(&d))
                     .await
                     .unwrap_or(env_mode::EnvMode::Local);
-                push_log("  ✓ Environment detection complete".to_string(), LogLevel::Info);
+                push_log(
+                    "  ✓ Environment detection complete".to_string(),
+                    LogLevel::Info,
+                );
 
                 match env_mode {
                     env_mode::EnvMode::Local => {
-                        push_log("✓ Environment: Local (all services → Azurite)".to_string(), LogLevel::Success);
+                        push_log(
+                            "✓ Environment: Local (all services → Azurite)".to_string(),
+                            LogLevel::Success,
+                        );
                     }
                     env_mode::EnvMode::Azure => {
-                        push_log("✓ Environment: Azure (all services → real Azure)".to_string(), LogLevel::Success);
+                        push_log(
+                            "✓ Environment: Azure (all services → real Azure)".to_string(),
+                            LogLevel::Success,
+                        );
                     }
                     env_mode::EnvMode::Mixed => {
-                        push_log("ℹ Environment: Mixed (some local, some Azure)".to_string(), LogLevel::Info);
+                        push_log(
+                            "ℹ Environment: Mixed (some local, some Azure)".to_string(),
+                            LogLevel::Info,
+                        );
                     }
                     env_mode::EnvMode::Unknown => {
-                        push_log("ℹ Environment: Unknown (no blob endpoints configured)".to_string(), LogLevel::Info);
+                        push_log(
+                            "ℹ Environment: Unknown (no blob endpoints configured)".to_string(),
+                            LogLevel::Info,
+                        );
                     }
                 }
 
                 push_log("Initialization complete!".to_string(), LogLevel::Success);
-                push_log("✓ Ready to proceed — check button below".to_string(), LogLevel::Success);
+                push_log(
+                    "✓ Ready to proceed — check button below".to_string(),
+                    LogLevel::Success,
+                );
                 checks_done_inner.set(true);
             });
         }
@@ -229,15 +298,20 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
 
     // Auto-scroll log to bottom when new messages arrive
     use_effect(move || {
-        let _ = dioxus::document::eval(r#"
+        let _ = dioxus::document::eval(
+            r#"
             const logEl = document.getElementById('loading-log');
             if (logEl) {
                 logEl.scrollTop = logEl.scrollHeight;
             }
-        "#);
+        "#,
+        );
     });
 
-    let has_errors = log_lines.read().iter().any(|(_, level)| *level == LogLevel::Error);
+    let has_errors = log_lines
+        .read()
+        .iter()
+        .any(|(_, level)| *level == LogLevel::Error);
     let is_blocked = !blockers.read().is_empty();
 
     rsx! {

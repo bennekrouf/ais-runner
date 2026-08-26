@@ -1,5 +1,5 @@
-use dioxus::prelude::*;
 use crate::services::process::ServiceState;
+use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct ServiceBlockProps {
@@ -13,15 +13,27 @@ pub struct ServiceBlockProps {
 #[component]
 pub fn ServiceBlock(props: ServiceBlockProps) -> Element {
     let dot_class = match props.state {
-        ServiceState::Running  => "dot running",
+        ServiceState::Running => "dot running",
         ServiceState::Starting => "dot starting",
-        ServiceState::Stopped  => "dot stopped",
+        ServiceState::Stopped => "dot stopped",
     };
 
     let (block_state_class, tooltip, is_start) = match props.state {
-        ServiceState::Stopped  => ("svc-stopped",  format!("Click to start {} — {}", props.label, props.cmd), true),
-        ServiceState::Starting => ("svc-starting", format!("{} is starting…", props.label), false),
-        ServiceState::Running  => ("svc-running",  format!("Click to stop {}", props.label), false),
+        ServiceState::Stopped => (
+            "svc-stopped",
+            format!("Click to start {} — {}", props.label, props.cmd),
+            true,
+        ),
+        ServiceState::Starting => (
+            "svc-starting",
+            format!("{} is starting…", props.label),
+            false,
+        ),
+        ServiceState::Running => (
+            "svc-running",
+            format!("Click to stop {}", props.label),
+            false,
+        ),
     };
 
     let disabled = matches!(props.state, ServiceState::Starting);

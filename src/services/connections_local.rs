@@ -38,13 +38,13 @@ pub fn load_overrides(logic_apps_dir: &Path) -> Result<Option<serde_json::Value>
     if !path.exists() {
         return Ok(None);
     }
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
     if raw.trim().is_empty() {
         return Ok(None);
     }
-    let v: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("parse {}: {e}", path.display()))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("parse {}: {e}", path.display()))?;
     if !v.is_object() {
         return Err(format!("{}: root must be a JSON object", path.display()));
     }
@@ -73,7 +73,9 @@ fn merge_in(base: &mut serde_json::Value, ov: &serde_json::Value, touched: &mut 
                 }
                 if ov_val.is_null() {
                     // Sentinel: delete this key from the result.
-                    if b.remove(k).is_some() { *touched += 1; }
+                    if b.remove(k).is_some() {
+                        *touched += 1;
+                    }
                     continue;
                 }
                 match b.get_mut(k) {
@@ -105,25 +107,28 @@ fn merge_in(base: &mut serde_json::Value, ov: &serde_json::Value, touched: &mut 
 /// since those are the two shapes Logic Apps Standard cares about.
 pub fn override_summary(overrides: &serde_json::Value) -> OverrideSummary {
     let count_under = |key: &str| -> usize {
-        overrides.get(key)
+        overrides
+            .get(key)
             .and_then(|v| v.as_object())
             .map(|o| o.len())
             .unwrap_or(0)
     };
     OverrideSummary {
         service_provider: count_under("serviceProviderConnections"),
-        managed_api:      count_under("managedApiConnections"),
+        managed_api: count_under("managedApiConnections"),
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverrideSummary {
     pub service_provider: usize,
-    pub managed_api:      usize,
+    pub managed_api: usize,
 }
 
 impl OverrideSummary {
-    pub fn total(&self) -> usize { self.service_provider + self.managed_api }
+    pub fn total(&self) -> usize {
+        self.service_provider + self.managed_api
+    }
 }
 
 /// Create a starter `connections.local.json` next to `connections.json` if
@@ -163,7 +168,10 @@ fn build_template(logic_apps_dir: &Path) -> String {
     // instead, which is data and survives parsing.
     let mut examples = serde_json::Map::new();
     if let Some(existing) = existing {
-        if let Some(sp) = existing.get("serviceProviderConnections").and_then(|v| v.as_object()) {
+        if let Some(sp) = existing
+            .get("serviceProviderConnections")
+            .and_then(|v| v.as_object())
+        {
             let mut ex_sp = serde_json::Map::new();
             for (name, _) in sp.iter() {
                 ex_sp.insert(name.clone(), serde_json::json!({
@@ -173,18 +181,24 @@ fn build_template(logic_apps_dir: &Path) -> String {
                 }));
             }
             if !ex_sp.is_empty() {
-                examples.insert("serviceProviderConnections".to_string(), serde_json::Value::Object(ex_sp));
+                examples.insert(
+                    "serviceProviderConnections".to_string(),
+                    serde_json::Value::Object(ex_sp),
+                );
             }
         }
     }
     if examples.is_empty() {
         // No connections.json yet — drop in a minimal skeleton so the user
         // has something to copy from.
-        examples.insert("serviceProviderConnections".into(), serde_json::json!({
-            "your_connection_name": {
-                "parameterValues": { "connectionString": "local override here" }
-            }
-        }));
+        examples.insert(
+            "serviceProviderConnections".into(),
+            serde_json::json!({
+                "your_connection_name": {
+                    "parameterValues": { "connectionString": "local override here" }
+                }
+            }),
+        );
     }
 
     let body = serde_json::json!({
@@ -208,7 +222,9 @@ fn ensure_gitignore_entry(logic_apps_dir: &Path) -> std::io::Result<()> {
     let path = logic_apps_dir.join(".gitignore");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let already_listed = existing.lines().any(|l| l.trim() == FILENAME);
-    if already_listed { return Ok(()); }
+    if already_listed {
+        return Ok(());
+    }
 
     let mut new_contents = existing;
     if !new_contents.is_empty() && !new_contents.ends_with('\n') {
@@ -255,7 +271,8 @@ mod tests {
             "ais-sql"
         );
         assert_eq!(
-            base["serviceProviderConnections"]["ais_sql"]["parameterValues"]["authentication"]["type"],
+            base["serviceProviderConnections"]["ais_sql"]["parameterValues"]["authentication"]
+                ["type"],
             "ManagedServiceIdentity"
         );
         // Overridden field updated
@@ -279,14 +296,19 @@ mod tests {
             }
         });
         apply_overrides(&mut base, &ov);
-        assert!(base["serviceProviderConnections"].get("cloud_only").is_none());
-        assert_eq!(base["serviceProviderConnections"]["shared"]["displayName"], "keep me");
+        assert!(base["serviceProviderConnections"]
+            .get("cloud_only")
+            .is_none());
+        assert_eq!(
+            base["serviceProviderConnections"]["shared"]["displayName"],
+            "keep me"
+        );
     }
 
     #[test]
     fn arrays_are_replaced_not_merged() {
         let mut base = json!({ "audiences": ["a", "b", "c"] });
-        let ov       = json!({ "audiences": ["x"] });
+        let ov = json!({ "audiences": ["x"] });
         apply_overrides(&mut base, &ov);
         assert_eq!(base["audiences"], json!(["x"]));
     }
@@ -311,23 +333,35 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         // Seed a connections.json so the template mirrors its connection keys.
-        std::fs::write(dir.join("connections.json"), serde_json::to_string_pretty(&json!({
-            "serviceProviderConnections": {
-                "ais_sql":    {},
-                "ais_cosmos": {},
-            }
-        })).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("connections.json"),
+            serde_json::to_string_pretty(&json!({
+                "serviceProviderConnections": {
+                    "ais_sql":    {},
+                    "ais_cosmos": {},
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         // Seed an existing .gitignore with unrelated entries.
-        std::fs::write(dir.join(".gitignore"), "node_modules/\nlocal.settings.json\n").unwrap();
+        std::fs::write(
+            dir.join(".gitignore"),
+            "node_modules/\nlocal.settings.json\n",
+        )
+        .unwrap();
 
         let path = scaffold_override_file(dir).unwrap();
         assert!(path.exists());
         let text = std::fs::read_to_string(&path).unwrap();
         // Parses as-is: no comment header to strip. The previous template led
         // with `//` lines, which made the file unreadable to load_overrides.
-        let body: serde_json::Value = serde_json::from_str(&text)
-            .expect("scaffolded template must be valid JSON");
-        assert!(body.get("_readme").is_some(), "guidance should ship as data");
+        let body: serde_json::Value =
+            serde_json::from_str(&text).expect("scaffolded template must be valid JSON");
+        assert!(
+            body.get("_readme").is_some(),
+            "guidance should ship as data"
+        );
         // Examples list both seeded connections
         let examples = &body["_examples"]["serviceProviderConnections"];
         assert!(examples.get("ais_sql").is_some());
@@ -359,8 +393,8 @@ mod tests {
         });
         let s = override_summary(&ov);
         assert_eq!(s.service_provider, 2);
-        assert_eq!(s.managed_api,      1);
-        assert_eq!(s.total(),          3);
+        assert_eq!(s.managed_api, 1);
+        assert_eq!(s.total(), 3);
     }
 
     #[test]
@@ -386,7 +420,8 @@ mod tests {
     fn documentation_keys_are_never_merged_into_connections_json() {
         // The scaffold ships `_readme` / `_examples`; merging them would write
         // commentary into the project's own connections.json.
-        let mut base = serde_json::json!({ "serviceProviderConnections": { "ais_sql": { "a": 1 } } });
+        let mut base =
+            serde_json::json!({ "serviceProviderConnections": { "ais_sql": { "a": 1 } } });
         let ov = serde_json::json!({
             "_readme":  ["ignore me"],
             "_examples": { "serviceProviderConnections": { "ais_sql": { "a": 999 } } },

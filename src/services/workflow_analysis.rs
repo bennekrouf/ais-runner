@@ -2,20 +2,20 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WorkflowAnalysis {
-    pub trigger:       TriggerKind,
-    pub input_queues:  Vec<String>,   // SB queues consumed (trigger or receive)
-    pub output_queues: Vec<String>,   // SB queues produced (send)
-    pub input_blobs:   Vec<String>,   // blob containers read
-    pub output_blobs:  Vec<String>,   // blob containers written
-    pub http_calls:    Vec<String>,   // outbound HTTP hosts (deduplicated)
-    pub liquid_maps:   Vec<String>,   // Liquid transform map names used
-    pub sql_sprocs:    Vec<SqlSproc>, // stored procedures invoked
+    pub trigger: TriggerKind,
+    pub input_queues: Vec<String>, // SB queues consumed (trigger or receive)
+    pub output_queues: Vec<String>, // SB queues produced (send)
+    pub input_blobs: Vec<String>,  // blob containers read
+    pub output_blobs: Vec<String>, // blob containers written
+    pub http_calls: Vec<String>,   // outbound HTTP hosts (deduplicated)
+    pub liquid_maps: Vec<String>,  // Liquid transform map names used
+    pub sql_sprocs: Vec<SqlSproc>, // stored procedures invoked
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SqlSproc {
-    pub name:   String,        // qualified, e.g. "dbo.MySp"
-    pub params: Vec<String>,   // parameter names (without leading @), in declaration order
+    pub name: String,        // qualified, e.g. "dbo.MySp"
+    pub params: Vec<String>, // parameter names (without leading @), in declaration order
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -23,15 +23,23 @@ pub enum TriggerKind {
     #[default]
     Unknown,
     Http,
-    ServiceBus { queue: String },
-    Blob       { container: String },
-    Timer { schedule: String },  // e.g. "every 5 Minute"
+    ServiceBus {
+        queue: String,
+    },
+    Blob {
+        container: String,
+    },
+    Timer {
+        schedule: String,
+    }, // e.g. "every 5 Minute"
 }
 
 impl WorkflowAnalysis {
     pub fn is_empty(&self) -> bool {
-        matches!(self.trigger, TriggerKind::Unknown | TriggerKind::Http | TriggerKind::Timer { .. })
-            && self.input_queues.is_empty()
+        matches!(
+            self.trigger,
+            TriggerKind::Unknown | TriggerKind::Http | TriggerKind::Timer { .. }
+        ) && self.input_queues.is_empty()
             && self.output_queues.is_empty()
             && self.input_blobs.is_empty()
             && self.output_blobs.is_empty()
@@ -45,7 +53,9 @@ impl WorkflowAnalysis {
     pub fn all_queues(&self) -> Vec<String> {
         let mut q = self.input_queues.clone();
         for v in &self.output_queues {
-            if !q.contains(v) { q.push(v.clone()); }
+            if !q.contains(v) {
+                q.push(v.clone());
+            }
         }
         q
     }
@@ -65,16 +75,20 @@ pub fn analyse(workflow_json: &str) -> WorkflowAnalysis {
         for trigger in triggers.values() {
             let kind = trigger["type"].as_str().unwrap_or("").to_lowercase();
             let provider = trigger["inputs"]["serviceProviderConfiguration"]["serviceProviderId"]
-                .as_str().unwrap_or("").to_lowercase();
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase();
             let op = trigger["inputs"]["serviceProviderConfiguration"]["operationId"]
-                .as_str().unwrap_or("").to_lowercase();
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase();
 
             analysis.trigger = if kind == "request" || kind == "http" {
                 TriggerKind::Http
             } else if kind == "recurrence" {
-                let interval  = trigger["recurrence"]["interval"].as_u64().unwrap_or(1);
+                let interval = trigger["recurrence"]["interval"].as_u64().unwrap_or(1);
                 let frequency = trigger["recurrence"]["frequency"].as_str().unwrap_or("?");
-                let schedule  = format!("every {} {}", interval, frequency);
+                let schedule = format!("every {} {}", interval, frequency);
                 TriggerKind::Timer { schedule }
             } else if provider.contains("servicebus") || kind == "servicebustrigger" {
                 let queue = literal_str(&trigger["inputs"]["parameters"]["entityName"])
@@ -133,7 +147,9 @@ fn scan_actions(node: &Value, out: &mut WorkflowAnalysis) {
             }
         }
         Value::Array(arr) => {
-            for v in arr { scan_actions(v, out); }
+            for v in arr {
+                scan_actions(v, out);
+            }
         }
         _ => {}
     }
@@ -141,9 +157,13 @@ fn scan_actions(node: &Value, out: &mut WorkflowAnalysis) {
 
 fn process_action(action: &Value, out: &mut WorkflowAnalysis) {
     let provider = action["inputs"]["serviceProviderConfiguration"]["serviceProviderId"]
-        .as_str().unwrap_or("").to_lowercase();
+        .as_str()
+        .unwrap_or("")
+        .to_lowercase();
     let op = action["inputs"]["serviceProviderConfiguration"]["operationId"]
-        .as_str().unwrap_or("").to_lowercase();
+        .as_str()
+        .unwrap_or("")
+        .to_lowercase();
     let kind = action["type"].as_str().unwrap_or("").to_lowercase();
 
     // ── Service Bus — ServiceProvider style ───────────────────────────────
@@ -152,7 +172,9 @@ fn process_action(action: &Value, out: &mut WorkflowAnalysis) {
         let queue_f = &action["inputs"]["parameters"]["queueName"];
 
         // only proceed if either field is present (not null/missing)
-        if entity.is_null() && queue_f.is_null() { return; }
+        if entity.is_null() && queue_f.is_null() {
+            return;
+        }
 
         // literal value, or "(dynamic)" if field is an expression
         let queue = literal_str(entity)
@@ -161,9 +183,13 @@ fn process_action(action: &Value, out: &mut WorkflowAnalysis) {
 
         let is_send = op.contains("send") || op.contains("publish");
         if is_send {
-            if !out.output_queues.contains(&queue) { out.output_queues.push(queue); }
+            if !out.output_queues.contains(&queue) {
+                out.output_queues.push(queue);
+            }
         } else {
-            if !out.input_queues.contains(&queue) { out.input_queues.push(queue); }
+            if !out.input_queues.contains(&queue) {
+                out.input_queues.push(queue);
+            }
         }
         return;
     }
@@ -174,12 +200,19 @@ fn process_action(action: &Value, out: &mut WorkflowAnalysis) {
         let path = action["inputs"]["path"].as_str().unwrap_or("");
         if path.contains("/queues/") || path.contains("/topics/") {
             if let Some(queue) = extract_sb_queue_from_path(path) {
-                let method = action["inputs"]["method"].as_str().unwrap_or("post").to_lowercase();
+                let method = action["inputs"]["method"]
+                    .as_str()
+                    .unwrap_or("post")
+                    .to_lowercase();
                 let is_send = method == "post" || path.ends_with("/messages");
                 if is_send {
-                    if !out.output_queues.contains(&queue) { out.output_queues.push(queue); }
+                    if !out.output_queues.contains(&queue) {
+                        out.output_queues.push(queue);
+                    }
                 } else {
-                    if !out.input_queues.contains(&queue) { out.input_queues.push(queue); }
+                    if !out.input_queues.contains(&queue) {
+                        out.input_queues.push(queue);
+                    }
                 }
             }
         }
@@ -192,12 +225,19 @@ fn process_action(action: &Value, out: &mut WorkflowAnalysis) {
             .or_else(|| literal_str(&action["inputs"]["parameters"]["path"]))
             .unwrap_or_default();
         if !container.is_empty() {
-            let is_write = op.contains("create") || op.contains("upload")
-                || op.contains("write") || op.contains("put") || op.contains("copy");
+            let is_write = op.contains("create")
+                || op.contains("upload")
+                || op.contains("write")
+                || op.contains("put")
+                || op.contains("copy");
             if is_write {
-                if !out.output_blobs.contains(&container) { out.output_blobs.push(container); }
+                if !out.output_blobs.contains(&container) {
+                    out.output_blobs.push(container);
+                }
             } else {
-                if !out.input_blobs.contains(&container) { out.input_blobs.push(container); }
+                if !out.input_blobs.contains(&container) {
+                    out.input_blobs.push(container);
+                }
             }
         }
         return;
@@ -212,11 +252,14 @@ fn process_action(action: &Value, out: &mut WorkflowAnalysis) {
                 .map(|s| normalize_sproc_name(&s));
             if let Some(n) = name {
                 if !n.is_empty() {
-                    let params: Vec<String> = action["inputs"]["parameters"]["storedProcedureParameters"]
+                    let params: Vec<String> = action["inputs"]["parameters"]
+                        ["storedProcedureParameters"]
                         .as_object()
-                        .map(|m| m.keys()
-                            .map(|k| k.trim_start_matches('@').to_string())
-                            .collect())
+                        .map(|m| {
+                            m.keys()
+                                .map(|k| k.trim_start_matches('@').to_string())
+                                .collect()
+                        })
                         .unwrap_or_default();
                     if !out.sql_sprocs.iter().any(|sp| sp.name == n) {
                         out.sql_sprocs.push(SqlSproc { name: n, params });
@@ -233,18 +276,22 @@ fn process_action(action: &Value, out: &mut WorkflowAnalysis) {
         let map_name = literal_str(&action["inputs"]["map"]["name"])
             .or_else(|| literal_str(&action["inputs"]["integrationAccount"]["map"]["name"]));
         if let Some(name) = map_name {
-            if !out.liquid_maps.contains(&name) { out.liquid_maps.push(name); }
+            if !out.liquid_maps.contains(&name) {
+                out.liquid_maps.push(name);
+            }
         }
         return;
     }
 
     // ── HTTP calls ────────────────────────────────────────────────────────
     if kind == "http" {
-        if let Some(uri) = literal_str(&action["inputs"]["uri"])
-            .or_else(|| literal_str(&action["inputs"]["url"]))
+        if let Some(uri) =
+            literal_str(&action["inputs"]["uri"]).or_else(|| literal_str(&action["inputs"]["url"]))
         {
             if let Some(host) = extract_host(&uri) {
-                if !out.http_calls.contains(&host) { out.http_calls.push(host); }
+                if !out.http_calls.contains(&host) {
+                    out.http_calls.push(host);
+                }
             }
         }
     }
@@ -255,14 +302,17 @@ fn process_action(action: &Value, out: &mut WorkflowAnalysis) {
 /// `/queues/my-queue/messages`
 fn extract_sb_queue_from_path(path: &str) -> Option<String> {
     // find segment after /queues/ or /topics/
-    let after = path.split("/queues/").nth(1)
+    let after = path
+        .split("/queues/")
+        .nth(1)
         .or_else(|| path.split("/topics/").nth(1))?;
     let segment = after.split('/').next()?;
 
     // strip encodeURIComponent wrapper if present
     let name = if segment.contains("encodeURIComponent") {
         segment
-            .split('\'').nth(1)
+            .split('\'')
+            .nth(1)
             .or_else(|| segment.split('"').nth(1))?
             .to_string()
     } else if segment.starts_with('@') {
@@ -271,7 +321,11 @@ fn extract_sb_queue_from_path(path: &str) -> Option<String> {
         segment.to_string()
     };
 
-    if name.is_empty() { None } else { Some(name) }
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
 }
 
 /// Normalize a stored-procedure name by stripping brackets:
@@ -283,14 +337,20 @@ fn normalize_sproc_name(raw: &str) -> String {
 /// Extract a literal (non-expression) string from a JSON value.
 fn literal_str(v: &Value) -> Option<String> {
     let s = v.as_str()?;
-    if s.starts_with('@') || s.is_empty() { None } else { Some(s.to_string()) }
+    if s.starts_with('@') || s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
 }
 
 fn extract_host(uri: &str) -> Option<String> {
     let without_scheme = uri.split("://").nth(1).unwrap_or(uri);
     let host = without_scheme.split('/').next()?;
     let host = host.split('?').next()?;
-    if host.is_empty() || host.starts_with('@') { return None; }
+    if host.is_empty() || host.starts_with('@') {
+        return None;
+    }
     Some(host.to_string())
 }
 

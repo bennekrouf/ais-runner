@@ -26,15 +26,18 @@ fn main() {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("assets/icon.ico");
         res.set("FileDescription", "AIS Runner");
-        res.set("ProductName",     "AIS Runner");
-        res.set("CompanyName",     "Bennekrouf");
-        res.set("LegalCopyright",  "© Bennekrouf");
+        res.set("ProductName", "AIS Runner");
+        res.set("CompanyName", "Bennekrouf");
+        res.set("LegalCopyright", "© Bennekrouf");
         if let Err(e) = res.compile() {
             // Don't hard-fail — the rc.exe/windres dependency isn't always
             // available on every Windows runner. Warn so the gap is visible
             // but let the build go through icon-less.
-            println!("cargo:warning=Failed to embed Windows icon resource: {} \
-                 (the build will continue without an icon)", e);
+            println!(
+                "cargo:warning=Failed to embed Windows icon resource: {} \
+                 (the build will continue without an icon)",
+                e
+            );
         }
     }
 }

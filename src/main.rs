@@ -2,11 +2,11 @@
 // (`src/bin/ais-test.rs`) shares one copy of the service layer.
 use ais_runner::{screens, services, update_check, utils};
 
-use dioxus::prelude::*;
 use dioxus::desktop::LogicalSize;
+use dioxus::prelude::*;
 
+use screens::{LoadingScreen, MainScreenWithContext, WelcomeScreen};
 use services::config;
-use screens::{WelcomeScreen, LoadingScreen, MainScreenWithContext};
 
 const MAIN_CSS: &str = include_str!("../assets/main.css");
 
@@ -27,7 +27,9 @@ fn refresh_windows_path() {
     //    MSI installers registered after our process started.
     if let Ok(out) = std::process::Command::new("powershell")
         .args([
-            "-NoProfile", "-NonInteractive", "-Command",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
             "[Environment]::GetEnvironmentVariable('PATH','Machine') + ';' + \
              [Environment]::GetEnvironmentVariable('PATH','User')",
         ])
@@ -121,9 +123,13 @@ fn main() {
     let crash_log = log_dir.join("crash.log");
 
     // Overwrite with a "started OK" marker; on crash the panic hook replaces it.
-    let _ = std::fs::write(&crash_log, format!(
-        "[{}] ais-runner starting\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-    ));
+    let _ = std::fs::write(
+        &crash_log,
+        format!(
+            "[{}] ais-runner starting\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        ),
+    );
 
     {
         let crash_log2 = crash_log.clone();
@@ -137,15 +143,15 @@ fn main() {
             // Also try a Windows message box so non-technical users see something
             #[cfg(target_os = "windows")]
             {
-                let title  = "AIS Runner — Startup Error\0";
-                let text   = format!("{}\n\nSee crash.log in:\n{}\0", info, crash_log2.display());
+                let title = "AIS Runner — Startup Error\0";
+                let text = format!("{}\n\nSee crash.log in:\n{}\0", info, crash_log2.display());
                 unsafe {
                     windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxA(
                         std::ptr::null_mut(),
                         text.as_ptr(),
                         title.as_ptr(),
-                        windows_sys::Win32::UI::WindowsAndMessaging::MB_OK |
-                        windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+                        windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
+                            | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
                     );
                 }
             }
@@ -159,7 +165,7 @@ fn main() {
         .with_env_filter(
             tracing_subscriber::EnvFilter::builder()
                 .with_default_directive(tracing::Level::INFO.into())
-                .parse_lossy("tiberius=error")
+                .parse_lossy("tiberius=error"),
         )
         .init();
 
@@ -171,19 +177,27 @@ fn main() {
     // nothing is running yet to probe) and the findings are surfaced in the
     // log panel once the UI mounts.
     for line in services::azurite_health::startup_check(&utils::azurite_dir()) {
-        let _ = std::fs::write(&crash_log, format!(
-            "[{}] {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), line
-        ));
+        let _ = std::fs::write(
+            &crash_log,
+            format!(
+                "[{}] {}\n",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                line
+            ),
+        );
         services::azurite_health::record_startup_note(line);
     }
 
     let webview_data_dir = log_dir.clone();
 
-    let _ = std::fs::write(&crash_log, format!(
-        "[{}] WebView2 data dir: {}\n",
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-        webview_data_dir.display()
-    ));
+    let _ = std::fs::write(
+        &crash_log,
+        format!(
+            "[{}] WebView2 data dir: {}\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            webview_data_dir.display()
+        ),
+    );
 
     let cfg = dioxus::desktop::Config::new()
         .with_data_directory(webview_data_dir)
@@ -236,27 +250,42 @@ fn is_flow_shape(x: u32, y: u32, size: u32) -> bool {
     let fy = y as f32;
 
     // Left node: small filled circle at (22%, 50%)
-    let lx = s * 0.25; let ly = s * 0.50;
-    if (fx - lx).hypot(fy - ly) < s * 0.10 { return true; }
+    let lx = s * 0.25;
+    let ly = s * 0.50;
+    if (fx - lx).hypot(fy - ly) < s * 0.10 {
+        return true;
+    }
 
     // Right node: small filled circle at (75%, 50%)
-    let rx = s * 0.75; let ry = s * 0.50;
-    if (fx - rx).hypot(fy - ry) < s * 0.10 { return true; }
+    let rx = s * 0.75;
+    let ry = s * 0.50;
+    if (fx - rx).hypot(fy - ry) < s * 0.10 {
+        return true;
+    }
 
     // Top-center node: small circle at (50%, 28%)
-    let tx = s * 0.50; let ty = s * 0.28;
-    if (fx - tx).hypot(fy - ty) < s * 0.08 { return true; }
+    let tx = s * 0.50;
+    let ty = s * 0.28;
+    if (fx - tx).hypot(fy - ty) < s * 0.08 {
+        return true;
+    }
 
     // Connecting line left→right (thin horizontal bar)
-    if fy > ly - s * 0.025 && fy < ly + s * 0.025 && fx > lx && fx < rx { return true; }
+    if fy > ly - s * 0.025 && fy < ly + s * 0.025 && fx > lx && fx < rx {
+        return true;
+    }
 
     // Connecting line left→top
-    let dx = tx - lx; let dy = ty - ly;
+    let dx = tx - lx;
+    let dy = ty - ly;
     let len = dx.hypot(dy);
     let t = ((fx - lx) * dx + (fy - ly) * dy) / (len * len);
     if (0.15..=0.85).contains(&t) {
-        let px = lx + t * dx; let py = ly + t * dy;
-        if (fx - px).hypot(fy - py) < s * 0.025 { return true; }
+        let px = lx + t * dx;
+        let py = ly + t * dy;
+        if (fx - px).hypot(fy - py) < s * 0.025 {
+            return true;
+        }
     }
 
     false
@@ -275,14 +304,14 @@ enum Screen {
 
 #[component]
 fn App() -> Element {
-    let saved   = config::load();
-    let screen  = use_signal(|| Screen::Welcome);
+    let saved = config::load();
+    let screen = use_signal(|| Screen::Welcome);
     let app_cfg = use_signal(|| saved);
 
     // Apply system theme once at startup, then keep in sync — but stop
     // syncing once the user has manually toggled the theme button.
     let system_light = dark_light::detect() != dark_light::Mode::Dark;
-    let is_light          = use_signal(|| system_light);
+    let is_light = use_signal(|| system_light);
     let theme_overridden = use_signal(|| false);
 
     use_effect(move || {
@@ -293,7 +322,8 @@ fn App() -> Element {
     // Disable autocorrect / autocapitalize / spellcheck on every input and
     // textarea — current ones and any added later via MutationObserver.
     use_effect(move || {
-        document::eval(r#"
+        document::eval(
+            r#"
             (function () {
                 function patch(el) {
                     el.setAttribute('autocorrect',    'off');
@@ -312,7 +342,8 @@ fn App() -> Element {
                     });
                 }).observe(document.body, { childList: true, subtree: true });
             })();
-        "#);
+        "#,
+        );
     });
 
     // DISABLED: Theme detection every 2s was causing MainScreen to re-mount repeatedly
@@ -335,7 +366,7 @@ fn App() -> Element {
     */
 
     let on_open = {
-        let mut screen  = screen;
+        let mut screen = screen;
         let mut app_cfg = app_cfg;
         move |dir: String| {
             let mut cfg = app_cfg.read().clone();
@@ -357,22 +388,23 @@ fn App() -> Element {
         let mut screen = screen;
         move |_| {
             // Reset window title to the neutral form when returning to the picker.
-            dioxus::desktop::window().set_title(
-                concat!("AIS Local Runner ", env!("CARGO_PKG_VERSION"))
-            );
+            dioxus::desktop::window()
+                .set_title(concat!("AIS Local Runner ", env!("CARGO_PKG_VERSION")));
             screen.set(Screen::Welcome);
         }
     };
 
     // ── Auto-update check ──────────────────────────────────────────────────
-    let mut update_info      = use_signal(|| Option::<update_check::UpdateInfo>::None);
+    let mut update_info = use_signal(|| Option::<update_check::UpdateInfo>::None);
     let mut update_dismissed = use_signal(|| false);
-    use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        if let Some(info) = update_check::check().await {
-            update_info.set(Some(info));
-        }
-    });
+    use_coroutine(
+        move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            if let Some(info) = update_check::check().await {
+                update_info.set(Some(info));
+            }
+        },
+    );
 
     rsx! {
         document::Style { "{MAIN_CSS}" }

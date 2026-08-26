@@ -41,38 +41,33 @@ use crate::services::mock::router::{Incoming, Router as RouteTable};
 pub struct MockServer {
     pub port: u16,
     shutdown: Option<oneshot::Sender<()>>,
-    handle:   tokio::task::JoinHandle<()>,
+    handle: tokio::task::JoinHandle<()>,
 }
 
 #[derive(Clone)]
 struct AppState {
-    routes:   Arc<RouteTable>,
-    bus:      EventBus,
+    routes: Arc<RouteTable>,
+    bus: EventBus,
     contract: Arc<MockContract>,
 }
 
 impl MockServer {
     /// Bind on `127.0.0.1:0` (any free port), spawn the server task, return.
     /// The chosen port is exposed via `server.port`.
-    pub async fn start(
-        contract: MockContract,
-        bus:      EventBus,
-    ) -> std::io::Result<Self> {
+    pub async fn start(contract: MockContract, bus: EventBus) -> std::io::Result<Self> {
         let routes = Arc::new(RouteTable::from_contract(&contract));
-        let state  = AppState {
-            routes:   routes.clone(),
-            bus:      bus.clone(),
+        let state = AppState {
+            routes: routes.clone(),
+            bus: bus.clone(),
             contract: Arc::new(contract),
         };
 
         // Single catch-all handler — we route ourselves rather than relying on
         // axum's matchit so the contract's `{X}` patterns work uniformly.
-        let app = AxumRouter::new()
-            .fallback(handle_request)
-            .with_state(state);
+        let app = AxumRouter::new().fallback(handle_request).with_state(state);
 
         let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await?;
-        let port     = listener.local_addr()?.port();
+        let port = listener.local_addr()?.port();
 
         let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
 
@@ -86,7 +81,11 @@ impl MockServer {
         });
 
         let _ = routes; // suppress unused warning when no routes match
-        Ok(Self { port, shutdown: Some(tx_shutdown), handle })
+        Ok(Self {
+            port,
+            shutdown: Some(tx_shutdown),
+            handle,
+        })
     }
 
     /// Trigger graceful shutdown and await the server task.
@@ -101,15 +100,15 @@ impl MockServer {
 /// Single catch-all axum handler.
 async fn handle_request(
     State(state): State<AppState>,
-    method:       Method,
-    uri:          Uri,
-    headers:      HeaderMap,
-    body:         Bytes,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> impl IntoResponse {
     let request_id = new_request_id();
-    let start      = Instant::now();
-    let path       = uri.path();
-    let _          = headers; // unused for now; reserved for future auth/header capture
+    let start = Instant::now();
+    let path = uri.path();
+    let _ = headers; // unused for now; reserved for future auth/header capture
 
     // Try to parse the mock prefix to learn which logical setting this targets.
     let (setting_name, inner_path) = match parse_mock_path(path) {
@@ -127,48 +126,51 @@ async fn handle_request(
                     "error": "request not routed through rewrite layer",
                     "path":  path,
                 })),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
     // Publish the request event before any matching attempt.
     let body_json = serde_json::from_slice::<serde_json::Value>(&body).ok();
     state.bus.publish(MockEvent::Request {
-        id:     request_id.clone(),
+        id: request_id.clone(),
         method: method.as_str().to_string(),
-        url:    uri.to_string(),
+        url: uri.to_string(),
         target: Some(format!("(via setting {}){}", setting_name, inner_path)),
-        body:   body_json,
+        body: body_json,
     });
 
     // Route the *inner* path (after the /__mock__/<setting> prefix is stripped).
     let routed = state.routes.route(&Incoming {
         method: method.as_str(),
-        path:   inner_path,
+        path: inner_path,
     });
 
     let (status, source, body): (StatusCode, ResponseSource, serde_json::Value) = match routed {
         Some(endpoint) => {
-            let code = StatusCode::from_u16(endpoint.response.status_code)
-                .unwrap_or(StatusCode::OK);
-            (code, ResponseSource::AutoStub, endpoint.response.example.clone())
-        }
-        None => {
+            let code =
+                StatusCode::from_u16(endpoint.response.status_code).unwrap_or(StatusCode::OK);
             (
-                StatusCode::NOT_FOUND,
-                ResponseSource::NotInContract,
-                serde_json::json!({
-                    "error":  "no endpoint in contract matches this request",
-                    "method": method.as_str(),
-                    "path":   inner_path,
-                    "hint":   "did you rebuild the mock contract after editing the workflow?",
-                }),
+                code,
+                ResponseSource::AutoStub,
+                endpoint.response.example.clone(),
             )
         }
+        None => (
+            StatusCode::NOT_FOUND,
+            ResponseSource::NotInContract,
+            serde_json::json!({
+                "error":  "no endpoint in contract matches this request",
+                "method": method.as_str(),
+                "path":   inner_path,
+                "hint":   "did you rebuild the mock contract after editing the workflow?",
+            }),
+        ),
     };
 
-    let elapsed_ms   = start.elapsed().as_millis() as u64;
-    let body_str     = body.to_string();
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+    let body_str = body.to_string();
     let body_excerpt = if body_str.len() > 240 {
         Some(format!("{}…", &body_str[..240]))
     } else {
@@ -176,8 +178,8 @@ async fn handle_request(
     };
 
     state.bus.publish(MockEvent::Response {
-        id:           request_id,
-        status:       status.as_u16(),
+        id: request_id,
+        status: status.as_u16(),
         source,
         elapsed_ms,
         body_excerpt,

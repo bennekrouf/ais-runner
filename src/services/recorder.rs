@@ -293,7 +293,9 @@ mod tests {
         });
 
         assert_eq!(state.steps.len(), 2);
-        assert!(matches!(&state.steps[1], Step::WaitForRun { workflow, .. } if workflow == "Invoice"));
+        assert!(
+            matches!(&state.steps[1], Step::WaitForRun { workflow, .. } if workflow == "Invoice")
+        );
         // The user's wait for that run is now represented by the WaitForRun, so
         // the next action must not also produce a Sleep.
         assert!(state.suppress_next_gap);

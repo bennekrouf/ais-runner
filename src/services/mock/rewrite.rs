@@ -206,7 +206,7 @@ pub fn sanitize_workspace_with_fallback(
 
 pub struct RewriteOutcome {
     pub rewritten_count: usize,
-    pub backup_path:     PathBuf,
+    pub backup_path: PathBuf,
 }
 
 /// Rewrite URL-kind settings to point at `http://localhost:{mock_port}`.
@@ -216,20 +216,20 @@ pub struct RewriteOutcome {
 /// on an already-patched file cannot overwrite the true original with mock URLs.
 pub fn rewrite(
     workspace: &Path,
-    contract:  &MockContract,
+    contract: &MockContract,
     mock_port: u16,
 ) -> Result<RewriteOutcome, ScanError> {
     let settings_path = workspace.join("local.settings.json");
-    let raw           = std::fs::read_to_string(&settings_path)?;
+    let raw = std::fs::read_to_string(&settings_path)?;
     let mut json: Value = serde_json::from_str(&raw)?;
 
     // 1. Snapshot the original. Refreshed whenever the on-disk file is clean,
     //    so edits made between sessions survive; skipped when the file is still
     //    patched from an earlier run, which would otherwise back up mock URLs
     //    and make the true original unrecoverable.
-    let backup_dir   = cache_dir(workspace);
+    let backup_dir = cache_dir(workspace);
     std::fs::create_dir_all(&backup_dir)?;
-    let backup_path  = backup_dir.join(BACKUP_NAME);
+    let backup_path = backup_dir.join(BACKUP_NAME);
     if !is_patched(&json) {
         std::fs::write(&backup_path, &raw)?;
     }
@@ -246,14 +246,20 @@ pub fn rewrite(
             // themselves URL-shaped, so without this they get mocked too and
             // re-stashed under a doubled prefix — one extra nesting level per
             // run, until the true original is buried and lost.
-            if name.starts_with(ORIGINAL_KEY_PREFIX) { continue; }
+            if name.starts_with(ORIGINAL_KEY_PREFIX) {
+                continue;
+            }
             let kind = contract.app_settings.get(name).map(|s| s.kind);
-            if kind != Some(SettingKind::Url) { continue; }
+            if kind != Some(SettingKind::Url) {
+                continue;
+            }
             let original = match slot.as_str() {
                 Some(s) => s.to_string(),
-                None    => continue,
+                None => continue,
             };
-            if is_mocked(&original) { continue; }
+            if is_mocked(&original) {
+                continue;
+            }
             let new_value = format!("{}{}{}", mock_base, MOCK_PREFIX, name);
             pending.push((name.clone(), new_value, original));
         }
@@ -274,14 +280,17 @@ pub fn rewrite(
 
     write_pretty(&settings_path, &json)?;
 
-    Ok(RewriteOutcome { rewritten_count: rewritten, backup_path })
+    Ok(RewriteOutcome {
+        rewritten_count: rewritten,
+        backup_path,
+    })
 }
 
 /// Restore `local.settings.json` from the backup written by `rewrite()`.
 /// No-op (and no error) if no backup exists.
 pub fn restore(workspace: &Path) -> Result<bool, ScanError> {
     let settings_path = workspace.join("local.settings.json");
-    let backup_path   = cache_dir(workspace).join(BACKUP_NAME);
+    let backup_path = cache_dir(workspace).join(BACKUP_NAME);
     if !backup_path.exists() {
         return Ok(false);
     }
@@ -296,7 +305,10 @@ pub fn restore(workspace: &Path) -> Result<bool, ScanError> {
 /// `local.settings.json`. Returns `None` if the value was never stashed.
 pub fn original_url_for(values: &Map<String, Value>, setting_name: &str) -> Option<String> {
     let key = format!("{}{}", ORIGINAL_KEY_PREFIX, setting_name);
-    values.get(&key).and_then(|v| v.as_str()).map(|s| s.to_string())
+    values
+        .get(&key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// Extract `(setting_name, remaining_path)` from a request path that starts
@@ -306,7 +318,7 @@ pub fn parse_mock_path(path: &str) -> Option<(&str, &str)> {
     let rest = path.strip_prefix(MOCK_PREFIX)?;
     match rest.find('/') {
         Some(i) => Some((&rest[..i], &rest[i..])),
-        None    => Some((rest, "/")),
+        None => Some((rest, "/")),
     }
 }
 
@@ -342,7 +354,8 @@ mod tests {
 
     #[test]
     fn is_patched_detects_only_a_rewritten_file() {
-        let clean: Value = serde_json::json!({ "Values": { "Jde_Url": "https://real.example.com" } });
+        let clean: Value =
+            serde_json::json!({ "Values": { "Jde_Url": "https://real.example.com" } });
         assert!(!is_patched(&clean));
 
         let patched: Value = serde_json::json!({ "Values": {
@@ -353,7 +366,9 @@ mod tests {
 
         // Shapes that must not panic or false-positive.
         assert!(!is_patched(&serde_json::json!({})));
-        assert!(!is_patched(&serde_json::json!({ "Values": "not-an-object" })));
+        assert!(!is_patched(
+            &serde_json::json!({ "Values": "not-an-object" })
+        ));
     }
 
     /// The bug this guards: the backup used to be written only when absent, so
@@ -367,24 +382,35 @@ mod tests {
 
         // A contract that classifies `Api_Url` as a URL setting.
         let mut app_settings = BTreeMap::new();
-        app_settings.insert("Api_Url".to_string(), AppSetting {
-            raw_value:      "https://v1.example.com".into(),
-            resolved_value: None,
-            references:     vec![],
-            kind:           SettingKind::Url,
-        });
+        app_settings.insert(
+            "Api_Url".to_string(),
+            AppSetting {
+                raw_value: "https://v1.example.com".into(),
+                resolved_value: None,
+                references: vec![],
+                kind: SettingKind::Url,
+            },
+        );
         let contract = MockContract {
-            version: "1".into(), generated_at: String::new(),
+            version: "1".into(),
+            generated_at: String::new(),
             workspace: ws.display().to_string(),
-            app_settings, endpoints: vec![], warnings: vec![],
+            app_settings,
+            endpoints: vec![],
+            warnings: vec![],
         };
 
-        let write = |url: &str| std::fs::write(
-            &settings,
-            serde_json::to_string_pretty(&serde_json::json!({ "Values": { "Api_Url": url } })).unwrap(),
-        ).unwrap();
+        let write = |url: &str| {
+            std::fs::write(
+                &settings,
+                serde_json::to_string_pretty(&serde_json::json!({ "Values": { "Api_Url": url } }))
+                    .unwrap(),
+            )
+            .unwrap()
+        };
         let current_url = || -> String {
-            let v: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+            let v: Value =
+                serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
             v["Values"]["Api_Url"].as_str().unwrap().to_string()
         };
 
@@ -401,7 +427,11 @@ mod tests {
         // Session 2: the edit must survive the round trip.
         rewrite(&ws, &contract, 2222).unwrap();
         restore(&ws).unwrap();
-        assert_eq!(current_url(), "https://v2.example.com", "edits made between sessions were lost");
+        assert_eq!(
+            current_url(),
+            "https://v2.example.com",
+            "edits made between sessions were lost"
+        );
 
         std::fs::remove_dir_all(&ws).ok();
     }
@@ -415,19 +445,32 @@ mod tests {
         let settings = ws.join("local.settings.json");
 
         let mut app_settings = BTreeMap::new();
-        app_settings.insert("Api_Url".to_string(), AppSetting {
-            raw_value: "https://real.example.com".into(),
-            resolved_value: None, references: vec![], kind: SettingKind::Url,
-        });
+        app_settings.insert(
+            "Api_Url".to_string(),
+            AppSetting {
+                raw_value: "https://real.example.com".into(),
+                resolved_value: None,
+                references: vec![],
+                kind: SettingKind::Url,
+            },
+        );
         let contract = MockContract {
-            version: "1".into(), generated_at: String::new(),
+            version: "1".into(),
+            generated_at: String::new(),
             workspace: ws.display().to_string(),
-            app_settings, endpoints: vec![], warnings: vec![],
+            app_settings,
+            endpoints: vec![],
+            warnings: vec![],
         };
 
-        std::fs::write(&settings, serde_json::to_string_pretty(
-            &serde_json::json!({ "Values": { "Api_Url": "https://real.example.com" } })
-        ).unwrap()).unwrap();
+        std::fs::write(
+            &settings,
+            serde_json::to_string_pretty(
+                &serde_json::json!({ "Values": { "Api_Url": "https://real.example.com" } }),
+            )
+            .unwrap(),
+        )
+        .unwrap();
 
         rewrite(&ws, &contract, 1111).unwrap();
         rewrite(&ws, &contract, 2222).unwrap(); // second start, no restore in between
@@ -441,24 +484,36 @@ mod tests {
 
     fn url_contract(ws: &Path, name: &str) -> MockContract {
         let mut app_settings = BTreeMap::new();
-        app_settings.insert(name.to_string(), AppSetting {
-            raw_value: String::new(), resolved_value: None,
-            references: vec![], kind: SettingKind::Url,
-        });
+        app_settings.insert(
+            name.to_string(),
+            AppSetting {
+                raw_value: String::new(),
+                resolved_value: None,
+                references: vec![],
+                kind: SettingKind::Url,
+            },
+        );
         MockContract {
-            version: "1".into(), generated_at: String::new(),
+            version: "1".into(),
+            generated_at: String::new(),
             workspace: ws.display().to_string(),
-            app_settings, endpoints: vec![], warnings: vec![],
+            app_settings,
+            endpoints: vec![],
+            warnings: vec![],
         }
     }
 
     fn write_values(path: &Path, values: Value) {
-        std::fs::write(path, serde_json::to_string_pretty(
-            &serde_json::json!({ "Values": values })).unwrap()).unwrap();
+        std::fs::write(
+            path,
+            serde_json::to_string_pretty(&serde_json::json!({ "Values": values })).unwrap(),
+        )
+        .unwrap();
     }
 
     fn read_values(path: &Path) -> Value {
-        serde_json::from_str::<Value>(&std::fs::read_to_string(path).unwrap()).unwrap()["Values"].clone()
+        serde_json::from_str::<Value>(&std::fs::read_to_string(path).unwrap()).unwrap()["Values"]
+            .clone()
     }
 
     /// The mock port changes every run, so a guard keyed on the current
@@ -473,16 +528,23 @@ mod tests {
         let settings = ws.join("local.settings.json");
         let contract = url_contract(&ws, "Api_Url");
 
-        write_values(&settings, serde_json::json!({ "Api_Url": "https://real.example.com" }));
+        write_values(
+            &settings,
+            serde_json::json!({ "Api_Url": "https://real.example.com" }),
+        );
         rewrite(&ws, &contract, 1111).unwrap();
         // Second session, different port, no restore in between.
         rewrite(&ws, &contract, 2222).unwrap();
 
         let v = read_values(&settings);
-        assert_eq!(v["__mock_original__Api_Url"], "https://real.example.com",
-                   "the stash must still hold the real URL, not a mock one");
-        assert_eq!(v["Api_Url"], "http://localhost:1111/__mock__/Api_Url",
-                   "an already-mocked value must be left alone");
+        assert_eq!(
+            v["__mock_original__Api_Url"], "https://real.example.com",
+            "the stash must still hold the real URL, not a mock one"
+        );
+        assert_eq!(
+            v["Api_Url"], "http://localhost:1111/__mock__/Api_Url",
+            "an already-mocked value must be left alone"
+        );
 
         std::fs::remove_dir_all(&ws).ok();
     }
@@ -497,19 +559,29 @@ mod tests {
 
         let mut contract = url_contract(&ws, "Api_Url");
         // Simulate a scanner that also picked up the stash key as a URL setting.
-        contract.app_settings.insert("__mock_original__Api_Url".to_string(), AppSetting {
-            raw_value: String::new(), resolved_value: None,
-            references: vec![], kind: SettingKind::Url,
-        });
+        contract.app_settings.insert(
+            "__mock_original__Api_Url".to_string(),
+            AppSetting {
+                raw_value: String::new(),
+                resolved_value: None,
+                references: vec![],
+                kind: SettingKind::Url,
+            },
+        );
 
-        write_values(&settings, serde_json::json!({ "Api_Url": "https://real.example.com" }));
+        write_values(
+            &settings,
+            serde_json::json!({ "Api_Url": "https://real.example.com" }),
+        );
         rewrite(&ws, &contract, 1111).unwrap();
         rewrite(&ws, &contract, 2222).unwrap();
         rewrite(&ws, &contract, 3333).unwrap();
 
         let v = read_values(&settings);
-        assert!(v.get("__mock_original____mock_original__Api_Url").is_none(),
-                "stash keys must not accumulate prefixes");
+        assert!(
+            v.get("__mock_original____mock_original__Api_Url").is_none(),
+            "stash keys must not accumulate prefixes"
+        );
         assert_eq!(v["__mock_original__Api_Url"], "https://real.example.com");
 
         std::fs::remove_dir_all(&ws).ok();
@@ -523,14 +595,17 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
         let settings = ws.join("local.settings.json");
 
-        write_values(&settings, serde_json::json!({
-            "Api_Url": "http://localhost:3333/__mock__/Api_Url",
-            "__mock_original__Api_Url": "http://localhost:2222/__mock__/Api_Url",
-            "__mock_original____mock_original__Api_Url": "https://real.example.com",
-            "Lost_Url": "http://localhost:3333/__mock__/Lost_Url",
-            "__mock_original__Lost_Url": "http://localhost:2222/__mock__/Lost_Url",
-            "Untouched": "plain-value",
-        }));
+        write_values(
+            &settings,
+            serde_json::json!({
+                "Api_Url": "http://localhost:3333/__mock__/Api_Url",
+                "__mock_original__Api_Url": "http://localhost:2222/__mock__/Api_Url",
+                "__mock_original____mock_original__Api_Url": "https://real.example.com",
+                "Lost_Url": "http://localhost:3333/__mock__/Lost_Url",
+                "__mock_original__Lost_Url": "http://localhost:2222/__mock__/Lost_Url",
+                "Untouched": "plain-value",
+            }),
+        );
 
         let report = sanitize(&settings).unwrap();
         let v = read_values(&settings);
@@ -541,7 +616,11 @@ mod tests {
         // reported rather than silently left looking valid.
         assert_eq!(report.unrecoverable, vec!["Lost_Url".to_string()]);
         assert_eq!(v["Untouched"], "plain-value");
-        assert!(v.as_object().unwrap().keys().all(|k| !k.starts_with(ORIGINAL_KEY_PREFIX)));
+        assert!(v
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|k| !k.starts_with(ORIGINAL_KEY_PREFIX)));
 
         std::fs::remove_dir_all(&ws).ok();
     }
@@ -567,8 +646,11 @@ mod tests {
         sanitize_workspace(&ws).unwrap();
         restore(&ws).unwrap();
 
-        assert_eq!(read_values(&settings)["Api_Url"], "https://real.example.com",
-                   "restore() reintroduced the mock URL from an uncleaned backup");
+        assert_eq!(
+            read_values(&settings)["Api_Url"],
+            "https://real.example.com",
+            "restore() reintroduced the mock URL from an uncleaned backup"
+        );
 
         std::fs::remove_dir_all(&ws).ok();
     }

@@ -1,13 +1,12 @@
-use std::sync::Arc;
-use std::collections::{HashMap, HashSet};
 use dioxus::prelude::*;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::components::log_panel::{LogLevel, LogLine};
 use crate::services::{
     connection_diag,
     process::{ManagedProcess, ServiceState},
-    runtime_manager,
-    setup_manager,
+    runtime_manager, setup_manager,
     system_check::FUNC_INSTALL_HINT,
     workflows::{self, WorkflowItem},
 };
@@ -36,7 +35,10 @@ pub fn handle_start(
     let mut push = make_push(log_lines);
 
     if !matches!(*azurite_state.read(), ServiceState::Running) {
-        push("⚠ Start Azurite first — func start needs blob/queue/table storage.".into(), LogLevel::Warn);
+        push(
+            "⚠ Start Azurite first — func start needs blob/queue/table storage.".into(),
+            LogLevel::Warn,
+        );
         return;
     }
 
@@ -51,9 +53,15 @@ pub fn handle_start(
         }
     }
 
-    if !std::path::Path::new(&func_cwd).join("local.settings.json").exists() {
+    if !std::path::Path::new(&func_cwd)
+        .join("local.settings.json")
+        .exists()
+    {
         push(
-            format!("⚠ local.settings.json not found in {} — func start requires it.", func_cwd),
+            format!(
+                "⚠ local.settings.json not found in {} — func start requires it.",
+                func_cwd
+            ),
             LogLevel::Warn,
         );
         return;
@@ -77,14 +85,14 @@ pub fn handle_start(
 
     // ── Everything else runs in a single spawn so we can await spawn_blocking ─
     spawn(async move {
-    let mut push = make_push(log_lines);
+        let mut push = make_push(log_lines);
 
-    // ── Pre-flight: auto-fix what we can, warn about the rest ────────────
-    // All file I/O runs in spawn_blocking so the tokio executor is never stalled.
-    {
-        let d = func_cwd.clone();
-        // Collect log messages from the blocking thread and emit them here.
-        let msgs: Vec<(String, LogLevel)> = tokio::task::spawn_blocking(move || {
+        // ── Pre-flight: auto-fix what we can, warn about the rest ────────────
+        // All file I/O runs in spawn_blocking so the tokio executor is never stalled.
+        {
+            let d = func_cwd.clone();
+            // Collect log messages from the blocking thread and emit them here.
+            let msgs: Vec<(String, LogLevel)> = tokio::task::spawn_blocking(move || {
             let mut out: Vec<(String, LogLevel)> = Vec::new();
             // Shadow the outer `push` closure so all existing push(msg, lvl) calls
             // inside this block collect into `out` instead of touching a Dioxus signal.
@@ -250,108 +258,135 @@ pub fn handle_start(
             })();
             out
         }).await.unwrap_or_default();
-        for (msg, lvl) in msgs { push(msg, lvl); }
-    }
+            for (msg, lvl) in msgs {
+                push(msg, lvl);
+            }
+        }
 
-    // Inline-JavaScript pre-flight: flag workflows using `Execute JavaScript
-    // Code`. They need the Node language worker, which the host starts on
-    // demand — we can't start it, but forewarning saves a confusing debug.
-    {
-        let d = dir.clone();
-        let js_wfs = tokio::task::spawn_blocking(move || {
-            crate::services::inline_js::workflows_with_inline_js(&d)
-        }).await.unwrap_or_default();
-        if !js_wfs.is_empty() {
-            push(format!(
+        // Inline-JavaScript pre-flight: flag workflows using `Execute JavaScript
+        // Code`. They need the Node language worker, which the host starts on
+        // demand — we can't start it, but forewarning saves a confusing debug.
+        {
+            let d = dir.clone();
+            let js_wfs = tokio::task::spawn_blocking(move || {
+                crate::services::inline_js::workflows_with_inline_js(&d)
+            })
+            .await
+            .unwrap_or_default();
+            if !js_wfs.is_empty() {
+                push(format!(
                 "  ℹ {} workflow(s) use inline JavaScript ({}). These run in the Node language worker — \
                  ensure Node.js is installed. If a run fails with 'actively refused (localhost:PORT)', \
                  that's the JS worker not starting, not your workflow.",
                 js_wfs.len(), js_wfs.join(", ")
             ), LogLevel::Info);
+            }
         }
-    }
 
-    func_state.set(ServiceState::Starting);
+        func_state.set(ServiceState::Starting);
 
-    {
-        // Quick async port check before launching func
-        let mut ready = false;
-        for attempt in 0u8..6 {
-            let all_up = async {
-                for port in [10000u16, 10001, 10002] {
-                    if tokio::net::TcpStream::connect(
-                        std::net::SocketAddr::from(([127, 0, 0, 1], port))
-                    ).await.is_err() { return false; }
+        {
+            // Quick async port check before launching func
+            let mut ready = false;
+            for attempt in 0u8..6 {
+                let all_up = async {
+                    for port in [10000u16, 10001, 10002] {
+                        if tokio::net::TcpStream::connect(std::net::SocketAddr::from((
+                            [127, 0, 0, 1],
+                            port,
+                        )))
+                        .await
+                        .is_err()
+                        {
+                            return false;
+                        }
+                    }
+                    true
                 }
-                true
-            }.await;
-            if all_up { ready = true; break; }
-            if attempt == 0 {
-                push("Waiting for Azurite storage services…".into(), LogLevel::Info);
+                .await;
+                if all_up {
+                    ready = true;
+                    break;
+                }
+                if attempt == 0 {
+                    push(
+                        "Waiting for Azurite storage services…".into(),
+                        LogLevel::Info,
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
 
-        if !ready {
-            let mut dead = Vec::new();
-            for port in [10000u16, 10001, 10002] {
-                if tokio::net::TcpStream::connect(
-                    std::net::SocketAddr::from(([127, 0, 0, 1], port))
-                ).await.is_err() { dead.push(port.to_string()); }
-            }
-            push(
+            if !ready {
+                let mut dead = Vec::new();
+                for port in [10000u16, 10001, 10002] {
+                    if tokio::net::TcpStream::connect(std::net::SocketAddr::from((
+                        [127, 0, 0, 1],
+                        port,
+                    )))
+                    .await
+                    .is_err()
+                    {
+                        dead.push(port.to_string());
+                    }
+                }
+                push(
                 format!("⚠ Azurite port(s) {} not responding — click Stop then Start on Azurite to restart it.", dead.join(", ")),
                 LogLevel::Error,
             );
-            func_state.set(ServiceState::Stopped);
-            return;
-        }
+                func_state.set(ServiceState::Stopped);
+                return;
+            }
 
-        push(format!("$ cd {} && func start", func_cwd), LogLevel::Info);
+            push(format!("$ cd {} && func start", func_cwd), LogLevel::Info);
 
-        // Reclaim :7071 from a stale func host. Must target the *listener*
-        // only — a bare `lsof -ti :7071` also matches this app's own pooled
-        // keep-alive connections to the func management API, which made
-        // ais-runner SIGKILL itself mid-run.
-        let _ = tokio::task::spawn_blocking(|| {
-            crate::services::port_owner::kill_listener(7071)
-        }).await;
+            // Reclaim :7071 from a stale func host. Must target the *listener*
+            // only — a bare `lsof -ti :7071` also matches this app's own pooled
+            // keep-alive connections to the func management API, which made
+            // ais-runner SIGKILL itself mid-run.
+            let _ =
+                tokio::task::spawn_blocking(|| crate::services::port_owner::kill_listener(7071))
+                    .await;
 
-        // Pin the func host to the C locale. On machines with a comma-decimal
-        // locale (fr/de/…), the Logic Apps job scheduler serializes
-        // numbers/timestamps with a comma, which corrupts the Azurite table
-        // row-keys it dispatches on — jobs silently stop firing. LC_ALL/LANG=C
-        // makes .NET resolve CurrentCulture to Invariant, which is enough.
-        // Do NOT add DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: it unloads ICU, and
-        // the Workflows extension hardcodes CultureInfo("en-us") during host
-        // startup, which then throws and faults the script host.
-        let func_env: Vec<(String, String)> = vec![
-            ("LC_ALL".into(), "C".into()),
-            ("LANG".into(), "C".into()),
-        ];
-        match proc.read().start_with_env("func", &["start"], Some(&func_cwd), &func_env) {
-            Ok((stdout, stderr)) => {
-                func_state.set(ServiceState::Running);
-                push("func start launched — waiting for workflows…".into(), LogLevel::Ok);
+            // Pin the func host to the C locale. On machines with a comma-decimal
+            // locale (fr/de/…), the Logic Apps job scheduler serializes
+            // numbers/timestamps with a comma, which corrupts the Azurite table
+            // row-keys it dispatches on — jobs silently stop firing. LC_ALL/LANG=C
+            // makes .NET resolve CurrentCulture to Invariant, which is enough.
+            // Do NOT add DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: it unloads ICU, and
+            // the Workflows extension hardcodes CultureInfo("en-us") during host
+            // startup, which then throws and faults the script host.
+            let func_env: Vec<(String, String)> =
+                vec![("LC_ALL".into(), "C".into()), ("LANG".into(), "C".into())];
+            match proc
+                .read()
+                .start_with_env("func", &["start"], Some(&func_cwd), &func_env)
+            {
+                Ok((stdout, stderr)) => {
+                    func_state.set(ServiceState::Running);
+                    push(
+                        "func start launched — waiting for workflows…".into(),
+                        LogLevel::Ok,
+                    );
 
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
-                crate::services::process::stream_output(stdout, stderr, tx, true);
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
+                    crate::services::process::stream_output(stdout, stderr, tx, true);
 
-                let mut push3 = make_push(log_lines);
-                spawn(async move {
-                    let mut function_conn_warned = false;
-                    let mut bundle_warned = false;
-                    let mut prebuild_warned = false;
-                    let mut js_warned = false;
-                    let mut core_tools_warned = false;
-                    while let Some((line, is_err)) = rx.recv().await {
-                        // `func` is on PATH but its payload never downloaded —
-                        // a half-finished npm install, not a workflow problem.
-                        if is_broken_core_tools_install(&line) {
-                            push3(line.clone(), LogLevel::Error);
-                            if !core_tools_warned {
-                                core_tools_warned = true;
-                                push3(
+                    let mut push3 = make_push(log_lines);
+                    spawn(async move {
+                        let mut function_conn_warned = false;
+                        let mut bundle_warned = false;
+                        let mut prebuild_warned = false;
+                        let mut js_warned = false;
+                        let mut core_tools_warned = false;
+                        while let Some((line, is_err)) = rx.recv().await {
+                            // `func` is on PATH but its payload never downloaded —
+                            // a half-finished npm install, not a workflow problem.
+                            if is_broken_core_tools_install(&line) {
+                                push3(line.clone(), LogLevel::Error);
+                                if !core_tools_warned {
+                                    core_tools_warned = true;
+                                    push3(
                                     format!(
                                         "❌ The Core Tools install is incomplete — `func` is on PATH but the CLI it \
                                          downloads at install time is missing. Reinstall with: {}",
@@ -359,199 +394,249 @@ pub fn handle_start(
                                     ),
                                     LogLevel::Error,
                                 );
+                                }
+                                continue;
                             }
-                            continue;
-                        }
-                        if line.contains("functionConnections") && line.contains("cannot be parsed") {
-                            if !function_conn_warned {
-                                function_conn_warned = true;
-                                push3(
+                            if line.contains("functionConnections")
+                                && line.contains("cannot be parsed")
+                            {
+                                if !function_conn_warned {
+                                    function_conn_warned = true;
+                                    push3(
                                     "⚠ functionConnections: @{appsetting(...)} interpolation in function.id is not supported locally — triggerUrl is used for invocation and is unaffected.".into(),
                                     LogLevel::Warn,
                                 );
-                            }
-                            continue;
-                        }
-                        if line.contains("Workflow processing failed") && line.contains("functionConnections") {
-                            continue;
-                        }
-                        // Host-readiness probe failures spam the log many times a
-                        // second while the func host is still booting — pure noise.
-                        if line.contains("Host unavailable after check") {
-                            continue;
-                        }
-                        // Leftover from workflows still patched to Stateful on disk
-                        // (the old debug-mode feature, now removed). The runtime
-                        // refuses to flip kind on a live registration and logs this
-                        // every start until the file is reverted — drop the noise.
-                        if line.contains("cannot be changed from 'Stateless' to 'Stateful'") {
-                            continue;
-                        }
-                        // Inline-JS worker didn't start — translate the cryptic
-                        // "actively refused (localhost:PORT)" into plain English.
-                        if crate::services::inline_js::is_inline_js_worker_error(&line) {
-                            push3(line.clone(), LogLevel::Error);
-                            if !js_warned {
-                                js_warned = true;
-                                push3("⚠ That 'actively refused (localhost:PORT)' is the inline-JavaScript (Node language worker) failing to start — not your workflow. Check Node.js is installed and on PATH, then restart func.".into(), LogLevel::Warn);
-                            }
-                            continue;
-                        }
-                        // A native binding the bundle has no build of for this
-                        // platform/Node ABI. Called out separately from a corrupt
-                        // cache because clearing the cache cannot fix it.
-                        if crate::services::bundle_cache::is_missing_prebuild(&line) {
-                            push3(line.clone(), LogLevel::Error);
-                            if !prebuild_warned {
-                                prebuild_warned = true;
-                                push3("⚠ The extension bundle ships no build of this native module for your platform/Node version — inline-JavaScript actions will fail. Clearing the bundle cache will NOT help (it re-downloads the same bundle). Workflows without a JavaScriptCode action are unaffected.".into(), LogLevel::Warn);
-                            }
-                            continue;
-                        }
-                        // Corrupt extension-bundle cache — surface a clear,
-                        // actionable message once (the raw error is cryptic).
-                        if crate::services::bundle_cache::is_bundle_error(&line) {
-                            push3(line.clone(), LogLevel::Error);
-                            if !bundle_warned {
-                                bundle_warned = true;
-                                push3("⚠ Extension bundle cache looks corrupt. Click ⟳ Clear bundle cache (next to func), then Start again — func will re-download it.".into(), LogLevel::Warn);
-                            }
-                            continue;
-                        }
-                        push3(line, if is_err { LogLevel::Error } else { LogLevel::Info });
-                    }
-                });
-
-                let mut push4 = make_push(log_lines);
-                // connections.json and the workflow definitions live beside host.json.
-                let health_cwd = func_cwd.clone();
-                spawn(async move {
-                    match workflows::wait_for_workflows(120).await {
-                        Ok(mut list) => {
-                            let func_names: HashSet<String> = list.iter().map(|w| w.name.clone()).collect();
-                            let la_dir2 = dir.clone();
-                            let local_names = tokio::task::spawn_blocking(move || {
-                                workflows::scan_local_workflows(&la_dir2)
-                            }).await.unwrap_or_default();
-
-                            // Enrich live list with trigger_provider from local files —
-                            // the management API only returns type/kind, not serviceProviderId.
-                            let providers: std::collections::HashMap<String, String> = local_names.iter()
-                                .filter_map(|w| w.trigger_provider.as_ref().map(|p| (w.name.clone(), p.clone())))
-                                .collect();
-                            for w in &mut list {
-                                if w.trigger_provider.is_none() {
-                                    w.trigger_provider = providers.get(&w.name).cloned();
                                 }
+                                continue;
                             }
-
-                            let missing: Vec<String> = local_names.iter()
-                                .map(|w| w.name.clone())
-                                .filter(|n| !func_names.contains(n))
-                                .collect();
-
-                            push4(
-                                format!("Loaded {} workflow(s){}", list.len(),
-                                    if !missing.is_empty() {
-                                        format!(" — ⚠ {} local workflow(s) not registered", missing.len())
-                                    } else { String::new() }
-                                ),
-                                if !missing.is_empty() { LogLevel::Warn } else { LogLevel::Ok },
+                            if line.contains("Workflow processing failed")
+                                && line.contains("functionConnections")
+                            {
+                                continue;
+                            }
+                            // Host-readiness probe failures spam the log many times a
+                            // second while the func host is still booting — pure noise.
+                            if line.contains("Host unavailable after check") {
+                                continue;
+                            }
+                            // Leftover from workflows still patched to Stateful on disk
+                            // (the old debug-mode feature, now removed). The runtime
+                            // refuses to flip kind on a live registration and logs this
+                            // every start until the file is reverted — drop the noise.
+                            if line.contains("cannot be changed from 'Stateless' to 'Stateful'") {
+                                continue;
+                            }
+                            // Inline-JS worker didn't start — translate the cryptic
+                            // "actively refused (localhost:PORT)" into plain English.
+                            if crate::services::inline_js::is_inline_js_worker_error(&line) {
+                                push3(line.clone(), LogLevel::Error);
+                                if !js_warned {
+                                    js_warned = true;
+                                    push3("⚠ That 'actively refused (localhost:PORT)' is the inline-JavaScript (Node language worker) failing to start — not your workflow. Check Node.js is installed and on PATH, then restart func.".into(), LogLevel::Warn);
+                                }
+                                continue;
+                            }
+                            // A native binding the bundle has no build of for this
+                            // platform/Node ABI. Called out separately from a corrupt
+                            // cache because clearing the cache cannot fix it.
+                            if crate::services::bundle_cache::is_missing_prebuild(&line) {
+                                push3(line.clone(), LogLevel::Error);
+                                if !prebuild_warned {
+                                    prebuild_warned = true;
+                                    push3("⚠ The extension bundle ships no build of this native module for your platform/Node version — inline-JavaScript actions will fail. Clearing the bundle cache will NOT help (it re-downloads the same bundle). Workflows without a JavaScriptCode action are unaffected.".into(), LogLevel::Warn);
+                                }
+                                continue;
+                            }
+                            // Corrupt extension-bundle cache — surface a clear,
+                            // actionable message once (the raw error is cryptic).
+                            if crate::services::bundle_cache::is_bundle_error(&line) {
+                                push3(line.clone(), LogLevel::Error);
+                                if !bundle_warned {
+                                    bundle_warned = true;
+                                    push3("⚠ Extension bundle cache looks corrupt. Click ⟳ Clear bundle cache (next to func), then Start again — func will re-download it.".into(), LogLevel::Warn);
+                                }
+                                continue;
+                            }
+                            push3(
+                                line,
+                                if is_err {
+                                    LogLevel::Error
+                                } else {
+                                    LogLevel::Info
+                                },
                             );
-                            for name in &missing {
+                        }
+                    });
+
+                    let mut push4 = make_push(log_lines);
+                    // connections.json and the workflow definitions live beside host.json.
+                    let health_cwd = func_cwd.clone();
+                    spawn(async move {
+                        match workflows::wait_for_workflows(120).await {
+                            Ok(mut list) => {
+                                let func_names: HashSet<String> =
+                                    list.iter().map(|w| w.name.clone()).collect();
+                                let la_dir2 = dir.clone();
+                                let local_names = tokio::task::spawn_blocking(move || {
+                                    workflows::scan_local_workflows(&la_dir2)
+                                })
+                                .await
+                                .unwrap_or_default();
+
+                                // Enrich live list with trigger_provider from local files —
+                                // the management API only returns type/kind, not serviceProviderId.
+                                let providers: std::collections::HashMap<String, String> =
+                                    local_names
+                                        .iter()
+                                        .filter_map(|w| {
+                                            w.trigger_provider
+                                                .as_ref()
+                                                .map(|p| (w.name.clone(), p.clone()))
+                                        })
+                                        .collect();
+                                for w in &mut list {
+                                    if w.trigger_provider.is_none() {
+                                        w.trigger_provider = providers.get(&w.name).cloned();
+                                    }
+                                }
+
+                                let missing: Vec<String> = local_names
+                                    .iter()
+                                    .map(|w| w.name.clone())
+                                    .filter(|n| !func_names.contains(n))
+                                    .collect();
+
                                 push4(
+                                    format!(
+                                        "Loaded {} workflow(s){}",
+                                        list.len(),
+                                        if !missing.is_empty() {
+                                            format!(
+                                                " — ⚠ {} local workflow(s) not registered",
+                                                missing.len()
+                                            )
+                                        } else {
+                                            String::new()
+                                        }
+                                    ),
+                                    if !missing.is_empty() {
+                                        LogLevel::Warn
+                                    } else {
+                                        LogLevel::Ok
+                                    },
+                                );
+                                for name in &missing {
+                                    push4(
                                     format!("⚠ '{}' not registered by func — a connection likely failed to initialise. Open Connections and check for missing or unreachable endpoints, then restart func.", name),
                                     LogLevel::Warn,
                                 );
-                            }
-                            // A workflow bound to a managed API connection (Teams,
-                            // SharePoint, Log Analytics …) is unhealthy on every local
-                            // start and always will be — those connectors are fronted by
-                            // Azure APIM with no emulator to stand in. Telling the user to
-                            // "check endpoints" there sends them after something they
-                            // cannot fix, and buries the warnings that are real.
-                            let managed = crate::services::managed_api::managed_api_names_in(&health_cwd);
-                            for wf in list.iter().filter(|w| !w.healthy) {
-                                let apis = crate::services::managed_api::workflow_managed_apis(
-                                    &health_cwd, &wf.name, &managed,
-                                );
-                                if apis.is_empty() {
-                                    push4(
+                                }
+                                // A workflow bound to a managed API connection (Teams,
+                                // SharePoint, Log Analytics …) is unhealthy on every local
+                                // start and always will be — those connectors are fronted by
+                                // Azure APIM with no emulator to stand in. Telling the user to
+                                // "check endpoints" there sends them after something they
+                                // cannot fix, and buries the warnings that are real.
+                                let managed =
+                                    crate::services::managed_api::managed_api_names_in(&health_cwd);
+                                for wf in list.iter().filter(|w| !w.healthy) {
+                                    let apis = crate::services::managed_api::workflow_managed_apis(
+                                        &health_cwd,
+                                        &wf.name,
+                                        &managed,
+                                    );
+                                    if apis.is_empty() {
+                                        push4(
                                         format!("⚠ '{}' loaded but unhealthy: {} — Open Connections and check endpoints, then restart func.",
                                             wf.name, wf.health_error.as_deref().unwrap_or("connection failed to initialise")),
                                         LogLevel::Warn,
                                     );
-                                } else {
-                                    push4(
+                                    } else {
+                                        push4(
                                         format!("'{}' unhealthy offline — uses managed API connection(s): {}. No local emulator exists for these; expected outside Azure.",
                                             wf.name, apis.join(", ")),
                                         LogLevel::Info,
                                     );
+                                    }
                                 }
-                            }
-                            let names: Vec<String> = list.iter().map(|w| w.name.clone()).collect();
+                                let names: Vec<String> =
+                                    list.iter().map(|w| w.name.clone()).collect();
 
-                            // Registered ≠ provisioned. When the runtime stops
-                            // provisioning part-way through a start it never resumes on
-                            // its own, and the affected workflows look completely normal
-                            // from the management API while being unable to run at all.
-                            // Surfacing it here means the user learns it at startup
-                            // rather than from a test that waits two minutes for a run
-                            // that was never going to happen.
-                            if let Some(gap) = crate::services::azurite_health::provisioning_gap(
-                                &crate::utils::azurite_dir(), &names,
-                            ) {
-                                push4(
+                                // Registered ≠ provisioned. When the runtime stops
+                                // provisioning part-way through a start it never resumes on
+                                // its own, and the affected workflows look completely normal
+                                // from the management API while being unable to run at all.
+                                // Surfacing it here means the user learns it at startup
+                                // rather than from a test that waits two minutes for a run
+                                // that was never going to happen.
+                                if let Some(gap) = crate::services::azurite_health::provisioning_gap(
+                                    &crate::utils::azurite_dir(),
+                                    &names,
+                                ) {
+                                    push4(
                                     format!("⚠ {} of {} workflow(s) are registered but have no runtime state in Azurite — they cannot run. {}",
                                         gap.missing.len(), gap.registered,
                                         crate::services::workflows::AZURITE_RESET_HINT),
                                     LogLevel::Error,
                                 );
-                                let preview: Vec<&str> = gap.missing.iter()
-                                    .take(5).map(|s| s.as_str()).collect();
-                                push4(
-                                    format!("   not provisioned: {}{}", preview.join(", "),
-                                        if gap.missing.len() > preview.len() {
-                                            format!(", … (+{} more)", gap.missing.len() - preview.len())
-                                        } else { String::new() }),
-                                    LogLevel::Error,
-                                );
-                            }
+                                    let preview: Vec<&str> =
+                                        gap.missing.iter().take(5).map(|s| s.as_str()).collect();
+                                    push4(
+                                        format!(
+                                            "   not provisioned: {}{}",
+                                            preview.join(", "),
+                                            if gap.missing.len() > preview.len() {
+                                                format!(
+                                                    ", … (+{} more)",
+                                                    gap.missing.len() - preview.len()
+                                                )
+                                            } else {
+                                                String::new()
+                                            }
+                                        ),
+                                        LogLevel::Error,
+                                    );
+                                }
 
-                            workflows_sig.set(list);
-                            sweep_run_history(names, &mut traced_wfs, &cleared_wfs).await;
-                        }
-                        Err(_) => {
-                            push4("Host did not become ready — scanning for broken workflow.json files…".into(), LogLevel::Warn);
-                            let broken = tokio::task::spawn_blocking(move || {
-                                workflows::scan_broken_workflows(&dir)
-                            }).await.unwrap_or_default();
-                            if broken.is_empty() {
-                                push4("No JSON errors found in workflow files. Check func start output above for errors.".into(), LogLevel::Warn);
-                            } else {
-                                for (name, err) in broken {
-                                    push4(format!("❌ {}/workflow.json — {}", name, err), LogLevel::Error);
+                                workflows_sig.set(list);
+                                sweep_run_history(names, &mut traced_wfs, &cleared_wfs).await;
+                            }
+                            Err(_) => {
+                                push4("Host did not become ready — scanning for broken workflow.json files…".into(), LogLevel::Warn);
+                                let broken = tokio::task::spawn_blocking(move || {
+                                    workflows::scan_broken_workflows(&dir)
+                                })
+                                .await
+                                .unwrap_or_default();
+                                if broken.is_empty() {
+                                    push4("No JSON errors found in workflow files. Check func start output above for errors.".into(), LogLevel::Warn);
+                                } else {
+                                    for (name, err) in broken {
+                                        push4(
+                                            format!("❌ {}/workflow.json — {}", name, err),
+                                            LogLevel::Error,
+                                        );
+                                    }
                                 }
                             }
                         }
-                    }
-                });
+                    });
+                }
+                Err(e) => {
+                    func_state.set(ServiceState::Stopped);
+                    // A NotFound here means func vanished between the check above and
+                    // the spawn (uninstalled mid-session, or a broken npm shim).
+                    let hint = if e.contains("No such file or directory")
+                        || e.contains("cannot find the file")
+                    {
+                        format!(" — reinstall it with: {}", FUNC_INSTALL_HINT)
+                    } else {
+                        String::new()
+                    };
+                    push(format!("func start error: {}{}", e, hint), LogLevel::Error);
+                }
             }
-            Err(e) => {
-                func_state.set(ServiceState::Stopped);
-                // A NotFound here means func vanished between the check above and
-                // the spawn (uninstalled mid-session, or a broken npm shim).
-                let hint = if e.contains("No such file or directory")
-                    || e.contains("cannot find the file")
-                {
-                    format!(" — reinstall it with: {}", FUNC_INSTALL_HINT)
-                } else {
-                    String::new()
-                };
-                push(format!("func start error: {}{}", e, hint), LogLevel::Error);
-            }
-        }
-    } // end port-check block
+        } // end port-check block
     }); // end spawn(async move)
 }
 
@@ -563,7 +648,10 @@ pub fn handle_stop(
 ) {
     let mut push = make_push(log_lines);
     match proc.read().stop() {
-        Ok(_)  => { state.set(ServiceState::Stopped); push("func start stopped.".into(), LogLevel::Warn); }
+        Ok(_) => {
+            state.set(ServiceState::Stopped);
+            push("func start stopped.".into(), LogLevel::Warn);
+        }
         Err(e) => push(format!("Error: {}", e), LogLevel::Error),
     }
 
@@ -572,10 +660,15 @@ pub fn handle_stop(
     // dirty working tree they never edited and must remember not to commit.
     let workspace = crate::services::workflows::resolve_logic_apps_dir(&dir);
     match crate::services::connections_snapshot::restore(&workspace) {
-        Ok(true)  => push("  ✓ Restored connections.json to its committed state".into(), LogLevel::Info),
+        Ok(true) => push(
+            "  ✓ Restored connections.json to its committed state".into(),
+            LogLevel::Info,
+        ),
         Ok(false) => {}
-        Err(e)    => push(
-            format!("  ⚠ Could not restore connections.json ({e}) — it is still patched for local use"),
+        Err(e) => push(
+            format!(
+                "  ⚠ Could not restore connections.json ({e}) — it is still patched for local use"
+            ),
             LogLevel::Warn,
         ),
     }

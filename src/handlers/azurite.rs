@@ -1,11 +1,15 @@
-use std::sync::Arc;
-use std::collections::{HashMap, HashSet};
 use dioxus::prelude::*;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::components::log_panel::{is_azurite_poll_noise, LogLevel, LogLine};
-use crate::services::{process::{ManagedProcess, ServiceState}, runtime_manager, workflows::WorkflowItem};
-use crate::utils::{azurite_dir, azurite_log};
+use crate::services::{
+    process::{ManagedProcess, ServiceState},
+    runtime_manager,
+    workflows::WorkflowItem,
+};
 use crate::utils::make_push;
+use crate::utils::{azurite_dir, azurite_log};
 
 pub fn handle_start(
     mut state: Signal<ServiceState>,
@@ -16,7 +20,10 @@ pub fn handle_start(
 
     spawn(async move {
         // ── kill stale azurite if port 10000 is already taken ────────────
-        if tokio::net::TcpStream::connect("127.0.0.1:10000").await.is_ok() {
+        if tokio::net::TcpStream::connect("127.0.0.1:10000")
+            .await
+            .is_ok()
+        {
             make_push(log_lines)(
                 "Port 10000 already in use — killing stale azurite process…".into(),
                 LogLevel::Warn,
@@ -27,12 +34,17 @@ pub fn handle_start(
                 // "azurite" — including unrelated user processes such as a
                 // `tail -f /tmp/azurite/debug.log` or another project's node.
                 crate::services::port_owner::kill_listener(10000)
-            }).await.ok();
+            })
+            .await
+            .ok();
             // Wait for port to be freed
             let mut freed = false;
             for _ in 0..10 {
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                if tokio::net::TcpStream::connect("127.0.0.1:10000").await.is_err() {
+                if tokio::net::TcpStream::connect("127.0.0.1:10000")
+                    .await
+                    .is_err()
+                {
                     freed = true;
                     break;
                 }
@@ -49,9 +61,9 @@ pub fn handle_start(
 
         // ── resolve paths + create dir on a blocking thread ──────────────
         let (az_bin, az_dir_s, az_log_s) = tokio::task::spawn_blocking(|| {
-            let bin   = runtime_manager::resolve_tool("azurite");
-            let dir   = azurite_dir();
-            let log   = azurite_log();
+            let bin = runtime_manager::resolve_tool("azurite");
+            let dir = azurite_dir();
+            let log = azurite_log();
             let dir_s = dir.to_string_lossy().to_string();
             let log_s = log.to_string_lossy().to_string();
             let _ = std::fs::create_dir_all(&dir);
@@ -60,10 +72,21 @@ pub fn handle_start(
             // (observed at 19.5 GB after two weeks).
             let _ = std::fs::File::create(&log);
             (bin, dir_s, log_s)
-        }).await.unwrap_or_else(|_| ("azurite".into(), "/tmp/azurite".into(), "/tmp/azurite/debug.log".into()));
+        })
+        .await
+        .unwrap_or_else(|_| {
+            (
+                "azurite".into(),
+                "/tmp/azurite".into(),
+                "/tmp/azurite/debug.log".into(),
+            )
+        });
 
         make_push(log_lines)(
-            format!("$ {} --location {} --debug {} --skipApiVersionCheck --loose", az_bin, az_dir_s, az_log_s),
+            format!(
+                "$ {} --location {} --debug {} --skipApiVersionCheck --loose",
+                az_bin, az_dir_s, az_log_s
+            ),
             LogLevel::Info,
         );
 
@@ -72,19 +95,29 @@ pub fn handle_start(
         // so the closure that goes into spawn_blocking only captures Send types.
         let proc_arc = proc.read().clone();
         let start_result = tokio::task::spawn_blocking({
-            let bin   = az_bin.clone();
+            let bin = az_bin.clone();
             let dir_s = az_dir_s.clone();
             let log_s = az_log_s.clone();
             // --loose: relax strict request validation. Workflow engines (Logic
             // Apps / Durable Task) sometimes emit non-standard storage headers
             // that strict Azurite rejects with 400/500, which surfaces as
             // "workflow stuck/hanging" rather than a clear error.
-            move || proc_arc.start(
-                &bin,
-                &["--location", &dir_s, "--debug", &log_s, "--skipApiVersionCheck", "--loose"],
-                None,
-            )
-        }).await;
+            move || {
+                proc_arc.start(
+                    &bin,
+                    &[
+                        "--location",
+                        &dir_s,
+                        "--debug",
+                        &log_s,
+                        "--skipApiVersionCheck",
+                        "--loose",
+                    ],
+                    None,
+                )
+            }
+        })
+        .await;
 
         match start_result {
             Ok(Ok((az_stdout, az_stderr))) => {
@@ -95,38 +128,55 @@ pub fn handle_start(
                 let mut push2 = make_push(log_lines);
                 spawn(async move {
                     while let Some((line, _)) = az_rx.recv().await {
-                        if line.trim().is_empty() { continue; }
+                        if line.trim().is_empty() {
+                            continue;
+                        }
                         // Azurite prints one Apache-format HTTP access line per
                         // request to stdout. The flow-lookup / job-scheduler
                         // heartbeats (every ~3 s per workflow) are pure noise
                         // and already available in the Azurite tab's debug.log.
                         // Drop them here so the main log stays readable; genuine
                         // errors (non-2xx) and lifecycle lines still pass.
-                        if is_azurite_poll_noise(&line) { continue; }
+                        if is_azurite_poll_noise(&line) {
+                            continue;
+                        }
                         push2(line, LogLevel::Info);
                     }
                 });
 
                 // Mark Running only once all three ports are bound.
                 let mut state2 = state;
-                let mut push3  = make_push(log_lines);
+                let mut push3 = make_push(log_lines);
                 spawn(async move {
                     let mut up = false;
                     for _ in 0..30 {
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         let all = async {
                             for port in [10000u16, 10001, 10002] {
-                                if tokio::net::TcpStream::connect(
-                                    std::net::SocketAddr::from(([127, 0, 0, 1], port))
-                                ).await.is_err() { return false; }
+                                if tokio::net::TcpStream::connect(std::net::SocketAddr::from((
+                                    [127, 0, 0, 1],
+                                    port,
+                                )))
+                                .await
+                                .is_err()
+                                {
+                                    return false;
+                                }
                             }
                             true
-                        }.await;
-                        if all { up = true; break; }
+                        }
+                        .await;
+                        if all {
+                            up = true;
+                            break;
+                        }
                     }
                     if up {
                         state2.set(ServiceState::Running);
-                        push3("Azurite ready — blob :10000  queue :10001  table :10002".into(), LogLevel::Ok);
+                        push3(
+                            "Azurite ready — blob :10000  queue :10001  table :10002".into(),
+                            LogLevel::Ok,
+                        );
                     } else {
                         state2.set(ServiceState::Stopped);
                         push3(
@@ -155,7 +205,10 @@ pub fn handle_stop(
 ) {
     let mut push = make_push(log_lines);
     match proc.read().stop() {
-        Ok(_)  => { state.set(ServiceState::Stopped); push("Azurite stopped.".into(), LogLevel::Warn); }
+        Ok(_) => {
+            state.set(ServiceState::Stopped);
+            push("Azurite stopped.".into(), LogLevel::Warn);
+        }
         Err(e) => push(format!("Error: {}", e), LogLevel::Error),
     }
 }
@@ -168,18 +221,21 @@ pub fn handle_stop(
 /// - child.kill() returns before the OS releases port 10000 → EADDRINUSE on restart
 /// - func still holds stale table connections after an Azurite data wipe
 pub fn handle_reset(
-    az_state:    Signal<ServiceState>,
-    az_proc:     Signal<Arc<ManagedProcess>>,
-    func_state:  Signal<ServiceState>,
-    func_proc:   Signal<Arc<ManagedProcess>>,
-    workflows:   Signal<Vec<WorkflowItem>>,
-    traced_wfs:  Signal<HashSet<String>>,
+    az_state: Signal<ServiceState>,
+    az_proc: Signal<Arc<ManagedProcess>>,
+    func_state: Signal<ServiceState>,
+    func_proc: Signal<Arc<ManagedProcess>>,
+    workflows: Signal<Vec<WorkflowItem>>,
+    traced_wfs: Signal<HashSet<String>>,
     cleared_wfs: Signal<HashMap<String, String>>,
-    log_lines:   Signal<Vec<LogLine>>,
-    dir:         String,
+    log_lines: Signal<Vec<LogLine>>,
+    dir: String,
 ) {
     let mut push = make_push(log_lines);
-    push("⟳ Resetting Azurite — stopping func and Azurite…".into(), LogLevel::Warn);
+    push(
+        "⟳ Resetting Azurite — stopping func and Azurite…".into(),
+        LogLevel::Warn,
+    );
 
     // stop() now calls wait() internally, so both processes are fully dead (and their
     // ports released by the kernel) before these lines return.
@@ -187,7 +243,7 @@ pub fn handle_reset(
     let _ = az_proc.read().stop();
 
     let mut func_state2 = func_state;
-    let az_state2   = az_state;
+    let az_state2 = az_state;
     func_state2.set(ServiceState::Stopped);
 
     spawn(async move {
@@ -195,11 +251,16 @@ pub fn handle_reset(
 
         // Port 10000 should be free immediately since stop() now reaps the child.
         // A short check guards against an external Azurite process on the same port.
-        let mut freed = tokio::net::TcpStream::connect("127.0.0.1:10000").await.is_err();
+        let mut freed = tokio::net::TcpStream::connect("127.0.0.1:10000")
+            .await
+            .is_err();
         if !freed {
             for _ in 0..3 {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                if tokio::net::TcpStream::connect("127.0.0.1:10000").await.is_err() {
+                if tokio::net::TcpStream::connect("127.0.0.1:10000")
+                    .await
+                    .is_err()
+                {
                     freed = true;
                     break;
                 }
@@ -208,7 +269,8 @@ pub fn handle_reset(
         if !freed {
             push2(
                 "⚠ Port 10000 still in use — another Azurite instance may be running. \
-                 Kill it manually (lsof -i :10000), then click ⟳ Reset again.".into(),
+                 Kill it manually (lsof -i :10000), then click ⟳ Reset again."
+                    .into(),
                 LogLevel::Error,
             );
             return;
@@ -221,16 +283,30 @@ pub fn handle_reset(
             let mut n = 0usize;
             for entry in std::fs::read_dir(&dir)?.flatten() {
                 let p = entry.path();
-                if p.is_dir() { std::fs::remove_dir_all(&p)?; }
-                else          { std::fs::remove_file(&p)?; }
+                if p.is_dir() {
+                    std::fs::remove_dir_all(&p)?;
+                } else {
+                    std::fs::remove_file(&p)?;
+                }
                 n += 1;
             }
             Ok(n)
-        }).await.unwrap_or(Ok(0));
+        })
+        .await
+        .unwrap_or(Ok(0));
 
         match cleared {
-            Err(e) => { push2(format!("Could not clear {}: {}", azurite_dir().display(), e), LogLevel::Error); return; }
-            Ok(n)  => push2(format!("Azurite data wiped ({} item(s)) — starting fresh…", n), LogLevel::Ok),
+            Err(e) => {
+                push2(
+                    format!("Could not clear {}: {}", azurite_dir().display(), e),
+                    LogLevel::Error,
+                );
+                return;
+            }
+            Ok(n) => push2(
+                format!("Azurite data wiped ({} item(s)) — starting fresh…", n),
+                LogLevel::Ok,
+            ),
         }
 
         handle_start(az_state2, az_proc, log_lines);
@@ -242,21 +318,35 @@ pub fn handle_reset(
         // one unmentioned click away.
         let mut ready = false;
         for _ in 0..40 {
-            if matches!(*az_state2.read(), ServiceState::Running) { ready = true; break; }
+            if matches!(*az_state2.read(), ServiceState::Running) {
+                ready = true;
+                break;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
         if !ready {
             push2(
                 "⚠ Azurite did not reach Running — func not restarted. \
-                 Check the log above, then click ⟳ Reset again.".into(),
+                 Check the log above, then click ⟳ Reset again."
+                    .into(),
                 LogLevel::Error,
             );
             return;
         }
 
-        push2("Azurite clean — restarting func to recreate run-history tables…".into(), LogLevel::Ok);
+        push2(
+            "Azurite clean — restarting func to recreate run-history tables…".into(),
+            LogLevel::Ok,
+        );
         crate::handlers::func_start::handle_start(
-            az_state2, func_state2, func_proc, workflows, traced_wfs, cleared_wfs, log_lines, dir,
+            az_state2,
+            func_state2,
+            func_proc,
+            workflows,
+            traced_wfs,
+            cleared_wfs,
+            log_lines,
+            dir,
         );
     });
 }

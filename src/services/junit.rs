@@ -19,10 +19,16 @@ pub struct SuiteReport {
 
 impl SuiteReport {
     pub fn failures(&self) -> usize {
-        self.steps.iter().filter(|s| s.status == StepStatus::Failed).count()
+        self.steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Failed)
+            .count()
     }
     pub fn skipped(&self) -> usize {
-        self.steps.iter().filter(|s| s.status == StepStatus::Skipped).count()
+        self.steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Skipped)
+            .count()
     }
     pub fn elapsed_ms(&self) -> u128 {
         self.steps.iter().map(|s| s.elapsed_ms).sum()
@@ -153,8 +159,10 @@ mod tests {
 
     #[test]
     fn escapes_every_xml_metacharacter() {
-        assert_eq!(escape(r#"a & b < c > d " e ' f"#),
-                   "a &amp; b &lt; c &gt; d &quot; e &apos; f");
+        assert_eq!(
+            escape(r#"a & b < c > d " e ' f"#),
+            "a &amp; b &lt; c &gt; d &quot; e &apos; f"
+        );
     }
 
     #[test]
@@ -177,7 +185,12 @@ mod tests {
             steps: vec![
                 step(0, "drain q", StepStatus::Ok, "drained 0"),
                 step(1, "send to q", StepStatus::Failed, "entity not found"),
-                step(2, "wait for run", StepStatus::Skipped, "skipped after an earlier failure"),
+                step(
+                    2,
+                    "wait for run",
+                    StepStatus::Skipped,
+                    "skipped after an earlier failure",
+                ),
             ],
         }];
 

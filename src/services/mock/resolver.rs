@@ -17,20 +17,21 @@ use crate::services::mock::scanner::ScanError;
 
 pub struct Resolver {
     /// Final resolved values, keyed by app setting name.
-    pub settings:          BTreeMap<String, AppSetting>,
+    pub settings: BTreeMap<String, AppSetting>,
     /// Map of logic-app parameter name → the app setting it ultimately resolves to.
-    pub param_to_setting:  BTreeMap<String, String>,
+    pub param_to_setting: BTreeMap<String, String>,
 }
 
 impl Resolver {
     pub fn load(workspace: &Path) -> Result<Self, ScanError> {
-        let local = read_json(&workspace.join("local.settings.json"))
-            .map_err(|_| ScanError::NoSettings)?;
+        let local =
+            read_json(&workspace.join("local.settings.json")).map_err(|_| ScanError::NoSettings)?;
 
         // parameters.json is optional — a workspace without it is still valid
         let params = read_json(&workspace.join("parameters.json")).ok();
 
-        let raw_settings = local.get("Values")
+        let raw_settings = local
+            .get("Values")
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
@@ -38,12 +39,15 @@ impl Resolver {
         let mut settings = BTreeMap::new();
         for (name, value) in raw_settings {
             let raw = value.as_str().unwrap_or("").to_string();
-            settings.insert(name.clone(), AppSetting {
-                kind:           classify(&name, &raw),
-                resolved_value: Some(raw.clone()),
-                raw_value:      raw,
-                references:     vec![],
-            });
+            settings.insert(
+                name.clone(),
+                AppSetting {
+                    kind: classify(&name, &raw),
+                    resolved_value: Some(raw.clone()),
+                    raw_value: raw,
+                    references: vec![],
+                },
+            );
         }
 
         let mut param_to_setting = BTreeMap::new();
@@ -59,7 +63,10 @@ impl Resolver {
             }
         }
 
-        Ok(Self { settings, param_to_setting })
+        Ok(Self {
+            settings,
+            param_to_setting,
+        })
     }
 
     /// Substitute `@{parameters('X')}` and `@{appsetting('X')}` interpolations
@@ -70,10 +77,12 @@ impl Resolver {
         // @{parameters('X')}
         let re_param = regex::Regex::new(r"@\{parameters\('([^']+)'\)\}").ok()?;
         for caps in re_param.captures_iter(template).collect::<Vec<_>>() {
-            let param        = &caps[1];
+            let param = &caps[1];
             let setting_name = self.param_to_setting.get(param)?;
-            let value        = self.settings.get(setting_name)
-                                  .and_then(|s| s.resolved_value.as_ref())?;
+            let value = self
+                .settings
+                .get(setting_name)
+                .and_then(|s| s.resolved_value.as_ref())?;
             out = out.replace(&caps[0], value);
         }
 
@@ -81,12 +90,18 @@ impl Resolver {
         let re_app = regex::Regex::new(r"@\{appsetting\('([^']+)'\)\}").ok()?;
         for caps in re_app.captures_iter(&out.clone()).collect::<Vec<_>>() {
             let setting_name = &caps[1];
-            let value        = self.settings.get(setting_name)
-                                  .and_then(|s| s.resolved_value.as_ref())?;
+            let value = self
+                .settings
+                .get(setting_name)
+                .and_then(|s| s.resolved_value.as_ref())?;
             out = out.replace(&caps[0], value);
         }
 
-        if out.contains("@{") { None } else { Some(out) }
+        if out.contains("@{") {
+            None
+        } else {
+            Some(out)
+        }
     }
 
     /// Mark a workflow as referencing a given app setting, for the final report.
@@ -98,7 +113,9 @@ impl Resolver {
         }
     }
 
-    pub fn into_settings(self) -> BTreeMap<String, AppSetting> { self.settings }
+    pub fn into_settings(self) -> BTreeMap<String, AppSetting> {
+        self.settings
+    }
 }
 
 /// True when a URL points back at this machine, in any of the spellings a
@@ -112,12 +129,11 @@ fn is_local_url(value: &str) -> bool {
         return false;
     };
     // Host is everything before the first `/`, `:` or `?`.
-    let host = rest
-        .split(['/', ':', '?'])
-        .next()
-        .unwrap_or_default();
-    matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "[::1]" | "::1")
-        || host.ends_with(".localhost")
+    let host = rest.split(['/', ':', '?']).next().unwrap_or_default();
+    matches!(
+        host,
+        "localhost" | "127.0.0.1" | "0.0.0.0" | "[::1]" | "::1"
+    ) || host.ends_with(".localhost")
 }
 
 /// Heuristic: classify an app setting value so the UI can group them.
@@ -127,8 +143,9 @@ fn is_local_url(value: &str) -> bool {
 /// here rather than filtered downstream.
 fn classify(name: &str, value: &str) -> SettingKind {
     let lname = name.to_lowercase();
-    if lname.contains("secret") || lname.contains("password") || lname.contains("key")
-        && !lname.contains("uri") && !lname.contains("url")
+    if lname.contains("secret")
+        || lname.contains("password")
+        || lname.contains("key") && !lname.contains("uri") && !lname.contains("url")
     {
         return SettingKind::Secret;
     }
@@ -159,7 +176,10 @@ fn classify(name: &str, value: &str) -> SettingKind {
     if value.starts_with("http://") || value.starts_with("https://") {
         return SettingKind::Url;
     }
-    if value.contains("Endpoint=sb://") || value.contains("AccountName=") || value.contains("AccountKey=") {
+    if value.contains("Endpoint=sb://")
+        || value.contains("AccountName=")
+        || value.contains("AccountKey=")
+    {
         return SettingKind::ConnectionString;
     }
     SettingKind::Other
@@ -194,7 +214,10 @@ mod tests {
             "Office365_connectionUrl",
         ] {
             assert_eq!(
-                classify(name, "https://switzerlandnorth.azure-apim.net/apim/teams/teams-local/"),
+                classify(
+                    name,
+                    "https://switzerlandnorth.azure-apim.net/apim/teams/teams-local/"
+                ),
                 SettingKind::Other,
                 "{name} must not be redirected to the mock server"
             );
@@ -205,9 +228,15 @@ mod tests {
     fn ordinary_http_settings_are_still_redirectable() {
         // The exclusion above must stay narrow — a normal outbound API base URL
         // is exactly what the mock exists to intercept.
-        assert_eq!(classify("JdeUrl", "https://jde.example.com"), SettingKind::Url);
         assert_eq!(
-            classify("AIS_Functions_BaseUrl", "https://func-tom-dev.azurewebsites.net"),
+            classify("JdeUrl", "https://jde.example.com"),
+            SettingKind::Url
+        );
+        assert_eq!(
+            classify(
+                "AIS_Functions_BaseUrl",
+                "https://func-tom-dev.azurewebsites.net"
+            ),
             SettingKind::Url,
             "a cloud function host has no local equivalent — mock it"
         );
@@ -243,7 +272,11 @@ mod tests {
             "https://api.partner.io/v1",
             "https://localhost.evil.example.com/api",
         ] {
-            assert_eq!(classify("JdeUrl", v), SettingKind::Url, "{v} should be mockable");
+            assert_eq!(
+                classify("JdeUrl", v),
+                SettingKind::Url,
+                "{v} should be mockable"
+            );
         }
     }
 }

@@ -1,5 +1,8 @@
+use crate::services::{
+    azure_cli, config,
+    eventgrid_check::{self, EgData, EgSubscription, EgTopic},
+};
 use dioxus::prelude::*;
-use crate::services::{config, azure_cli, eventgrid_check::{self, EgData, EgTopic, EgSubscription}};
 
 // ── Props ────────────────────────────────────────────────────────────────────
 
@@ -14,8 +17,14 @@ pub struct EventGridPanelProps {
 pub fn EventGridPanel(props: EventGridPanelProps) -> Element {
     let app_cfg = config::load();
     let link = app_cfg.get_link(&props.logic_apps_dir).cloned();
-    let sub_id = link.as_ref().map(|l| l.subscription_id.clone()).unwrap_or_default();
-    let rg = link.as_ref().map(|l| l.resource_group.clone()).unwrap_or_default();
+    let sub_id = link
+        .as_ref()
+        .map(|l| l.subscription_id.clone())
+        .unwrap_or_default();
+    let rg = link
+        .as_ref()
+        .map(|l| l.resource_group.clone())
+        .unwrap_or_default();
 
     let mut loading = use_signal(|| false);
     let mut error_msg: Signal<Option<String>> = use_signal(|| None);
@@ -34,18 +43,26 @@ pub fn EventGridPanel(props: EventGridPanelProps) -> Element {
         let rg = rg.clone();
         move || {
             let _ = revision();
-            if sub_id.is_empty() || rg.is_empty() { return; }
+            if sub_id.is_empty() || rg.is_empty() {
+                return;
+            }
             loading.set(true);
             error_msg.set(None);
             let sub_id = sub_id.clone();
             let rg = rg.clone();
             spawn(async move {
-                let result = tokio::task::spawn_blocking(move || {
-                    eventgrid_check::fetch_all(&sub_id, &rg)
-                }).await.unwrap_or_else(|_| Err(azure_cli::AzError::Other("Task failed".into())));
+                let result =
+                    tokio::task::spawn_blocking(move || eventgrid_check::fetch_all(&sub_id, &rg))
+                        .await
+                        .unwrap_or_else(|_| Err(azure_cli::AzError::Other("Task failed".into())));
                 match result {
-                    Ok(d) => { data.set(Some(d)); error_msg.set(None); }
-                    Err(azure_cli::AzError::NotLoggedIn) => error_msg.set(Some("Session expired — run az login".into())),
+                    Ok(d) => {
+                        data.set(Some(d));
+                        error_msg.set(None);
+                    }
+                    Err(azure_cli::AzError::NotLoggedIn) => {
+                        error_msg.set(Some("Session expired — run az login".into()))
+                    }
                     Err(azure_cli::AzError::Other(e)) => error_msg.set(Some(e)),
                 }
                 loading.set(false);
@@ -57,10 +74,16 @@ pub fn EventGridPanel(props: EventGridPanelProps) -> Element {
     let query = filter.read().to_lowercase();
 
     // Build topic options for the compare combos
-    let topic_options: Vec<(usize, String)> = data.read().as_ref()
-        .map(|d| d.topics.iter().enumerate()
-            .map(|(i, (t, _))| (i, format!("{} — {}", t.name, t.resource_group)))
-            .collect())
+    let topic_options: Vec<(usize, String)> = data
+        .read()
+        .as_ref()
+        .map(|d| {
+            d.topics
+                .iter()
+                .enumerate()
+                .map(|(i, (t, _))| (i, format!("{} — {}", t.name, t.resource_group)))
+                .collect()
+        })
         .unwrap_or_default();
 
     rsx! {
@@ -177,17 +200,23 @@ pub fn EventGridPanel(props: EventGridPanelProps) -> Element {
 // ── Compare view ─────────────────────────────────────────────────────────────
 
 fn render_compare(
-    lt: &EgTopic, ls: &[EgSubscription],
-    rt: &EgTopic, rs: &[EgSubscription],
+    lt: &EgTopic,
+    ls: &[EgSubscription],
+    rt: &EgTopic,
+    rs: &[EgSubscription],
     detail: &mut Signal<Option<(String, String)>>,
 ) -> Element {
     // Build a union of subscription names for row alignment
     let mut all_names: Vec<String> = Vec::new();
     for s in ls.iter() {
-        if !all_names.contains(&s.name) { all_names.push(s.name.clone()); }
+        if !all_names.contains(&s.name) {
+            all_names.push(s.name.clone());
+        }
     }
     for s in rs.iter() {
-        if !all_names.contains(&s.name) { all_names.push(s.name.clone()); }
+        if !all_names.contains(&s.name) {
+            all_names.push(s.name.clone());
+        }
     }
 
     rsx! {
@@ -242,7 +271,9 @@ fn render_compare_cell(
         None => rsx! { span { class: "eg-compare-missing", "—" } },
         Some(s) => {
             let events = s.included_event_types.join(", ");
-            let filters: String = s.filters.iter()
+            let filters: String = s
+                .filters
+                .iter()
                 .map(|f| format!("{}: {}", f.label, f.value))
                 .collect::<Vec<_>>()
                 .join(" | ");

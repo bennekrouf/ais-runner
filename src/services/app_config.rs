@@ -21,8 +21,8 @@
 //!    (e.g. `AzureAppConfigurationEndpoint`) that the host SDK reads at
 //!    startup to bulk-import keys. We surface that as a detected store too.
 
-use indexmap::IndexMap;
 use crate::services::azure_cli::{az_command, AzError};
+use indexmap::IndexMap;
 
 /// A key→value map keyed by App Configuration key — same shape as
 /// `env_compare::EnvValues` so the existing diff renderer can reuse it.
@@ -35,14 +35,14 @@ pub type AppConfigValues = IndexMap<String, String>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppConfigRef {
     /// `https://<name>.azconfig.io` — what the `az appconfig kv list` command needs.
-    pub endpoint:    String,
+    pub endpoint: String,
     /// Short store name (`<name>` from the endpoint), for UI display.
-    pub store_name:  String,
+    pub store_name: String,
     /// Specific key referenced, if the reference is a `@Microsoft.AppConfiguration(...)`
     /// pointer to one key (vs. a bulk-import endpoint).
-    pub key:         Option<String>,
+    pub key: Option<String>,
     /// Label (`dev`/`qa`/`prod`/…) hard-coded into the reference, if any.
-    pub label:       Option<String>,
+    pub label: Option<String>,
     /// The Application-Settings key that triggered the detection — e.g.
     /// `"MySetting"` or `"AzureAppConfigurationEndpoint"`. Lets the UI tell
     /// the user *which* setting brings the store into scope.
@@ -74,13 +74,16 @@ pub fn detect_stores(settings: &IndexMap<String, String>) -> Vec<AppConfigRef> {
             && v.contains(".azconfig.io")
         {
             let store_name = extract_store_name(v).unwrap_or_else(|| v.clone());
-            push_unique(&mut out, AppConfigRef {
-                endpoint:    v.trim_end_matches('/').to_string(),
-                store_name,
-                key:         None,
-                label:       None,
-                setting_key: k.clone(),
-            });
+            push_unique(
+                &mut out,
+                AppConfigRef {
+                    endpoint: v.trim_end_matches('/').to_string(),
+                    store_name,
+                    key: None,
+                    label: None,
+                    setting_key: k.clone(),
+                },
+            );
         }
     }
 
@@ -92,24 +95,26 @@ pub fn detect_stores(settings: &IndexMap<String, String>) -> Vec<AppConfigRef> {
 /// and optional braces some templates use (`@Microsoft.AppConfiguration(…)` or
 /// `@{Microsoft.AppConfiguration(…)}`).
 fn parse_microsoft_appconfig_ref(raw: &str, setting_key: &str) -> Option<AppConfigRef> {
-    let s = raw.trim()
-        .trim_start_matches("@{").trim_start_matches('@')
+    let s = raw
+        .trim()
+        .trim_start_matches("@{")
+        .trim_start_matches('@')
         .trim_end_matches('}');
     let s = s.strip_prefix("Microsoft.AppConfiguration(")?;
     let s = s.strip_suffix(')')?;
 
     let mut endpoint: Option<String> = None;
-    let mut key:      Option<String> = None;
-    let mut label:    Option<String> = None;
+    let mut key: Option<String> = None;
+    let mut label: Option<String> = None;
 
     for part in s.split(';') {
         let mut it = part.splitn(2, '=');
         let name = it.next()?.trim();
-        let val  = it.next().unwrap_or("").trim();
+        let val = it.next().unwrap_or("").trim();
         match name {
             "Endpoint" => endpoint = Some(val.trim_end_matches('/').to_string()),
-            "Key"      => key      = Some(val.to_string()),
-            "Label"    => label    = Some(val.to_string()),
+            "Key" => key = Some(val.to_string()),
+            "Label" => label = Some(val.to_string()),
             _ => {}
         }
     }
@@ -127,7 +132,8 @@ fn parse_microsoft_appconfig_ref(raw: &str, setting_key: &str) -> Option<AppConf
 /// malformed endpoints — caller falls back to using the full URL as the
 /// display name.
 fn extract_store_name(endpoint: &str) -> Option<String> {
-    let after_scheme = endpoint.strip_prefix("https://")
+    let after_scheme = endpoint
+        .strip_prefix("https://")
         .or_else(|| endpoint.strip_prefix("http://"))?;
     let host = after_scheme.split('/').next()?;
     let name = host.strip_suffix(".azconfig.io")?;
@@ -138,10 +144,12 @@ fn extract_store_name(endpoint: &str) -> Option<String> {
 /// equivalent when they target the same endpoint + key + label triple — the
 /// `setting_key` doesn't matter for store-level dedup.
 fn push_unique(out: &mut Vec<AppConfigRef>, r: AppConfigRef) {
-    let dup = out.iter().any(|e|
-        e.endpoint == r.endpoint && e.key == r.key && e.label == r.label
-    );
-    if !dup { out.push(r); }
+    let dup = out
+        .iter()
+        .any(|e| e.endpoint == r.endpoint && e.key == r.key && e.label == r.label);
+    if !dup {
+        out.push(r);
+    }
 }
 
 /// Fetch every key/value pair from an Azure App Configuration store.
@@ -154,11 +162,19 @@ fn push_unique(out: &mut Vec<AppConfigRef>, r: AppConfigRef) {
 /// Blocking — invoke under `tokio::task::spawn_blocking`.
 pub fn fetch_kv(endpoint: &str, label: Option<&str>) -> Result<AppConfigValues, AzError> {
     let mut args: Vec<&str> = vec![
-        "appconfig", "kv", "list",
-        "--endpoint", endpoint,
-        "--auth-mode", "login",
-        "--fields", "key", "value", "label",
-        "-o", "json",
+        "appconfig",
+        "kv",
+        "list",
+        "--endpoint",
+        endpoint,
+        "--auth-mode",
+        "login",
+        "--fields",
+        "key",
+        "value",
+        "label",
+        "-o",
+        "json",
     ];
     // App Configuration's CLI uses `null` as a sentinel for "no label". The
     // backtick form below would be an empty-string filter (which means
@@ -174,14 +190,17 @@ pub fn fetch_kv(endpoint: &str, label: Option<&str>) -> Result<AppConfigValues, 
         .output()
         .map_err(|e| AzError::Other(format!("az not found: {}", e)))?;
 
-    let raw    = String::from_utf8_lossy(&out.stdout).to_string();
+    let raw = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
 
     if !out.status.success() {
         // AppConfig surfaces both Azure-AD failures (AADSTS) and per-RBAC
         // failures (403 from the store). Map AAD ones to NotLoggedIn so the
         // existing login-banner UX kicks in; everything else stays Other.
-        if stderr.contains("AADSTS") || stderr.contains("az login") || stderr.contains("refresh token") {
+        if stderr.contains("AADSTS")
+            || stderr.contains("az login")
+            || stderr.contains("refresh token")
+        {
             return Err(AzError::NotLoggedIn);
         }
         return Err(AzError::Other(stderr.trim().to_string()));
@@ -202,7 +221,10 @@ mod tests {
     use super::*;
 
     fn settings(pairs: &[(&str, &str)]) -> IndexMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -213,11 +235,11 @@ mod tests {
         ]);
         let refs = detect_stores(&s);
         assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].endpoint,   "https://acme-config.azconfig.io");
+        assert_eq!(refs[0].endpoint, "https://acme-config.azconfig.io");
         assert_eq!(refs[0].store_name, "acme-config");
-        assert_eq!(refs[0].key.as_deref(),   Some("Features:NewFlow"));
+        assert_eq!(refs[0].key.as_deref(), Some("Features:NewFlow"));
         assert_eq!(refs[0].label.as_deref(), Some("qa"));
-        assert_eq!(refs[0].setting_key,      "FeatureFlag");
+        assert_eq!(refs[0].setting_key, "FeatureFlag");
     }
 
     #[test]
@@ -225,9 +247,15 @@ mod tests {
         // Several spellings of "this is the endpoint the SDK reads at startup"
         // should all be detected via the keyword-+-suffix match.
         let s = settings(&[
-            ("AzureAppConfigurationEndpoint",   "https://acme-config.azconfig.io"),
-            ("Azure_AppConfiguration_Endpoint", "https://other-store.azconfig.io"),
-            ("AppConfig:Endpoint",              "https://third.azconfig.io"),
+            (
+                "AzureAppConfigurationEndpoint",
+                "https://acme-config.azconfig.io",
+            ),
+            (
+                "Azure_AppConfiguration_Endpoint",
+                "https://other-store.azconfig.io",
+            ),
+            ("AppConfig:Endpoint", "https://third.azconfig.io"),
             // Unrelated setting that mentions "config" but isn't an endpoint:
             ("AppConfigLabel", "dev"),
         ]);
@@ -236,17 +264,30 @@ mod tests {
         assert!(names.contains(&"acme-config"));
         assert!(names.contains(&"other-store"));
         assert!(names.contains(&"third"));
-        assert_eq!(refs.len(), 3, "false positive — every detected ref: {refs:#?}");
+        assert_eq!(
+            refs.len(),
+            3,
+            "false positive — every detected ref: {refs:#?}"
+        );
     }
 
     #[test]
     fn dedup_by_endpoint_key_label_triple_but_keep_distinct_labels() {
         let s = settings(&[
-            ("A", "@Microsoft.AppConfiguration(Endpoint=https://s.azconfig.io;Key=k;Label=dev)"),
+            (
+                "A",
+                "@Microsoft.AppConfiguration(Endpoint=https://s.azconfig.io;Key=k;Label=dev)",
+            ),
             // Same endpoint+key+label via a different setting — dedup.
-            ("B", "@Microsoft.AppConfiguration(Endpoint=https://s.azconfig.io;Key=k;Label=dev)"),
+            (
+                "B",
+                "@Microsoft.AppConfiguration(Endpoint=https://s.azconfig.io;Key=k;Label=dev)",
+            ),
             // Same endpoint+key but different label — keep.
-            ("C", "@Microsoft.AppConfiguration(Endpoint=https://s.azconfig.io;Key=k;Label=prod)"),
+            (
+                "C",
+                "@Microsoft.AppConfiguration(Endpoint=https://s.azconfig.io;Key=k;Label=prod)",
+            ),
         ]);
         let refs = detect_stores(&s);
         assert_eq!(refs.len(), 2);
@@ -271,7 +312,7 @@ mod tests {
     fn unrelated_settings_yield_nothing() {
         let s = settings(&[
             ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
-            ("RandomKey",           "some value"),
+            ("RandomKey", "some value"),
             ("EndpointButNotAppConfig", "https://api.example.com"),
         ]);
         assert!(detect_stores(&s).is_empty());
@@ -279,11 +320,15 @@ mod tests {
 
     #[test]
     fn extract_store_name_works_for_canonical_endpoint() {
-        assert_eq!(extract_store_name("https://my-store.azconfig.io").as_deref(),
-                   Some("my-store"));
+        assert_eq!(
+            extract_store_name("https://my-store.azconfig.io").as_deref(),
+            Some("my-store")
+        );
         // Trailing slash tolerated.
-        assert_eq!(extract_store_name("https://my-store.azconfig.io/").as_deref(),
-                   Some("my-store"));
+        assert_eq!(
+            extract_store_name("https://my-store.azconfig.io/").as_deref(),
+            Some("my-store")
+        );
         // Non-azconfig hostname returns None — protects against false positives.
         assert!(extract_store_name("https://my-store.example.com").is_none());
     }

@@ -1,6 +1,6 @@
+use crate::services::{azure_cli, config, sb_check};
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
-use crate::services::{azure_cli, config, sb_check};
 
 // ── Fetch state ──────────────────────────────────────────────────────────────
 
@@ -14,10 +14,22 @@ enum FetchState {
 
 impl FetchState {
     fn queues(&self) -> Option<&[azure_cli::SbQueueDetail]> {
-        if let FetchState::Done(v) = self { Some(v) } else { None }
+        if let FetchState::Done(v) = self {
+            Some(v)
+        } else {
+            None
+        }
     }
-    fn is_loading(&self) -> bool { matches!(self, FetchState::Loading) }
-    fn err(&self) -> Option<&str> { if let FetchState::Err(e) = self { Some(e) } else { None } }
+    fn is_loading(&self) -> bool {
+        matches!(self, FetchState::Loading)
+    }
+    fn err(&self) -> Option<&str> {
+        if let FetchState::Err(e) = self {
+            Some(e)
+        } else {
+            None
+        }
+    }
 }
 
 /// A resolved environment: subscription + RG + SB namespace short name.
@@ -26,7 +38,7 @@ struct SbEnv {
     label: String,
     subscription: String,
     resource_group: String,
-    namespace: String,  // short name
+    namespace: String, // short name
 }
 
 // ── Props ────────────────────────────────────────────────────────────────────
@@ -51,9 +63,9 @@ pub fn SbComparePanel(props: SbComparePanelProps) -> Element {
     });
 
     // Two environment selectors
-    let mut left_idx:  Signal<Option<usize>> = use_signal(|| None);
+    let mut left_idx: Signal<Option<usize>> = use_signal(|| None);
     let mut right_idx: Signal<Option<usize>> = use_signal(|| None);
-    let mut left_state:  Signal<FetchState> = use_signal(|| FetchState::Idle);
+    let mut left_state: Signal<FetchState> = use_signal(|| FetchState::Idle);
     let mut right_state: Signal<FetchState> = use_signal(|| FetchState::Idle);
     let mut only_diff: Signal<bool> = use_signal(|| false);
     let mut filter: Signal<String> = use_signal(String::new);
@@ -69,8 +81,13 @@ pub fn SbComparePanel(props: SbComparePanelProps) -> Element {
                 left_state.set(FetchState::Loading);
                 spawn(async move {
                     let res = tokio::task::spawn_blocking(move || {
-                        azure_cli::sb_list_queues(&env.subscription, &env.resource_group, &env.namespace)
-                    }).await;
+                        azure_cli::sb_list_queues(
+                            &env.subscription,
+                            &env.resource_group,
+                            &env.namespace,
+                        )
+                    })
+                    .await;
                     match res {
                         Ok(Ok(qs)) => left_state.set(FetchState::Done(qs)),
                         Ok(Err(e)) => left_state.set(FetchState::Err(format!("{:?}", e))),
@@ -90,8 +107,13 @@ pub fn SbComparePanel(props: SbComparePanelProps) -> Element {
                 right_state.set(FetchState::Loading);
                 spawn(async move {
                     let res = tokio::task::spawn_blocking(move || {
-                        azure_cli::sb_list_queues(&env.subscription, &env.resource_group, &env.namespace)
-                    }).await;
+                        azure_cli::sb_list_queues(
+                            &env.subscription,
+                            &env.resource_group,
+                            &env.namespace,
+                        )
+                    })
+                    .await;
                     match res {
                         Ok(Ok(qs)) => right_state.set(FetchState::Done(qs)),
                         Ok(Err(e)) => right_state.set(FetchState::Err(format!("{:?}", e))),
@@ -115,41 +137,62 @@ pub fn SbComparePanel(props: SbComparePanelProps) -> Element {
     // Collect all queue names from all sources
     let mut all_names: Vec<String> = {
         let mut set: HashSet<String> = HashSet::new();
-        for q in local_qs.iter() { set.insert(q.queue.clone()); }
-        if let Some(ref qs) = left_qs { for q in qs { set.insert(q.name.clone()); } }
-        if let Some(ref qs) = right_qs { for q in qs { set.insert(q.name.clone()); } }
+        for q in local_qs.iter() {
+            set.insert(q.queue.clone());
+        }
+        if let Some(ref qs) = left_qs {
+            for q in qs {
+                set.insert(q.name.clone());
+            }
+        }
+        if let Some(ref qs) = right_qs {
+            for q in qs {
+                set.insert(q.name.clone());
+            }
+        }
         set.into_iter().collect()
     };
     all_names.sort();
 
     // Index by name for quick lookup
-    let left_map: HashMap<&str, &azure_cli::SbQueueDetail> = left_qs.as_ref()
+    let left_map: HashMap<&str, &azure_cli::SbQueueDetail> = left_qs
+        .as_ref()
         .map(|qs| qs.iter().map(|q| (q.name.as_str(), q)).collect())
         .unwrap_or_default();
-    let right_map: HashMap<&str, &azure_cli::SbQueueDetail> = right_qs.as_ref()
+    let right_map: HashMap<&str, &azure_cli::SbQueueDetail> = right_qs
+        .as_ref()
         .map(|qs| qs.iter().map(|q| (q.name.as_str(), q)).collect())
         .unwrap_or_default();
     let local_set: HashSet<&str> = local_qs.iter().map(|q| q.queue.as_str()).collect();
 
-    let visible: Vec<&str> = all_names.iter()
+    let visible: Vec<&str> = all_names
+        .iter()
         .map(|n| n.as_str())
         .filter(|n| query.is_empty() || n.to_lowercase().contains(&query))
         .filter(|n| {
-            if !diff_on { return true; }
+            if !diff_on {
+                return true;
+            }
             let in_left = left_map.contains_key(n);
             let in_right = right_map.contains_key(n);
             let in_local = local_set.contains(n);
             // Show if presence differs, or if properties differ
             if left_qs.is_some() && right_qs.is_some() {
-                if in_left != in_right { return true; }
+                if in_left != in_right {
+                    return true;
+                }
                 if in_left && in_right {
                     return queues_differ(left_map[n], right_map[n]);
                 }
                 return false;
             }
             // One side + local
-            if left_qs.is_some() { return in_left != in_local; }
-            if right_qs.is_some() { return in_right != in_local; }
+            if left_qs.is_some() {
+                return in_left != in_local;
+            }
+            if right_qs.is_some() {
+                return in_right != in_local;
+            }
             false
         })
         .collect();
@@ -306,7 +349,11 @@ fn discover_envs() -> Vec<SbEnv> {
             let short = ns.split('.').next().unwrap_or(ns);
             let label = format!("{} / {}", link.resource_group, short);
             // Deduplicate by (sub, rg, ns)
-            if !envs.iter().any(|e: &SbEnv| e.subscription == link.subscription_id && e.resource_group == link.resource_group && e.namespace == short) {
+            if !envs.iter().any(|e: &SbEnv| {
+                e.subscription == link.subscription_id
+                    && e.resource_group == link.resource_group
+                    && e.namespace == short
+            }) {
                 envs.push(SbEnv {
                     label,
                     subscription: link.subscription_id.clone(),
@@ -359,14 +406,43 @@ fn render_queue_cell(q: Option<&azure_cli::SbQueueDetail>) -> Element {
     }
 }
 
-fn render_prop_diff_rows(left: &azure_cli::SbQueueDetail, right: &azure_cli::SbQueueDetail, show_left: bool, show_right: bool) -> Element {
+fn render_prop_diff_rows(
+    left: &azure_cli::SbQueueDetail,
+    right: &azure_cli::SbQueueDetail,
+    show_left: bool,
+    show_right: bool,
+) -> Element {
     let props: Vec<(&str, String, String)> = vec![
-        ("maxDelivery", left.max_delivery.to_string(), right.max_delivery.to_string()),
-        ("requiresSession", left.requires_session.to_string(), right.requires_session.to_string()),
-        ("maxSize (MB)", left.max_size_mb.to_string(), right.max_size_mb.to_string()),
-        ("lockDuration", left.lock_duration.clone(), right.lock_duration.clone()),
-        ("defaultTTL", left.default_ttl.clone(), right.default_ttl.clone()),
-        ("autoDelete", left.auto_delete.clone(), right.auto_delete.clone()),
+        (
+            "maxDelivery",
+            left.max_delivery.to_string(),
+            right.max_delivery.to_string(),
+        ),
+        (
+            "requiresSession",
+            left.requires_session.to_string(),
+            right.requires_session.to_string(),
+        ),
+        (
+            "maxSize (MB)",
+            left.max_size_mb.to_string(),
+            right.max_size_mb.to_string(),
+        ),
+        (
+            "lockDuration",
+            left.lock_duration.clone(),
+            right.lock_duration.clone(),
+        ),
+        (
+            "defaultTTL",
+            left.default_ttl.clone(),
+            right.default_ttl.clone(),
+        ),
+        (
+            "autoDelete",
+            left.auto_delete.clone(),
+            right.auto_delete.clone(),
+        ),
         ("status", left.status.clone(), right.status.clone()),
     ];
 

@@ -32,11 +32,17 @@ pub fn detect_mode(dir: &str) -> EnvMode {
     if keys.is_empty() {
         return EnvMode::Unknown;
     }
-    let local = keys.iter().filter(|k| is_azurite(settings.get(*k).map(|s| s.as_str()).unwrap_or(""))).count();
-    let azure = keys.iter().filter(|k| {
-        let v = settings.get(*k).map(|s| s.as_str()).unwrap_or("");
-        !v.is_empty() && !is_azurite(v)
-    }).count();
+    let local = keys
+        .iter()
+        .filter(|k| is_azurite(settings.get(*k).map(|s| s.as_str()).unwrap_or("")))
+        .count();
+    let azure = keys
+        .iter()
+        .filter(|k| {
+            let v = settings.get(*k).map(|s| s.as_str()).unwrap_or("");
+            !v.is_empty() && !is_azurite(v)
+        })
+        .count();
     match (local, azure) {
         (l, 0) if l > 0 => EnvMode::Local,
         (0, a) if a > 0 => EnvMode::Azure,

@@ -27,8 +27,8 @@ use crate::services::mock::{rewrite, scan_workspace};
 
 pub struct MockRuntime {
     workspace: PathBuf,
-    server:    Option<MockServer>,
-    bus:       EventBus,
+    server: Option<MockServer>,
+    bus: EventBus,
 }
 
 impl MockRuntime {
@@ -37,49 +37,67 @@ impl MockRuntime {
     ///   2. Start the HTTP server on an ephemeral port.
     ///   3. Rewrite `local.settings.json` to point URL settings at the server.
     pub async fn start(workspace: &Path, bus: EventBus) -> Result<Self, ScanError> {
-        bus.log(LogLevel::Info, format!("scanning workspace: {}", workspace.display()));
+        bus.log(
+            LogLevel::Info,
+            format!("scanning workspace: {}", workspace.display()),
+        );
 
         let (contract, cache_path) = scan_workspace(workspace)?;
-        bus.log(LogLevel::Info, format!(
-            "scan complete — {} endpoints, {} warnings (cached → {})",
-            contract.endpoints.len(),
-            contract.warnings.len(),
-            cache_path.display(),
-        ));
+        bus.log(
+            LogLevel::Info,
+            format!(
+                "scan complete — {} endpoints, {} warnings (cached → {})",
+                contract.endpoints.len(),
+                contract.warnings.len(),
+                cache_path.display(),
+            ),
+        );
         for w in &contract.warnings {
             let level = match w.level {
                 crate::services::mock::contract::WarningLevel::Error => LogLevel::Error,
-                crate::services::mock::contract::WarningLevel::Warn  => LogLevel::Warn,
-                crate::services::mock::contract::WarningLevel::Info  => LogLevel::Info,
+                crate::services::mock::contract::WarningLevel::Warn => LogLevel::Warn,
+                crate::services::mock::contract::WarningLevel::Info => LogLevel::Info,
             };
-            bus.log(level, format!(
-                "{}{}: {}",
-                w.workflow.as_deref().unwrap_or("?"),
-                w.action.as_ref().map(|a| format!("/{}", a)).unwrap_or_default(),
-                w.message,
-            ));
+            bus.log(
+                level,
+                format!(
+                    "{}{}: {}",
+                    w.workflow.as_deref().unwrap_or("?"),
+                    w.action
+                        .as_ref()
+                        .map(|a| format!("/{}", a))
+                        .unwrap_or_default(),
+                    w.message,
+                ),
+            );
         }
 
         // Server first — we need its port for the settings rewrite.
         let server = MockServer::start(contract.clone(), bus.clone())
             .await
             .map_err(ScanError::Io)?;
-        bus.log(LogLevel::Info, format!("mock server listening on :{}", server.port));
+        bus.log(
+            LogLevel::Info,
+            format!("mock server listening on :{}", server.port),
+        );
 
         let outcome = rewrite::rewrite(workspace, &contract, server.port)?;
         bus.publish(MockEvent::SettingsRewritten {
             rewritten_count: outcome.rewritten_count,
-            backup_path:     outcome.backup_path.display().to_string(),
+            backup_path: outcome.backup_path.display().to_string(),
         });
-        bus.log(LogLevel::Info, format!(
-            "rewrote {} URL settings → backup: {}",
-            outcome.rewritten_count,
-            outcome.backup_path.display(),
-        ));
+        bus.log(
+            LogLevel::Info,
+            format!(
+                "rewrote {} URL settings → backup: {}",
+                outcome.rewritten_count,
+                outcome.backup_path.display(),
+            ),
+        );
 
         Ok(Self {
             workspace: workspace.to_path_buf(),
-            server:    Some(server),
+            server: Some(server),
             bus,
         })
     }
@@ -95,9 +113,14 @@ impl MockRuntime {
 
         // 2. Restore settings — best-effort.
         match rewrite::restore(&self.workspace) {
-            Ok(true)  => self.bus.publish(MockEvent::SettingsRestored),
-            Ok(false) => self.bus.log(LogLevel::Warn, "no settings backup to restore"),
-            Err(e)    => self.bus.log(LogLevel::Error, format!("failed to restore settings: {}", e)),
+            Ok(true) => self.bus.publish(MockEvent::SettingsRestored),
+            Ok(false) => self
+                .bus
+                .log(LogLevel::Warn, "no settings backup to restore"),
+            Err(e) => self.bus.log(
+                LogLevel::Error,
+                format!("failed to restore settings: {}", e),
+            ),
         }
     }
 
@@ -138,21 +161,24 @@ mod tests {
             return;
         }
 
-        let bus      = EventBus::new();
-        let mut rx   = bus.subscribe();
-        let runtime  = MockRuntime::start(path, bus.clone()).await
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let runtime = MockRuntime::start(path, bus.clone())
+            .await
             .expect("runtime should start");
-        let port     = runtime.port().expect("port");
+        let port = runtime.port().expect("port");
 
         // Probe: hit any URL-kind setting that resolves to a contract endpoint.
         // We use the eventGrid_Uri endpoint because every workspace has it and
         // the contract had a `POST eventGrid_Uri` entry in the smoke output.
         let url = format!("http://127.0.0.1:{}/__mock__/eventGrid_Uri", port);
-        let client   = reqwest::Client::new();
-        let resp     = client.post(&url)
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
             .body("{}")
             .header("Content-Type", "application/json")
-            .send().await
+            .send()
+            .await
             .expect("post should succeed");
 
         // We don't assert 200 — the contract may say 200 or it may be unknown
@@ -163,21 +189,24 @@ mod tests {
 
         // Drain everything currently buffered + a short window for stragglers.
         // (Startup emits ~30 log events for warnings, so we can't bound by count.)
-        let mut saw_req  = false;
+        let mut saw_req = false;
         let mut saw_resp = false;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while std::time::Instant::now() < deadline && !(saw_req && saw_resp) {
             match tokio::time::timeout(std::time::Duration::from_millis(20), rx.recv()).await {
-                Ok(Ok(MockEvent::Request  { .. })) => saw_req = true,
+                Ok(Ok(MockEvent::Request { .. })) => saw_req = true,
                 Ok(Ok(MockEvent::Response { source, .. })) => {
                     saw_resp = true;
                     eprintln!("e2e: response source = {:?}", source);
-                    assert!(matches!(source, ResponseSource::AutoStub | ResponseSource::NotInContract));
+                    assert!(matches!(
+                        source,
+                        ResponseSource::AutoStub | ResponseSource::NotInContract
+                    ));
                 }
                 _ => {}
             }
         }
-        assert!(saw_req,  "no Request event observed on the bus");
+        assert!(saw_req, "no Request event observed on the bus");
         assert!(saw_resp, "no Response event observed on the bus");
 
         // Shut down — must not panic.
@@ -185,6 +214,10 @@ mod tests {
 
         // Verify the settings backup file exists (means we did rewrite).
         let backup = path.join(".ais-cache").join("local.settings.json.original");
-        assert!(backup.is_file(), "backup should exist at {}", backup.display());
+        assert!(
+            backup.is_file(),
+            "backup should exist at {}",
+            backup.display()
+        );
     }
 }

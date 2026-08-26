@@ -1,16 +1,21 @@
 //! One row per action in a run: status icon, duration bar, expandable
 //! children (scopes / for-each), and inline error detail.
 
+use crate::services::workflows::{self, duration_ms, ActionItem};
 use dioxus::prelude::*;
 use std::collections::HashMap;
-use crate::services::workflows::{self, ActionItem, duration_ms};
 
 use super::error_extract::extract_error_from_detail;
 use super::sql_chips::SqlMissingHint;
 
 // ── Fetch children for expandable actions ─────────────────────────────────
 
-async fn fetch_children(workflow: String, run_id: String, action: String, action_type: Option<String>) -> Vec<ActionItem> {
+async fn fetch_children(
+    workflow: String,
+    run_id: String,
+    action: String,
+    action_type: Option<String>,
+) -> Vec<ActionItem> {
     match action_type.as_deref() {
         Some("Foreach") => {
             let reps = match workflows::list_repetitions(&workflow, &run_id, &action).await {
@@ -20,7 +25,9 @@ async fn fetch_children(workflow: String, run_id: String, action: String, action
             let multi = reps.len() > 1;
             let mut all = Vec::new();
             for (i, rep) in reps.iter().enumerate() {
-                if let Ok(acts) = workflows::list_repetition_actions(&workflow, &run_id, &action, &rep.name).await {
+                if let Ok(acts) =
+                    workflows::list_repetition_actions(&workflow, &run_id, &action, &rep.name).await
+                {
                     if multi {
                         for mut act in acts {
                             act.name = format!("[{}] {}", i, act.name);
@@ -46,12 +53,12 @@ async fn fetch_children(workflow: String, run_id: String, action: String, action
 
 #[derive(Props, Clone, PartialEq)]
 pub(super) struct ActionRowProps {
-    pub(super) action:   ActionItem,
-    pub(super) max_ms:   i64,
-    pub(super) is_live:  bool,
+    pub(super) action: ActionItem,
+    pub(super) max_ms: i64,
+    pub(super) is_live: bool,
     pub(super) workflow: String,
-    pub(super) run_id:   String,
-    pub(super) depth:    u8,
+    pub(super) run_id: String,
+    pub(super) depth: u8,
     /// Pre-resolved log-scraped error for this action, if any. Comes from
     /// the parent's `action_log_errors` map; this row receives just its own
     /// slot so child rendering doesn't re-do the lookup.
@@ -68,12 +75,12 @@ pub(super) fn ActionRow(props: ActionRowProps) -> Element {
     let atype = props.action.properties.action_type.as_deref().unwrap_or("");
     let is_expandable = matches!(atype, "Foreach" | "Scope" | "Until" | "If");
 
-    let mut expanded       = use_signal(|| false);
-    let mut loading        = use_signal(|| false);
-    let mut children       = use_signal(|| Vec::<ActionItem>::new());
-    let mut detail_open    = use_signal(|| false);
+    let mut expanded = use_signal(|| false);
+    let mut loading = use_signal(|| false);
+    let mut children = use_signal(|| Vec::<ActionItem>::new());
+    let mut detail_open = use_signal(|| false);
     let mut detail_loading = use_signal(|| false);
-    let mut detail_json    = use_signal(|| String::new());
+    let mut detail_json = use_signal(|| String::new());
 
     // Background-fetched error message for actions whose listing doesn't
     // carry `properties.error` (notably ParseJson failures — the runtime
@@ -81,29 +88,35 @@ pub(super) fn ActionRow(props: ActionRowProps) -> Element {
     // "Invalid type. Expected … but got …" message into the outputs blob).
     // Triggered by the use_effect below only when the inline error is empty.
     let mut fetched_error: Signal<Option<String>> = use_signal(|| None);
-    let mut error_fetched: Signal<bool>           = use_signal(|| false);
+    let mut error_fetched: Signal<bool> = use_signal(|| false);
     // For failed actions where extraction came up empty, surface the raw
     // properties object so the user can copy-paste it for diagnosis — we
     // can't iterate on the extractor without seeing the real shape.
     let mut fallback_dump: Signal<Option<String>> = use_signal(|| None);
 
     let status_l = props.action.properties.status.to_lowercase();
-    let is_running = props.is_live && !matches!(status_l.as_str(),
-        "succeeded" | "failed" | "skipped" | "timedout" | "cancelled");
+    let is_running = props.is_live
+        && !matches!(
+            status_l.as_str(),
+            "succeeded" | "failed" | "skipped" | "timedout" | "cancelled"
+        );
 
-    let icon = if is_running { "⟳" } else {
+    let icon = if is_running {
+        "⟳"
+    } else {
         match status_l.as_str() {
             "succeeded" => "✅",
-            "failed"    => "❌",
-            "skipped"   => "⏭",
-            _           => "⏳",
+            "failed" => "❌",
+            "skipped" => "⏭",
+            _ => "⏳",
         }
     };
 
     let ms = duration_ms(
         &props.action.properties.start_time,
         &props.action.properties.end_time,
-    ).unwrap_or(0);
+    )
+    .unwrap_or(0);
     let pct = ((ms as f64 / props.max_ms as f64) * 100.0).clamp(1.0, 100.0);
     let bar_class = format!("timing-bar {}", status_l);
     let dur_label = if ms == 0 && is_running {
@@ -114,9 +127,17 @@ pub(super) fn ActionRow(props: ActionRowProps) -> Element {
         format!("{:.1}s", ms as f64 / 1000.0)
     };
 
-    let row_class   = if is_running { "action-row action-row-live" } else { "action-row" };
-    let icon_class  = if is_running { "action-icon spin" } else { "action-icon" };
-    let indent_px   = props.depth as u32 * 18;
+    let row_class = if is_running {
+        "action-row action-row-live"
+    } else {
+        "action-row"
+    };
+    let icon_class = if is_running {
+        "action-icon spin"
+    } else {
+        "action-icon"
+    };
+    let indent_px = props.depth as u32 * 18;
 
     let inline_error = props.action.properties.error.as_ref().and_then(|e| {
         // Prefer message; fall back to code so skipped-reason is always visible
@@ -130,17 +151,21 @@ pub(super) fn ActionRow(props: ActionRowProps) -> Element {
     {
         let inline_empty = inline_error.is_none();
         let is_failed = matches!(status_l.as_str(), "failed" | "timedout");
-        let wf  = props.workflow.clone();
+        let wf = props.workflow.clone();
         let rid = props.run_id.clone();
-        let name  = props.action.name.clone();
+        let name = props.action.name.clone();
         // The Logic Apps detail endpoint strips `properties.type` on scope
         // actions, but the listing has it — pass it through so the helper
         // can recognise Foreach/Scope/Until/If and annotate the "NotSpecified"
         // fallback with the "expand to see which child failed" hint.
         let atype = props.action.properties.action_type.clone();
         use_effect(move || {
-            if !is_failed || !inline_empty { return; }
-            if *error_fetched.read() { return; }
+            if !is_failed || !inline_empty {
+                return;
+            }
+            if *error_fetched.read() {
+                return;
+            }
             error_fetched.set(true);
             let wf2 = wf.clone();
             let rid2 = rid.clone();
@@ -149,7 +174,10 @@ pub(super) fn ActionRow(props: ActionRowProps) -> Element {
             spawn(async move {
                 if let Ok(mut detail) = workflows::get_action_detail(&wf2, &rid2, &name2).await {
                     if let Some(t) = atype2 {
-                        if let Some(p) = detail.pointer_mut("/properties").and_then(|v| v.as_object_mut()) {
+                        if let Some(p) = detail
+                            .pointer_mut("/properties")
+                            .and_then(|v| v.as_object_mut())
+                        {
                             p.entry("type".to_string())
                                 .or_insert_with(|| serde_json::Value::String(t));
                         }
@@ -190,7 +218,11 @@ pub(super) fn ActionRow(props: ActionRowProps) -> Element {
             .max(1)
     };
 
-    let err_class = if status_l == "skipped" { "action-warning" } else { "action-error" };
+    let err_class = if status_l == "skipped" {
+        "action-warning"
+    } else {
+        "action-error"
+    };
 
     rsx! {
         div { class: "{row_class}", style: "padding-left:{indent_px}px",
@@ -385,4 +417,3 @@ pub(super) fn ActionRow(props: ActionRowProps) -> Element {
         }
     }
 }
-

@@ -6,7 +6,7 @@ use crate::services::run_readiness::RunReadiness;
 pub struct RunGateDialogProps {
     pub readiness: RunReadiness,
     /// Consent granted: apply the auto-fixes and scaffold local files.
-    pub on_fix:    EventHandler<()>,
+    pub on_fix: EventHandler<()>,
     pub on_cancel: EventHandler<()>,
 }
 

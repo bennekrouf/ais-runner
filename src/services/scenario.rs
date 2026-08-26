@@ -17,10 +17,10 @@
 //! Same rationale as `msg_template`: a team's fixtures belong next to the
 //! workflows they exercise, versioned together and reviewable in a PR.
 
-use std::net::ToSocketAddrs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -461,7 +461,8 @@ pub fn discover(project_root: &Path) -> (Vec<Scenario>, Vec<String>) {
     scenarios.sort_by(|a, b| {
         let ga = group_of(project_root, a);
         let gb = group_of(project_root, b);
-        ga.cmp(&gb).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        ga.cmp(&gb)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     (scenarios, errors)
 }
@@ -490,12 +491,19 @@ fn walk(dir: &Path, scenarios: &mut Vec<Scenario>, errors: &mut Vec<String>) {
 /// itself, so renaming a folder or moving a file regroups it with no other
 /// bookkeeping to update.
 pub fn group_of(project_root: &Path, scenario: &Scenario) -> Option<String> {
-    let rel = scenario.source.strip_prefix(scenario_dir(project_root)).ok()?;
+    let rel = scenario
+        .source
+        .strip_prefix(scenario_dir(project_root))
+        .ok()?;
     let parent = rel.parent()?;
     if parent.as_os_str().is_empty() {
         None
     } else {
-        Some(parent.to_string_lossy().replace(std::path::MAIN_SEPARATOR, " / "))
+        Some(
+            parent
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, " / "),
+        )
     }
 }
 
@@ -623,60 +631,104 @@ fn required_services(scenario: &Scenario, ctx: &RunContext) -> Vec<(&'static str
     let (mut blob, mut queue, mut sql, mut func, mut cosmos) = (false, false, false, false, false);
     for step in &scenario.steps {
         match step {
-            Step::CreateContainer { .. } | Step::ClearContainer { .. }
-            | Step::UploadFile { .. } | Step::UploadInline { .. }
-            | Step::DownloadBlob { .. } | Step::CheckBlobExists { .. }
+            Step::CreateContainer { .. }
+            | Step::ClearContainer { .. }
+            | Step::UploadFile { .. }
+            | Step::UploadInline { .. }
+            | Step::DownloadBlob { .. }
+            | Step::CheckBlobExists { .. }
             | Step::RenameFolder { .. } => blob = true,
-            Step::CreateQueue { .. } | Step::SendMessage { .. } | Step::DrainQueue { .. }
-            | Step::Expect { .. } | Step::WaitForMessage { .. } => queue = true,
-            Step::CreateSqlDatabase { .. } | Step::DropSqlDatabase { .. } | Step::RunSql { .. }
-            | Step::WaitForSql { .. } | Step::DropTable { .. } | Step::TruncateTable { .. } => sql = true,
-            Step::RunWorkflow { .. } | Step::WaitForRun { .. } | Step::ExpectAction { .. } => func = true,
-            Step::CreateCosmosDatabase { .. } | Step::CreateCosmosContainer { .. }
-            | Step::UpsertCosmosDocument { .. } | Step::RunCosmosQuery { .. } => cosmos = true,
+            Step::CreateQueue { .. }
+            | Step::SendMessage { .. }
+            | Step::DrainQueue { .. }
+            | Step::Expect { .. }
+            | Step::WaitForMessage { .. } => queue = true,
+            Step::CreateSqlDatabase { .. }
+            | Step::DropSqlDatabase { .. }
+            | Step::RunSql { .. }
+            | Step::WaitForSql { .. }
+            | Step::DropTable { .. }
+            | Step::TruncateTable { .. } => sql = true,
+            Step::RunWorkflow { .. } | Step::WaitForRun { .. } | Step::ExpectAction { .. } => {
+                func = true
+            }
+            Step::CreateCosmosDatabase { .. }
+            | Step::CreateCosmosContainer { .. }
+            | Step::UpsertCosmosDocument { .. }
+            | Step::RunCosmosQuery { .. } => cosmos = true,
             _ => {}
         }
     }
     let mut needed = Vec::new();
     if blob {
-        needed.push(("Azurite (blob)", "127.0.0.1:10000".to_string(),
-            workflows::AZURITE_RESET_HINT.to_string()));
+        needed.push((
+            "Azurite (blob)",
+            "127.0.0.1:10000".to_string(),
+            workflows::AZURITE_RESET_HINT.to_string(),
+        ));
     }
     if func {
         // func keeps run history in Storage Tables; without 10002 it answers 503
         // for 30s and then dies, which looks like every later step failing.
-        needed.push(("Azurite (table)", "127.0.0.1:10002".to_string(),
-            workflows::AZURITE_RESET_HINT.to_string()));
+        needed.push((
+            "Azurite (table)",
+            "127.0.0.1:10002".to_string(),
+            workflows::AZURITE_RESET_HINT.to_string(),
+        ));
     }
     if queue {
-        needed.push(("Service Bus emulator", format!("{}:5672", host_only(&ctx.sb_host)),
-            "Start the Service Bus emulator from the toolbar.".to_string()));
+        needed.push((
+            "Service Bus emulator",
+            format!("{}:5672", host_only(&ctx.sb_host)),
+            "Start the Service Bus emulator from the toolbar.".to_string(),
+        ));
     }
     if func {
-        needed.push(("Logic Apps runtime (func)", "127.0.0.1:7071".to_string(),
-            "Start func from the toolbar — no workflow can run without it.".to_string()));
+        needed.push((
+            "Logic Apps runtime (func)",
+            "127.0.0.1:7071".to_string(),
+            "Start func from the toolbar — no workflow can run without it.".to_string(),
+        ));
     }
     if sql {
-        needed.push(("SQL Server", "127.0.0.1:1433".to_string(),
-            "Start the SQL Server container from the toolbar.".to_string()));
+        needed.push((
+            "SQL Server",
+            "127.0.0.1:1433".to_string(),
+            "Start the SQL Server container from the toolbar.".to_string(),
+        ));
     }
     if cosmos {
-        needed.push(("Cosmos emulator", host_port(&ctx.cosmos_endpoint, 8081),
-            "Start the Cosmos emulator.".to_string()));
+        needed.push((
+            "Cosmos emulator",
+            host_port(&ctx.cosmos_endpoint, 8081),
+            "Start the Cosmos emulator.".to_string(),
+        ));
     }
     needed
 }
 
 fn host_only(host: &str) -> String {
-    host.trim_start_matches("http://").trim_start_matches("https://")
-        .split('/').next().unwrap_or(host)
-        .split(':').next().unwrap_or(host).to_string()
+    host.trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .unwrap_or(host)
+        .split(':')
+        .next()
+        .unwrap_or(host)
+        .to_string()
 }
 
 fn host_port(endpoint: &str, default_port: u16) -> String {
-    let bare = endpoint.trim_start_matches("http://").trim_start_matches("https://");
+    let bare = endpoint
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
     let bare = bare.split('/').next().unwrap_or(bare);
-    if bare.contains(':') { bare.to_string() } else { format!("{bare}:{default_port}") }
+    if bare.contains(':') {
+        bare.to_string()
+    } else {
+        format!("{bare}:{default_port}")
+    }
 }
 
 /// Services the scenario needs that are not accepting connections.
@@ -707,7 +759,14 @@ pub fn unavailable_services(scenario: &Scenario, ctx: &RunContext) -> Vec<String
 pub fn stale_assertions(scenario: &Scenario, project_root: &str) -> Vec<String> {
     let mut problems = Vec::new();
     for step in &scenario.steps {
-        let Step::ExpectAction { workflow, action_name, .. } = step else { continue };
+        let Step::ExpectAction {
+            workflow,
+            action_name,
+            ..
+        } = step
+        else {
+            continue;
+        };
         let workflow = expand(workflow, &scenario.vars);
         let action = expand(action_name, &scenario.vars);
         let Some(defined) = workflows::definition_action_names(project_root, &workflow) else {
@@ -719,7 +778,9 @@ pub fn stale_assertions(scenario: &Scenario, project_root: &str) -> Vec<String> 
                 [] => String::new(),
                 others => format!(" — it exists in {}", others.join(", ")),
             };
-            problems.push(format!("workflow '{workflow}' has no action named '{action}'{hint}"));
+            problems.push(format!(
+                "workflow '{workflow}' has no action named '{action}'{hint}"
+            ));
         }
     }
     problems.sort();
@@ -759,7 +820,11 @@ pub async fn run(
             index: 0,
             label: "check local services".to_string(),
             status: StepStatus::Failed,
-            detail: format!("{} service(s) down:\n  - {}", down.len(), down.join("\n  - ")),
+            detail: format!(
+                "{} service(s) down:\n  - {}",
+                down.len(),
+                down.join("\n  - ")
+            ),
             elapsed_ms: 0,
         };
         on_step(result.clone());
@@ -814,7 +879,9 @@ pub async fn run(
             Ok(detail) => {
                 // Available to the next step as `{{PREV_STEP_RESULT}}` without
                 // that step needing an explicit `capture` field.
-                state.vars.insert("PREV_STEP_RESULT".to_string(), detail.clone());
+                state
+                    .vars
+                    .insert("PREV_STEP_RESULT".to_string(), detail.clone());
                 StepResult {
                     index,
                     label: label_of(step),
@@ -959,19 +1026,30 @@ fn stop_processes(state: &mut RunState) -> Vec<String> {
 }
 
 /// Poll until something accepts a TCP connection on `port`.
-async fn wait_for_port(port: u16, timeout_ms: u64, child: &mut std::process::Child) -> Result<(), String> {
+async fn wait_for_port(
+    port: u16,
+    timeout_ms: u64,
+    child: &mut std::process::Child,
+) -> Result<(), String> {
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
-        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
             return Ok(());
         }
         // A process that died is never going to bind — fail now with its exit
         // status rather than burning the whole timeout on a corpse.
         if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!("process exited before binding port {port} ({status})"));
+            return Err(format!(
+                "process exited before binding port {port} ({status})"
+            ));
         }
         if std::time::Instant::now() >= deadline {
-            return Err(format!("nothing listening on port {port} after {timeout_ms}ms"));
+            return Err(format!(
+                "nothing listening on port {port} after {timeout_ms}ms"
+            ));
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
@@ -1003,7 +1081,11 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
             blob_name,
             content,
         } => {
-            let (c, b, data) = (container.clone(), blob_name.clone(), content.clone().into_bytes());
+            let (c, b, data) = (
+                container.clone(),
+                blob_name.clone(),
+                content.clone().into_bytes(),
+            );
             let size = data.len();
             blocking(move || azurite_client::upload_blob_bytes_sync(&c, &b, data)).await?;
             Ok(format!("wrote '{blob_name}' ({size} bytes)"))
@@ -1019,15 +1101,20 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
             exists,
         } => {
             let (c, b) = (container.clone(), blob_name.clone());
-            let found = blocking(move || {
-                Ok(azurite_client::list_blobs(&c)?.iter().any(|i| i.name == b))
-            })
-            .await?;
+            let found =
+                blocking(move || Ok(azurite_client::list_blobs(&c)?.iter().any(|i| i.name == b)))
+                    .await?;
             match (found, exists) {
                 (true, true) => Ok(format!("'{blob_name}' exists in '{container}'")),
-                (false, false) => Ok(format!("'{blob_name}' is absent from '{container}', as expected")),
-                (false, true) => Err(format!("expected '{blob_name}' to exist in '{container}', but it does not")),
-                (true, false) => Err(format!("expected '{blob_name}' to be absent from '{container}', but it exists")),
+                (false, false) => Ok(format!(
+                    "'{blob_name}' is absent from '{container}', as expected"
+                )),
+                (false, true) => Err(format!(
+                    "expected '{blob_name}' to exist in '{container}', but it does not"
+                )),
+                (true, false) => Err(format!(
+                    "expected '{blob_name}' to be absent from '{container}', but it exists"
+                )),
             }
         }
         RenameFolder {
@@ -1212,7 +1299,13 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
 
         // ── External process ──────────────────────────────────────────────
         RunProcess {
-            command, args, workdir, env, wait_for_port: port, wait_timeout_ms, stop_at_end,
+            command,
+            args,
+            workdir,
+            env,
+            wait_for_port: port,
+            wait_timeout_ms,
+            stop_at_end,
         } => {
             let resolved_dir = workdir
                 .as_deref()
@@ -1249,14 +1342,18 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                     // still leaves the process tracked for teardown.
                     let outcome = wait_for_port(*p, *wait_timeout_ms, &mut child).await;
                     state.processes.push(SpawnedProcess {
-                        label: label.clone(), child, stop_at_end: *stop_at_end,
+                        label: label.clone(),
+                        child,
+                        stop_at_end: *stop_at_end,
                     });
                     outcome?;
                     format!("started '{label}' — listening on {p}")
                 }
                 None => {
                     state.processes.push(SpawnedProcess {
-                        label: label.clone(), child, stop_at_end: *stop_at_end,
+                        label: label.clone(),
+                        child,
+                        stop_at_end: *stop_at_end,
                     });
                     format!("started '{label}'")
                 }
@@ -1312,9 +1409,9 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                     // improves it, so surface it now instead of at timeout. A
                     // workflow expected to fail that instead succeeds (or
                     // vice versa) is exactly as wrong as one that errors.
-                    Some((run_name, status)) => {
-                        Err(format!("run {run_name} finished {status}, expected {expect_status}"))
-                    }
+                    Some((run_name, status)) => Err(format!(
+                        "run {run_name} finished {status}, expected {expect_status}"
+                    )),
                     // "no terminal run yet" reads as a timing problem. When the
                     // workflow has never run at all, the usual cause is that
                     // func attached no Service Bus listeners — it started before
@@ -1366,9 +1463,8 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
             expected,
             min_count,
         } => {
-            let r =
-                sb_testing::check_expectation(&ctx.sb_host, queue, path, expected, *min_count)
-                    .await?;
+            let r = sb_testing::check_expectation(&ctx.sb_host, queue, path, expected, *min_count)
+                .await?;
             if r.passed {
                 Ok(r.detail)
             } else {
@@ -1386,7 +1482,9 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                 Some(id) => id.clone(),
                 None => latest_run_since(workflow, state.run_floor)
                     .await
-                    .ok_or_else(|| format!("no run of '{workflow}' found since the scenario started"))?,
+                    .ok_or_else(|| {
+                        format!("no run of '{workflow}' found since the scenario started")
+                    })?,
             };
 
             // An action absent from the definition will never run, so polling for
@@ -1453,7 +1551,9 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                         "action '{action}' is {status} but its inputs/outputs do not contain '{needle}'"
                     ));
                 }
-                return Ok(format!("action '{action}' {status}, and contains '{needle}'"));
+                return Ok(format!(
+                    "action '{action}' {status}, and contains '{needle}'"
+                ));
             }
             Ok(format!("action '{action}' {status}"))
         }
@@ -1465,10 +1565,7 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
 /// Unlike `latest_terminal_run` this doesn't require a terminal status: an
 /// `expect_action` may legitimately inspect an action that has already
 /// completed inside a run that is still going.
-async fn latest_run_since(
-    workflow: &str,
-    floor: chrono::DateTime<chrono::Utc>,
-) -> Option<String> {
+async fn latest_run_since(workflow: &str, floor: chrono::DateTime<chrono::Utc>) -> Option<String> {
     let runs = workflows::list_runs(workflow).await.ok()?;
     runs.iter()
         .filter(|r| started_at_or_after(r.properties.start_time.as_deref(), floor))
@@ -1496,7 +1593,11 @@ fn resolve_path(project_root: &Path, path: &str) -> String {
 /// First write per key wins: if a key is already snapshotted from an earlier
 /// `set_settings` in this run (no restore in between), that original is kept
 /// rather than overwritten with the intermediate value.
-async fn set_settings_now(ctx: &RunContext, state: &mut RunState, values: &Vars) -> Result<String, String> {
+async fn set_settings_now(
+    ctx: &RunContext,
+    state: &mut RunState,
+    values: &Vars,
+) -> Result<String, String> {
     let dir = ctx.project_root.to_string_lossy().into_owned();
     let values = values.clone();
     let count = values.len();
@@ -1505,7 +1606,10 @@ async fn set_settings_now(ctx: &RunContext, state: &mut RunState, values: &Vars)
         let obj = values_object(&mut json)?;
         let mut originals = std::collections::HashMap::new();
         for (k, v) in &values {
-            originals.insert(k.clone(), obj.get(k).and_then(|x| x.as_str()).map(str::to_string));
+            originals.insert(
+                k.clone(),
+                obj.get(k).and_then(|x| x.as_str()).map(str::to_string),
+            );
             obj.insert(k.clone(), Value::String(v.clone()));
         }
         write_settings_json(&dir, &json)?;
@@ -1516,7 +1620,9 @@ async fn set_settings_now(ctx: &RunContext, state: &mut RunState, values: &Vars)
     for (k, orig) in originals {
         state.settings_snapshot.entry(k).or_insert(orig);
     }
-    Ok(format!("set {count} setting(s) — will restore on scenario end or failure"))
+    Ok(format!(
+        "set {count} setting(s) — will restore on scenario end or failure"
+    ))
 }
 
 /// Put back every key in `state.settings_snapshot`, then clear it.
@@ -1582,7 +1688,9 @@ async fn restart_func_now(ctx: &RunContext, timeout_ms: u64) -> Result<String, S
     })?;
     match tokio::time::timeout(Duration::from_millis(timeout_ms), restart()).await {
         Ok(inner) => inner,
-        Err(_) => Err(format!("func did not finish restarting within {timeout_ms}ms")),
+        Err(_) => Err(format!(
+            "func did not finish restarting within {timeout_ms}ms"
+        )),
     }
 }
 
@@ -1596,7 +1704,10 @@ fn builtin_vars() -> Vars {
     out.insert("NOW_UTC".to_string(), now_utc.to_rfc3339());
     out.insert("NOW_CET_HH:mm".to_string(), cet.format("%H:%M").to_string());
     out.insert("NOW_CET_HHmm".to_string(), cet.format("%H%M").to_string());
-    out.insert("TODAY_YYYYMMDD".to_string(), cet.format("%Y%m%d").to_string());
+    out.insert(
+        "TODAY_YYYYMMDD".to_string(),
+        cet.format("%Y%m%d").to_string(),
+    );
     out.insert("GUID".to_string(), uuid::Uuid::new_v4().to_string());
     out
 }
@@ -1612,7 +1723,11 @@ fn now_cet(utc: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Fixed
     let year = utc.year();
     let dst_start = last_sunday_1am_utc(year, 3);
     let dst_end = last_sunday_1am_utc(year, 10);
-    let offset_hours = if utc >= dst_start && utc < dst_end { 2 } else { 1 };
+    let offset_hours = if utc >= dst_start && utc < dst_end {
+        2
+    } else {
+        1
+    };
     utc.with_timezone(&chrono::FixedOffset::east_opt(offset_hours * 3600).unwrap())
 }
 
@@ -1620,13 +1735,21 @@ fn now_cet(utc: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Fixed
 /// 01:00 UTC — the instant EU daylight-saving transitions take effect.
 fn last_sunday_1am_utc(year: i32, month: u32) -> chrono::DateTime<chrono::Utc> {
     use chrono::{Datelike, NaiveDate, TimeZone, Utc};
-    let (next_year, next_month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
-    let first_of_next = NaiveDate::from_ymd_opt(next_year, next_month, 1)
-        .expect("month is always 1..=12");
+    let (next_year, next_month) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    let first_of_next =
+        NaiveDate::from_ymd_opt(next_year, next_month, 1).expect("month is always 1..=12");
     let last_day = first_of_next - chrono::Duration::days(1);
     let back_to_sunday = last_day.weekday().num_days_from_sunday() as i64;
     let last_sunday = last_day - chrono::Duration::days(back_to_sunday);
-    Utc.from_utc_datetime(&last_sunday.and_hms_opt(1, 0, 0).expect("1:00:00 is always valid"))
+    Utc.from_utc_datetime(
+        &last_sunday
+            .and_hms_opt(1, 0, 0)
+            .expect("1:00:00 is always valid"),
+    )
 }
 
 /// Run a blocking service call off the async runtime.
@@ -1713,8 +1836,16 @@ pub fn label_of(step: &Step) -> String {
         UploadFile { blob_name, .. } => format!("upload {blob_name}"),
         UploadInline { blob_name, .. } => format!("write {blob_name}"),
         ClearContainer { container } => format!("clear {container}"),
-        CheckBlobExists { blob_name, exists: true, .. } => format!("check {blob_name} exists"),
-        CheckBlobExists { blob_name, exists: false, .. } => format!("check {blob_name} absent"),
+        CheckBlobExists {
+            blob_name,
+            exists: true,
+            ..
+        } => format!("check {blob_name} exists"),
+        CheckBlobExists {
+            blob_name,
+            exists: false,
+            ..
+        } => format!("check {blob_name} absent"),
         RenameFolder { from, to, .. } => format!("rename folder {from} → {to}"),
         DownloadBlob { blob_name, .. } => format!("download {blob_name}"),
         CreateQueue { queue } => format!("create queue {queue}"),
@@ -1729,7 +1860,11 @@ pub fn label_of(step: &Step) -> String {
         CreateCosmosContainer { container, .. } => format!("create Cosmos container {container}"),
         UpsertCosmosDocument { container, .. } => format!("upsert doc into {container}"),
         RunCosmosQuery { container, .. } => format!("query {container}"),
-        RunWorkflow { workflow, capture: Some(key), .. } => format!("run {workflow} → {{{{{key}}}}}"),
+        RunWorkflow {
+            workflow,
+            capture: Some(key),
+            ..
+        } => format!("run {workflow} → {{{{{key}}}}}"),
         RunWorkflow { workflow, .. } => format!("run {workflow}"),
         RunProcess { command, .. } => format!("run process {command}"),
         SetSettings { values } => format!("set {} setting(s)", values.len()),
@@ -1737,10 +1872,18 @@ pub fn label_of(step: &Step) -> String {
         RestartFunc { .. } => "restart func".to_string(),
         Sleep { ms } => format!("sleep {ms}ms"),
         WaitForMessage { queue, .. } => format!("wait for message on {queue}"),
-        WaitForRun { workflow, expect_status, .. } => format!("wait for {workflow} run ({expect_status})"),
+        WaitForRun {
+            workflow,
+            expect_status,
+            ..
+        } => format!("wait for {workflow} run ({expect_status})"),
         WaitForSql { database, .. } => format!("wait for SQL on {database}"),
         Expect { queue, .. } => format!("expect on {queue}"),
-        ExpectAction { workflow, action_name, .. } => format!("expect {action_name} in {workflow}"),
+        ExpectAction {
+            workflow,
+            action_name,
+            ..
+        } => format!("expect {action_name} in {workflow}"),
     }
 }
 
@@ -2040,15 +2183,25 @@ mod tests {
         };
         save(&mk(&scenarios, "Root Level")).unwrap();
         save(&mk(&scenarios.join("smoke"), "Smoke One")).unwrap();
-        save(&mk(&scenarios.join("regression").join("kyriba"), "Nested Two")).unwrap();
+        save(&mk(
+            &scenarios.join("regression").join("kyriba"),
+            "Nested Two",
+        ))
+        .unwrap();
 
         let (found, errors) = discover(&root);
         assert!(errors.is_empty());
         assert_eq!(found.len(), 3);
 
         let groups: Vec<Option<String>> = found.iter().map(|s| group_of(&root, s)).collect();
-        assert_eq!(groups[0], None, "root-level scenario sorts first, ungrouped");
-        assert_eq!(groups.iter().flatten().find(|g| g.as_str() == "smoke"), Some(&"smoke".to_string()));
+        assert_eq!(
+            groups[0], None,
+            "root-level scenario sorts first, ungrouped"
+        );
+        assert_eq!(
+            groups.iter().flatten().find(|g| g.as_str() == "smoke"),
+            Some(&"smoke".to_string())
+        );
         assert!(groups.iter().flatten().any(|g| g == "regression / kyriba"));
 
         std::fs::remove_dir_all(&root).ok();
@@ -2156,8 +2309,13 @@ mod tests {
         // stop_at_end must default ON — a stub left holding its port breaks the
         // *next* run with a bind error that points nowhere near the cause.
         let json = r#"{ "action": "run_process", "command": "python3" }"#;
-        let Step::RunProcess { args, stop_at_end, wait_for_port, workdir, .. } =
-            serde_json::from_str(json).unwrap()
+        let Step::RunProcess {
+            args,
+            stop_at_end,
+            wait_for_port,
+            workdir,
+            ..
+        } = serde_json::from_str(json).unwrap()
         else {
             panic!("wrong variant")
         };
@@ -2196,22 +2354,39 @@ mod tests {
         let ctx = test_ctx(Path::new("/tmp"));
         let mut state = test_state();
 
-        let Step::RunProcess { command, args, workdir, env, wait_for_port, wait_timeout_ms, .. } =
-            sleep_step("120")
+        let Step::RunProcess {
+            command,
+            args,
+            workdir,
+            env,
+            wait_for_port,
+            wait_timeout_ms,
+            ..
+        } = sleep_step("120")
         else {
             panic!("wrong variant")
         };
         let step = Step::RunProcess {
-            command, args, workdir, env, wait_for_port, wait_timeout_ms,
+            command,
+            args,
+            workdir,
+            env,
+            wait_for_port,
+            wait_timeout_ms,
             stop_at_end: false,
         };
 
         exec(&step, &ctx, &mut state).await.unwrap();
         let pid = state.processes[0].child.id();
-        assert!(stop_processes(&mut state).is_empty(), "opted-out process must not be killed");
+        assert!(
+            stop_processes(&mut state).is_empty(),
+            "opted-out process must not be killed"
+        );
 
         // Clean up ourselves — the runner deliberately didn't.
-        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+        let _ = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status();
     }
 
     #[tokio::test]
@@ -2233,8 +2408,14 @@ mod tests {
 
         let started = std::time::Instant::now();
         let err = exec(&step, &ctx, &mut state).await.unwrap_err();
-        assert!(err.contains("exited before binding"), "unexpected message: {err}");
-        assert!(started.elapsed() < Duration::from_secs(10), "should not wait out the timeout");
+        assert!(
+            err.contains("exited before binding"),
+            "unexpected message: {err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "should not wait out the timeout"
+        );
         // Still tracked, so teardown reaps it even though the step failed.
         assert_eq!(state.processes.len(), 1);
         stop_processes(&mut state);
@@ -2261,12 +2442,21 @@ mod tests {
 
         let results = run(&scenario, &test_ctx(&dir), |_| {}).await;
 
-        assert_eq!(results[0].status, StepStatus::Ok, "the process should start");
-        assert_eq!(results[1].status, StepStatus::Failed, "the workflow step should fail");
+        assert_eq!(
+            results[0].status,
+            StepStatus::Ok,
+            "the process should start"
+        );
+        assert_eq!(
+            results[1].status,
+            StepStatus::Failed,
+            "the workflow step should fail"
+        );
         let teardown = results.last().unwrap();
         assert!(
             teardown.label.contains("helper process"),
-            "teardown must run after a failure, got: {}", teardown.label,
+            "teardown must run after a failure, got: {}",
+            teardown.label,
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -2311,8 +2501,10 @@ mod tests {
         values.insert("new_key".to_string(), "brand-new".to_string());
         set_settings_now(&ctx, &mut state, &values).await.unwrap();
 
-        let after_set: Value =
-            serde_json::from_str(&settings_file::read_local_settings(dir.to_str().unwrap()).unwrap()).unwrap();
+        let after_set: Value = serde_json::from_str(
+            &settings_file::read_local_settings(dir.to_str().unwrap()).unwrap(),
+        )
+        .unwrap();
         assert_eq!(after_set["Values"]["changed"], "after");
         assert_eq!(after_set["Values"]["new_key"], "brand-new");
         assert_eq!(after_set["Values"]["kept"], "already-here");
@@ -2320,8 +2512,10 @@ mod tests {
         restore_settings_now(&ctx, &mut state).await.unwrap();
         assert!(state.settings_snapshot.is_empty());
 
-        let restored: Value =
-            serde_json::from_str(&settings_file::read_local_settings(dir.to_str().unwrap()).unwrap()).unwrap();
+        let restored: Value = serde_json::from_str(
+            &settings_file::read_local_settings(dir.to_str().unwrap()).unwrap(),
+        )
+        .unwrap();
         assert_eq!(restored["Values"]["changed"], "before");
         assert_eq!(restored["Values"]["kept"], "already-here");
         // A key that didn't exist before set_settings must be removed, not
@@ -2353,11 +2547,16 @@ mod tests {
 
         // Two writes, one restore — the snapshot must still be the true
         // original, not the intermediate value the first write produced.
-        assert_eq!(state.settings_snapshot.get("k"), Some(&Some("original".to_string())));
+        assert_eq!(
+            state.settings_snapshot.get("k"),
+            Some(&Some("original".to_string()))
+        );
 
         restore_settings_now(&ctx, &mut state).await.unwrap();
-        let restored: Value =
-            serde_json::from_str(&settings_file::read_local_settings(dir.to_str().unwrap()).unwrap()).unwrap();
+        let restored: Value = serde_json::from_str(
+            &settings_file::read_local_settings(dir.to_str().unwrap()).unwrap(),
+        )
+        .unwrap();
         assert_eq!(restored["Values"]["k"], "original");
     }
 
@@ -2478,7 +2677,13 @@ mod tests {
     #[test]
     fn builtin_vars_cover_every_documented_placeholder() {
         let vars = builtin_vars();
-        for key in ["NOW_UTC", "NOW_CET_HH:mm", "NOW_CET_HHmm", "TODAY_YYYYMMDD", "GUID"] {
+        for key in [
+            "NOW_UTC",
+            "NOW_CET_HH:mm",
+            "NOW_CET_HHmm",
+            "TODAY_YYYYMMDD",
+            "GUID",
+        ] {
             assert!(vars.contains_key(key), "missing {key}");
         }
         assert!(chrono::DateTime::parse_from_rfc3339(&vars["NOW_UTC"]).is_ok());
@@ -2515,8 +2720,10 @@ mod tests {
         let results = run(&scenario, &ctx, |_| {}).await;
         assert_eq!(results[1].status, StepStatus::Ok);
 
-        let after: Value =
-            serde_json::from_str(&settings_file::read_local_settings(dir.to_str().unwrap()).unwrap()).unwrap();
+        let after: Value = serde_json::from_str(
+            &settings_file::read_local_settings(dir.to_str().unwrap()).unwrap(),
+        )
+        .unwrap();
         assert_eq!(after["Values"]["marker"], "slept 0ms");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -2560,14 +2767,15 @@ mod tests {
         assert!(auto.label.contains("auto-restore"));
         assert_eq!(auto.status, StepStatus::Ok);
 
-        let after: Value =
-            serde_json::from_str(&settings_file::read_local_settings(dir.to_str().unwrap()).unwrap()).unwrap();
+        let after: Value = serde_json::from_str(
+            &settings_file::read_local_settings(dir.to_str().unwrap()).unwrap(),
+        )
+        .unwrap();
         assert_eq!(after["Values"]["k"], "original");
 
         std::fs::remove_dir_all(&dir).ok();
     }
 }
-
 
 #[cfg(test)]
 mod stale_assertion_tests {
@@ -2577,11 +2785,17 @@ mod stale_assertion_tests {
         let tmp = std::env::temp_dir().join(format!("ais-runner-stale-{}", std::process::id()));
         let la = tmp.join("logic_apps");
         for (wf, body) in [
-            ("Check-Ignite-Payment-File", r#"{"definition":{"actions":{
+            (
+                "Check-Ignite-Payment-File",
+                r#"{"definition":{"actions":{
                 "Scope_Processing":{"type":"Scope","actions":{
-                    "Send_message_to_queue":{"type":"ServiceProvider"}}}}}}"#),
-            ("Send-Kyriba-files", r#"{"definition":{"actions":{
-                "Send_success_notification":{"type":"ServiceProvider"}}}}"#),
+                    "Send_message_to_queue":{"type":"ServiceProvider"}}}}}}"#,
+            ),
+            (
+                "Send-Kyriba-files",
+                r#"{"definition":{"actions":{
+                "Send_success_notification":{"type":"ServiceProvider"}}}}"#,
+            ),
         ] {
             std::fs::create_dir_all(la.join(wf)).unwrap();
             std::fs::write(la.join(wf).join("workflow.json"), body).unwrap();
@@ -2619,7 +2833,11 @@ mod stale_assertion_tests {
         let problems = stale_assertions(&scenario, &tmp.to_string_lossy());
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("has no action named 'Send_success_notification'"));
-        assert!(problems[0].contains("it exists in Send-Kyriba-files"), "{}", problems[0]);
+        assert!(
+            problems[0].contains("it exists in Send-Kyriba-files"),
+            "{}",
+            problems[0]
+        );
         std::fs::remove_dir_all(&tmp).ok();
     }
 
@@ -2652,11 +2870,20 @@ mod service_probe_tests {
     }
 
     fn scenario_of(steps: Vec<Step>) -> Scenario {
-        Scenario { name: "t".into(), description: String::new(), vars: Vars::new(), steps, source: PathBuf::new() }
+        Scenario {
+            name: "t".into(),
+            description: String::new(),
+            vars: Vars::new(),
+            steps,
+            source: PathBuf::new(),
+        }
     }
 
     fn labels(steps: Vec<Step>) -> Vec<&'static str> {
-        required_services(&scenario_of(steps), &ctx()).into_iter().map(|(l, _, _)| l).collect()
+        required_services(&scenario_of(steps), &ctx())
+            .into_iter()
+            .map(|(l, _, _)| l)
+            .collect()
     }
 
     /// Pure: what a scenario declares it needs, with no probing, so the result
@@ -2666,22 +2893,33 @@ mod service_probe_tests {
         assert!(labels(vec![Step::Sleep { ms: 1 }]).is_empty());
 
         assert_eq!(
-            labels(vec![Step::CreateContainer { container: "c".into() }]),
+            labels(vec![Step::CreateContainer {
+                container: "c".into()
+            }]),
             vec!["Azurite (blob)"]
         );
 
         // func needs the table service too, which is what actually crashed it
         let with_func = labels(vec![Step::WaitForRun {
-            workflow: "W".into(), timeout_ms: 1, expect_status: "Succeeded".into(),
+            workflow: "W".into(),
+            timeout_ms: 1,
+            expect_status: "Succeeded".into(),
         }]);
-        assert!(with_func.contains(&"Logic Apps runtime (func)"), "{with_func:?}");
+        assert!(
+            with_func.contains(&"Logic Apps runtime (func)"),
+            "{with_func:?}"
+        );
         assert!(with_func.contains(&"Azurite (table)"), "{with_func:?}");
     }
 
     #[test]
     fn the_azurite_hint_is_actionable() {
         let needed = required_services(
-            &scenario_of(vec![Step::CreateContainer { container: "c".into() }]), &ctx());
+            &scenario_of(vec![Step::CreateContainer {
+                container: "c".into(),
+            }]),
+            &ctx(),
+        );
         let (_, addr, hint) = &needed[0];
         assert_eq!(addr, "127.0.0.1:10000");
         assert!(hint.contains("⟳ Reset"), "{hint}");
@@ -2711,7 +2949,9 @@ mod service_gate_tests {
             name: "gate".into(),
             description: String::new(),
             vars: Default::default(),
-            steps: vec![Step::CreateCosmosDatabase { database: "d".into() }],
+            steps: vec![Step::CreateCosmosDatabase {
+                database: "d".into(),
+            }],
             source: unique_in(&dir, "gate"),
         };
         let ctx = RunContext {
@@ -2725,7 +2965,11 @@ mod service_gate_tests {
         assert_eq!(results.len(), 1, "must not run any step: {results:?}");
         assert_eq!(results[0].status, StepStatus::Failed);
         assert!(results[0].label.contains("check local services"));
-        assert!(results[0].detail.contains("Cosmos"), "{}", results[0].detail);
+        assert!(
+            results[0].detail.contains("Cosmos"),
+            "{}",
+            results[0].detail
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

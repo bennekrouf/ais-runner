@@ -1,9 +1,6 @@
-use std::fs;
+use crate::services::{azure_cli, settings_file};
 use std::collections::HashMap;
-use crate::services::{
-    azure_cli,
-    settings_file,
-};
+use std::fs;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SetupStatus {
@@ -21,7 +18,7 @@ pub enum SetupStatus {
     /// one round-trip later is a bad way to learn about it.
     NeedsConfiguration {
         /// Present in local.settings.json but empty, or still holding a TODO.
-        blank:  Vec<String>,
+        blank: Vec<String>,
         /// Referenced by connections.json with no local.settings.json entry at all.
         absent: Vec<String>,
     },
@@ -66,16 +63,16 @@ pub fn check_setup(dir: &str) -> SetupStatus {
     if let Some(v) = vals {
         for (key, val) in v {
             if let Some(s) = val.as_str() {
-                let is_missing = s.contains("TODO") || (s.is_empty() && (
-                    key.contains("KEY") ||
+                let is_missing = s.contains("TODO")
+                    || (s.is_empty()
+                        && (key.contains("KEY") ||
                     key.contains("CONNECTION") ||
                     key.contains("SUBSCRIPTION") ||
                     key.contains("RESOURCE_GROUP") ||
                     key.contains("siteName") ||
                     // WEBSITE_SITE_NAME must be non-empty: the Logic Apps runtime derives the
                     // Azurite table hash from it and only writes FLOWLOOKUP entries when set.
-                    key == "WEBSITE_SITE_NAME"
-                ));
+                    key == "WEBSITE_SITE_NAME"));
                 if is_missing {
                     blank.push(key.clone());
                 }
@@ -90,10 +87,13 @@ pub fn check_setup(dir: &str) -> SetupStatus {
         let conn_text = fs::read_to_string(conn_path).unwrap_or_default();
         let conn_json: serde_json::Value = serde_json::from_str(&conn_text).unwrap_or_default();
         let mut missing_keys = Vec::new();
-        
+
         // Scan for both @appsetting('key') and @{appsetting('key')} forms
         let conn_str = conn_json.to_string();
-        for cap in regex::Regex::new(r"@\{?appsetting\('([^']+)'\)\}?").unwrap().captures_iter(&conn_str) {
+        for cap in regex::Regex::new(r"@\{?appsetting\('([^']+)'\)\}?")
+            .unwrap()
+            .captures_iter(&conn_str)
+        {
             let key = &cap[1];
             if let Some(v) = vals {
                 if !v.contains_key(key) && !missing_keys.contains(&key.to_string()) {
@@ -103,13 +103,19 @@ pub fn check_setup(dir: &str) -> SetupStatus {
                 missing_keys.push(key.to_string());
             }
         }
-        
+
         if !missing_keys.is_empty() || !blank.is_empty() {
             missing_keys.sort();
-            return SetupStatus::NeedsConfiguration { blank, absent: missing_keys };
+            return SetupStatus::NeedsConfiguration {
+                blank,
+                absent: missing_keys,
+            };
         }
     } else if !blank.is_empty() {
-        return SetupStatus::NeedsConfiguration { blank, absent: Vec::new() };
+        return SetupStatus::NeedsConfiguration {
+            blank,
+            absent: Vec::new(),
+        };
     }
 
     SetupStatus::Ready
@@ -134,7 +140,10 @@ pub fn fix_remote_storage(dir: &str) -> Result<(), String> {
     let text = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
     let mut json: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     if let Some(vals) = json.get_mut("Values").and_then(|v| v.as_object_mut()) {
-        vals.insert("AzureWebJobsStorage".into(), serde_json::json!("UseDevelopmentStorage=true"));
+        vals.insert(
+            "AzureWebJobsStorage".into(),
+            serde_json::json!("UseDevelopmentStorage=true"),
+        );
     }
     let out = serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?;
     fs::write(&settings_path, out).map_err(|e| e.to_string())?;
@@ -198,7 +207,7 @@ pub fn initialize_default(dir: &str) -> Result<(), String> {
     if conn_path.exists() {
         if let Ok(raw) = fs::read_to_string(&conn_path) {
             let syntax_fixed = fix_connections_json(&raw);
-            let fully_fixed  = patch_connections_for_local(&syntax_fixed);
+            let fully_fixed = patch_connections_for_local(&syntax_fixed);
             if fully_fixed != raw {
                 fs::write(&conn_path, &fully_fixed).map_err(|e| e.to_string())?;
             }
@@ -272,8 +281,10 @@ pub fn patch_connections_for_local(raw: &str) -> String {
                     "id": "/serviceProviders/sql"
                 }
             });
-        } else if is_msi && (provider_id.to_lowercase().contains("cosmos")
-            || provider_id.to_lowercase().contains("documentdb")) {
+        } else if is_msi
+            && (provider_id.to_lowercase().contains("cosmos")
+                || provider_id.to_lowercase().contains("documentdb"))
+        {
             // MSI against Cosmos can't work locally (no IMDS). Point at the
             // local Cosmos emulator via a per-connection connection-string key.
             let entry = svc.get_mut(&name).unwrap();
@@ -350,8 +361,16 @@ pub fn auto_detect_resources(
 
                 if let Some(sub_id) = subscription_id {
                     let key = "WORKFLOWS_SUBSCRIPTION_ID";
-                    if vals.get(key).and_then(|v| v.as_str()).unwrap_or("").is_empty() {
-                        vals.insert(key.to_string(), serde_json::Value::String(sub_id.to_string()));
+                    if vals
+                        .get(key)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .is_empty()
+                    {
+                        vals.insert(
+                            key.to_string(),
+                            serde_json::Value::String(sub_id.to_string()),
+                        );
                         messages.push(format!("✅ Set subscription: {}", sub_id));
                         changed = true;
                     }
@@ -359,8 +378,17 @@ pub fn auto_detect_resources(
 
                 {
                     let key = "WORKFLOWS_RESOURCE_GROUP_NAME";
-                    if vals.get(key).and_then(|v| v.as_str()).unwrap_or("").is_empty() && !resource_group.is_empty() {
-                        vals.insert(key.to_string(), serde_json::Value::String(resource_group.to_string()));
+                    if vals
+                        .get(key)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .is_empty()
+                        && !resource_group.is_empty()
+                    {
+                        vals.insert(
+                            key.to_string(),
+                            serde_json::Value::String(resource_group.to_string()),
+                        );
                         messages.push(format!("✅ Set resource group: {}", resource_group));
                         changed = true;
                     }
@@ -369,9 +397,18 @@ pub fn auto_detect_resources(
                 if let Some(name) = logic_app_name {
                     if !name.is_empty() {
                         let key = "WEBSITE_SITE_NAME";
-                        if vals.get(key).and_then(|v| v.as_str()).unwrap_or("").is_empty() {
-                            vals.insert(key.to_string(), serde_json::Value::String(name.to_string()));
-                            messages.push(format!("✅ Set site name (WEBSITE_SITE_NAME): {}", name));
+                        if vals
+                            .get(key)
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .is_empty()
+                        {
+                            vals.insert(
+                                key.to_string(),
+                                serde_json::Value::String(name.to_string()),
+                            );
+                            messages
+                                .push(format!("✅ Set site name (WEBSITE_SITE_NAME): {}", name));
                             changed = true;
                         }
                     }
@@ -388,19 +425,23 @@ pub fn auto_detect_resources(
     // 1. Service Bus
     match azure_cli::sb_list_namespaces() {
         Ok(list) => {
-            let matches: Vec<_> = list.iter()
+            let matches: Vec<_> = list
+                .iter()
                 .filter(|(_, _, rg)| rg.to_lowercase() == resource_group.to_lowercase())
                 .collect();
-            
+
             if matches.len() == 1 {
                 let fqdn = &matches[0].1;
                 if let Ok(text) = settings_file::read_local_settings(dir) {
                     if let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&text) {
                         if let Some(vals) = root["Values"].as_object_mut() {
                             // Find the key used in connections.json for SB
-                            let sb_key = "serviceBus_fullyQualifiedNamespace"; 
-                            vals.insert(sb_key.to_string(), serde_json::Value::String(fqdn.clone()));
-                            
+                            let sb_key = "serviceBus_fullyQualifiedNamespace";
+                            vals.insert(
+                                sb_key.to_string(),
+                                serde_json::Value::String(fqdn.clone()),
+                            );
+
                             let new_text = serde_json::to_string_pretty(&root).unwrap_or_default();
                             let _ = settings_file::write_local_settings(dir, &new_text);
                             messages.push(format!("✅ Auto-detected SB namespace: {}", fqdn));
@@ -408,14 +449,20 @@ pub fn auto_detect_resources(
                     }
                 }
             } else if matches.len() > 1 {
-                messages.push(format!("ℹ Found {} SB namespaces in RG — please pick one manually.", matches.len()));
+                messages.push(format!(
+                    "ℹ Found {} SB namespaces in RG — please pick one manually.",
+                    matches.len()
+                ));
             }
         }
-        Err(e) => { messages.push(format!("❌ Failed to list SB namespaces: {:?}", e)); }
+        Err(e) => {
+            messages.push(format!("❌ Failed to list SB namespaces: {:?}", e));
+        }
     }
 
     // Fix connections.json: syntax + MSI → connectionString for blob connections
-    let conn_path = crate::services::workflows::resolve_logic_apps_dir(dir).join("connections.json");
+    let conn_path =
+        crate::services::workflows::resolve_logic_apps_dir(dir).join("connections.json");
     if conn_path.exists() {
         if let Ok(raw) = std::fs::read_to_string(&conn_path) {
             let fixed = fix_connections_json(&raw);
@@ -424,7 +471,8 @@ pub fn auto_detect_resources(
                 let _ = std::fs::write(&conn_path, &fixed);
                 // Report what changed
                 let syntax_changed = fix_connections_json(&raw) != raw;
-                let msi_changed    = patch_connections_for_local(&fix_connections_json(&raw)) != fix_connections_json(&raw);
+                let msi_changed = patch_connections_for_local(&fix_connections_json(&raw))
+                    != fix_connections_json(&raw);
                 if syntax_changed {
                     messages.push("✅ Fixed connections.json: @{appsetting(...)} → @appsetting(...) (ARM-template syntax not supported locally)".into());
                 }
@@ -447,12 +495,12 @@ pub fn auto_detect_resources(
 pub fn stub_missing_keys(dir: &str, missing_keys: &[String]) -> Result<(), String> {
     // The existing settings are read so a SQL stub can pick up the database from
     // its sibling `*_databaseName` key rather than defaulting to `master`.
-    let settings: serde_json::Value =
-        crate::services::settings_file::read_local_settings(dir)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or(serde_json::Value::Null);
-    let stubs: HashMap<String, String> = missing_keys.iter()
+    let settings: serde_json::Value = crate::services::settings_file::read_local_settings(dir)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let stubs: HashMap<String, String> = missing_keys
+        .iter()
         .map(|k| (k.clone(), smart_default_for(k, &settings)))
         .collect();
     apply_settings(dir, stubs)
@@ -464,7 +512,8 @@ pub fn stub_missing_keys(dir: &str, missing_keys: &[String]) -> Result<(), Strin
 /// connection that then fails every table and stored-procedure lookup, and the
 /// project almost always names the real database in a sibling setting.
 pub fn smart_default_for(key: &str, settings: &serde_json::Value) -> String {
-    let is_sql_conn = key.to_uppercase().contains("SQL") && key.to_uppercase().contains("CONNECTION");
+    let is_sql_conn =
+        key.to_uppercase().contains("SQL") && key.to_uppercase().contains("CONNECTION");
     if is_sql_conn {
         if let Some(db) = crate::services::run_readiness::sibling_database(key, settings) {
             return local_sql_connection(&db);
@@ -641,7 +690,7 @@ pub fn smart_default(key: &str) -> String {
 pub fn apply_settings(dir: &str, updates: HashMap<String, String>) -> Result<(), String> {
     let text = settings_file::read_local_settings(dir)?;
     let mut root: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    
+
     if let Some(vals) = root["Values"].as_object_mut() {
         for (k, v) in updates {
             vals.insert(k, serde_json::Value::String(v));
@@ -669,7 +718,8 @@ mod tests {
         std::fs::write(
             tmp.path().join("local.settings.json"),
             serde_json::to_string_pretty(&root).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
         if let Some(c) = connections {
             std::fs::write(tmp.path().join("connections.json"), c).unwrap();
         }
@@ -678,16 +728,22 @@ mod tests {
 
     #[test]
     fn blank_settings_are_named_not_just_counted() {
-        let tmp = project(&[
-            ("WEBSITE_SITE_NAME", ""),
-            ("WORKFLOWS_SUBSCRIPTION_ID", ""),
-            ("FUNCTIONS_WORKER_RUNTIME", "node"),
-            ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
-        ], None);
+        let tmp = project(
+            &[
+                ("WEBSITE_SITE_NAME", ""),
+                ("WORKFLOWS_SUBSCRIPTION_ID", ""),
+                ("FUNCTIONS_WORKER_RUNTIME", "node"),
+                ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
+            ],
+            None,
+        );
 
         match check_setup(tmp.path().to_str().unwrap()) {
             SetupStatus::NeedsConfiguration { blank, absent } => {
-                assert_eq!(blank, vec!["WEBSITE_SITE_NAME", "WORKFLOWS_SUBSCRIPTION_ID"]);
+                assert_eq!(
+                    blank,
+                    vec!["WEBSITE_SITE_NAME", "WORKFLOWS_SUBSCRIPTION_ID"]
+                );
                 assert!(absent.is_empty());
             }
             other => panic!("expected NeedsConfiguration, got {:?}", other),
@@ -707,14 +763,17 @@ mod tests {
                 }
             }
         }"#;
-        let tmp = project(&[
-            ("WORKFLOWS_SUBSCRIPTION_ID", ""),
-            ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
-        ], Some(conns));
+        let tmp = project(
+            &[
+                ("WORKFLOWS_SUBSCRIPTION_ID", ""),
+                ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
+            ],
+            Some(conns),
+        );
 
         match check_setup(tmp.path().to_str().unwrap()) {
             SetupStatus::NeedsConfiguration { blank, absent } => {
-                assert_eq!(blank,  vec!["WORKFLOWS_SUBSCRIPTION_ID"]);
+                assert_eq!(blank, vec!["WORKFLOWS_SUBSCRIPTION_ID"]);
                 // Referenced by connections.json, no entry in Values at all.
                 assert_eq!(absent, vec!["Teams_connectionUrl"]);
             }
@@ -726,20 +785,29 @@ mod tests {
     fn a_fully_configured_project_is_ready() {
         let conns = r#"{ "managedApiConnections": { "teams": {
             "connectionRuntimeUrl": "@appsetting('Teams_connectionUrl')" } } }"#;
-        let tmp = project(&[
-            ("WEBSITE_SITE_NAME", "ais-tom"),
-            ("Teams_connectionUrl", "https://example.invalid/teams"),
-            ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
-        ], Some(conns));
-        assert!(matches!(check_setup(tmp.path().to_str().unwrap()), SetupStatus::Ready));
+        let tmp = project(
+            &[
+                ("WEBSITE_SITE_NAME", "ais-tom"),
+                ("Teams_connectionUrl", "https://example.invalid/teams"),
+                ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
+            ],
+            Some(conns),
+        );
+        assert!(matches!(
+            check_setup(tmp.path().to_str().unwrap()),
+            SetupStatus::Ready
+        ));
     }
 
     #[test]
     fn a_todo_placeholder_counts_as_blank_whatever_the_key_is_called() {
-        let tmp = project(&[
-            ("SomeRandomSetting", "TODO: fill me in"),
-            ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
-        ], None);
+        let tmp = project(
+            &[
+                ("SomeRandomSetting", "TODO: fill me in"),
+                ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
+            ],
+            None,
+        );
         match check_setup(tmp.path().to_str().unwrap()) {
             SetupStatus::NeedsConfiguration { blank, .. } => {
                 assert_eq!(blank, vec!["SomeRandomSetting"]);
@@ -752,11 +820,17 @@ mod tests {
     fn empty_values_only_count_for_keys_that_must_be_set() {
         // An empty setting whose name matches none of the patterns is a
         // deliberate blank, not a misconfiguration.
-        let tmp = project(&[
-            ("SomeOptionalFlag", ""),
-            ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
-        ], None);
-        assert!(matches!(check_setup(tmp.path().to_str().unwrap()), SetupStatus::Ready));
+        let tmp = project(
+            &[
+                ("SomeOptionalFlag", ""),
+                ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
+            ],
+            None,
+        );
+        assert!(matches!(
+            check_setup(tmp.path().to_str().unwrap()),
+            SetupStatus::Ready
+        ));
     }
 
     #[test]
@@ -764,7 +838,10 @@ mod tests {
         let three: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
         assert_eq!(summarize_keys(&three), "a, b, c");
 
-        let six: Vec<String> = ["a", "b", "c", "d", "e", "f"].iter().map(|s| s.to_string()).collect();
+        let six: Vec<String> = ["a", "b", "c", "d", "e", "f"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(summarize_keys(&six), "a, b, c, d, +2 more");
 
         assert_eq!(summarize_keys(&[]), "");
@@ -814,8 +891,14 @@ mod tests {
             ignite["parameterValues"]["connectionString"],
             "@appsetting('AzureWebJobsStorage')"
         );
-        assert!(ignite["parameterValues"]["authProvider"].is_null(), "authProvider should be removed");
-        assert!(ignite["parameterValues"]["blobStorageEndpoint"].is_null(), "blobStorageEndpoint should be removed");
+        assert!(
+            ignite["parameterValues"]["authProvider"].is_null(),
+            "authProvider should be removed"
+        );
+        assert!(
+            ignite["parameterValues"]["blobStorageEndpoint"].is_null(),
+            "blobStorageEndpoint should be removed"
+        );
 
         // KyribaBlob: also points at AzureWebJobsStorage (same key avoids ListenerFactoryContext clash)
         let kyriba = &v["serviceProviderConnections"]["KyribaBlob"];
@@ -838,8 +921,14 @@ mod tests {
             sb["parameterValues"]["connectionString"],
             "@appsetting('serviceBus_connectionString')"
         );
-        assert!(sb["parameterValues"]["fullyQualifiedNamespace"].is_null(), "fullyQualifiedNamespace should be removed");
-        assert!(sb["parameterValues"]["authProvider"].is_null(), "authProvider should be removed");
+        assert!(
+            sb["parameterValues"]["fullyQualifiedNamespace"].is_null(),
+            "fullyQualifiedNamespace should be removed"
+        );
+        assert!(
+            sb["parameterValues"]["authProvider"].is_null(),
+            "authProvider should be removed"
+        );
     }
 
     #[test]
@@ -858,7 +947,10 @@ mod tests {
         }"#;
         let patched = patch_connections_for_local(already_cs);
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
-        assert_eq!(v["serviceProviderConnections"]["IgniteBlob"]["parameterSetName"], "connectionString");
+        assert_eq!(
+            v["serviceProviderConnections"]["IgniteBlob"]["parameterSetName"],
+            "connectionString"
+        );
     }
 }
 
@@ -921,7 +1013,10 @@ mod sql_msi_local_tests {
         // than through connections.json, so they only surface via the
         // missing-settings scan — but "Auto-stub all" must still produce a
         // value that actually works locally, not a blank to fill in by hand.
-        assert_eq!(smart_default("AIS_Functions_BaseUrl"), "http://localhost:7072");
+        assert_eq!(
+            smart_default("AIS_Functions_BaseUrl"),
+            "http://localhost:7072"
+        );
         assert_eq!(smart_default("Functions_BaseUrl"), "http://localhost:7072");
         // Non-empty: a blank x-functions-key header is rejected by some hosts
         // even when the function itself is anonymous.

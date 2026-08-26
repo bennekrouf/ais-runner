@@ -50,9 +50,8 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
 
     // Cosmos endpoint/key come from the project's own connections rather than
     // from the Connectors panel, so this view works without opening that one.
-    let cosmos_connections: Signal<Vec<CosmosConnection>> = use_signal(|| {
-        cosmos_check::detect_cosmos_connections(&props.logic_apps_dir)
-    });
+    let cosmos_connections: Signal<Vec<CosmosConnection>> =
+        use_signal(|| cosmos_check::detect_cosmos_connections(&props.logic_apps_dir));
 
     let mut scenarios: Signal<Vec<Scenario>> = use_signal(Vec::new);
     let mut load_errors: Signal<Vec<String>> = use_signal(Vec::new);
@@ -61,11 +60,13 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
     let mut running: Signal<Option<String>> = use_signal(|| None);
     // Group names the user has collapsed. Not persisted — a fresh open of the
     // Tests view always starts with every group expanded.
-    let mut collapsed_groups: Signal<std::collections::HashSet<String>> = use_signal(std::collections::HashSet::new);
+    let mut collapsed_groups: Signal<std::collections::HashSet<String>> =
+        use_signal(std::collections::HashSet::new);
     // Scenario names the user has collapsed, keyed the same way as `results`.
     // Like the group set this is not persisted: reopening the Tests view starts
     // with everything expanded.
-    let mut collapsed_scenarios: Signal<std::collections::HashSet<String>> = use_signal(std::collections::HashSet::new);
+    let mut collapsed_scenarios: Signal<std::collections::HashSet<String>> =
+        use_signal(std::collections::HashSet::new);
 
     // Which scenario name is being typed into, for the record prompt and the
     // review screen's name field.
@@ -116,14 +117,30 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
         std::sync::Arc::new(move || {
             let dir = dir.clone();
             Box::pin(async move {
-                crate::handlers::func_start::handle_stop(func_state, func_proc, log_lines, dir.clone());
+                crate::handlers::func_start::handle_stop(
+                    func_state,
+                    func_proc,
+                    log_lines,
+                    dir.clone(),
+                );
                 crate::handlers::func_start::handle_start(
-                    azurite_state, func_state, func_proc, workflows_sig, traced_wfs, cleared_wfs,
-                    log_lines, dir,
+                    azurite_state,
+                    func_state,
+                    func_proc,
+                    workflows_sig,
+                    traced_wfs,
+                    cleared_wfs,
+                    log_lines,
+                    dir,
                 );
                 match crate::services::workflows::wait_for_workflows(120).await {
-                    Ok(list) => Ok(format!("func restarted — {} workflow(s) registered", list.len())),
-                    Err(e) => Err(format!("func restarted but its workflows never came back: {e}")),
+                    Ok(list) => Ok(format!(
+                        "func restarted — {} workflow(s) registered",
+                        list.len()
+                    )),
+                    Err(e) => Err(format!(
+                        "func restarted but its workflows never came back: {e}"
+                    )),
                 }
             }) as scenario::BoxFuture
         })
@@ -840,10 +857,18 @@ async fn run_many(
         status.set(Some((format!("{label} — {}/{total}: {key}", i + 1), false)));
 
         match run_one(
-            s, run_ctx.clone(), dir.clone(),
-            sb_emu_state, sb_emu_proc, log_lines, sb_emu_lines,
-            results, status,
-        ).await {
+            s,
+            run_ctx.clone(),
+            dir.clone(),
+            sb_emu_state,
+            sb_emu_proc,
+            log_lines,
+            sb_emu_lines,
+            results,
+            status,
+        )
+        .await
+        {
             Some(steps) if steps.iter().any(|r| r.status == StepStatus::Failed) => {
                 failed_names.push(key);
             }
@@ -856,10 +881,16 @@ async fn run_many(
 
     running.set(None);
     status.set(Some(if failed_names.is_empty() {
-        (format!("✅ {label}: {passed}/{total} scenario(s) passed"), false)
+        (
+            format!("✅ {label}: {passed}/{total} scenario(s) passed"),
+            false,
+        )
     } else {
         (
-            format!("❌ {label}: {passed}/{total} passed — failed: {}", failed_names.join(", ")),
+            format!(
+                "❌ {label}: {passed}/{total} passed — failed: {}",
+                failed_names.join(", ")
+            ),
             true,
         )
     }));
@@ -891,8 +922,20 @@ async fn run_one(
 
     let queues = scenario::queues_to_create(&scenario_item);
     if !queues.is_empty() {
-        status.set(Some((format!("Preparing {} queue(s)…", queues.len()), false)));
-        if let Err(e) = prepare_queues(queues, sb_emu_state, sb_emu_proc, log_lines, sb_emu_lines, dir).await {
+        status.set(Some((
+            format!("Preparing {} queue(s)…", queues.len()),
+            false,
+        )));
+        if let Err(e) = prepare_queues(
+            queues,
+            sb_emu_state,
+            sb_emu_proc,
+            log_lines,
+            sb_emu_lines,
+            dir,
+        )
+        .await
+        {
             status.set(Some((format!("❌ {key}: queue setup failed — {e}"), true)));
             return None;
         }
@@ -901,7 +944,11 @@ async fn run_one(
     let key_for_step = key.clone();
     Some(
         scenario::run(&scenario_item, &run_ctx, move |r| {
-            results.write().entry(key_for_step.clone()).or_default().push(r);
+            results
+                .write()
+                .entry(key_for_step.clone())
+                .or_default()
+                .push(r);
         })
         .await,
     )
@@ -958,7 +1005,10 @@ async fn prepare_queues(
 async fn wait_for_amqp(timeout_ms: u64) -> Result<(), String> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
     loop {
-        if tokio::net::TcpStream::connect("127.0.0.1:5672").await.is_ok() {
+        if tokio::net::TcpStream::connect("127.0.0.1:5672")
+            .await
+            .is_ok()
+        {
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
@@ -995,7 +1045,9 @@ fn parse_step(text: &str) -> Result<Step, String> {
 /// rows are worth a second look before saving.
 fn step_hint(step: &Step) -> &'static str {
     match step {
-        Step::Sleep { .. } => "guessed from the pause while recording — consider a wait or assertion",
+        Step::Sleep { .. } => {
+            "guessed from the pause while recording — consider a wait or assertion"
+        }
         Step::WaitForRun { .. } => "inserted after the trigger",
         Step::CreateQueue { .. } => "applied with one emulator restart before the run",
         _ => "",
@@ -1014,8 +1066,14 @@ fn summary_badge(steps: &[StepResult], is_running: bool) -> Element {
     if steps.is_empty() {
         return rsx! { span { class: "scenario-badge idle", "not run" } };
     }
-    let failed = steps.iter().filter(|s| s.status == StepStatus::Failed).count();
-    let skipped = steps.iter().filter(|s| s.status == StepStatus::Skipped).count();
+    let failed = steps
+        .iter()
+        .filter(|s| s.status == StepStatus::Failed)
+        .count();
+    let skipped = steps
+        .iter()
+        .filter(|s| s.status == StepStatus::Skipped)
+        .count();
     if failed == 0 && skipped == 0 {
         rsx! { span { class: "scenario-badge ok", "✅ passed" } }
     } else {
@@ -1158,13 +1216,17 @@ mod tests {
     }
 
     fn results(statuses: &[StepStatus]) -> Vec<StepResult> {
-        statuses.iter().enumerate().map(|(i, st)| StepResult {
-            index:      i,
-            label:      format!("step {i}"),
-            detail:     String::new(),
-            status:     *st,
-            elapsed_ms: 0,
-        }).collect()
+        statuses
+            .iter()
+            .enumerate()
+            .map(|(i, st)| StepResult {
+                index: i,
+                label: format!("step {i}"),
+                detail: String::new(),
+                status: *st,
+                elapsed_ms: 0,
+            })
+            .collect()
     }
 
     #[test]
@@ -1175,7 +1237,10 @@ mod tests {
 
     #[test]
     fn passes_and_skips_alone_are_not_a_failure() {
-        assert!(!has_failure(&results(&[StepStatus::Ok, StepStatus::Skipped])));
+        assert!(!has_failure(&results(&[
+            StepStatus::Ok,
+            StepStatus::Skipped
+        ])));
     }
 
     #[test]

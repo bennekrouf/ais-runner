@@ -1,15 +1,16 @@
+use dioxus::prelude::*;
 use std::path::PathBuf;
 use std::sync::Arc;
-use dioxus::prelude::*;
 
 use crate::components::log_panel::{LogLevel, LogLine};
-use crate::services::{process::{ManagedProcess, ServiceState}, runtime_manager};
+use crate::services::{
+    process::{ManagedProcess, ServiceState},
+    runtime_manager,
+};
 use crate::utils::make_push;
 
-pub const SB_EMULATOR_IMAGE: &str =
-    "mcr.microsoft.com/azure-messaging/servicebus-emulator:latest";
-const SQL_EDGE_IMAGE: &str =
-    "mcr.microsoft.com/azure-sql-edge:latest";
+pub const SB_EMULATOR_IMAGE: &str = "mcr.microsoft.com/azure-messaging/servicebus-emulator:latest";
+const SQL_EDGE_IMAGE: &str = "mcr.microsoft.com/azure-sql-edge:latest";
 
 pub const SB_EMULATOR_PORT: u16 = 5672;
 const MSSQL_PASSWORD: &str = "AisRunner_Emulator1!";
@@ -109,20 +110,15 @@ fn classify_emu_line(raw: &str) -> Option<String> {
         && (raw.contains("did not complete within the allotted timeout")
             || raw.contains("com.microsoft:timeout"))
     {
-        let queue = extract_queue_from_source(raw)
-            .unwrap_or_else(|| "(unknown queue)".to_string());
+        let queue = extract_queue_from_source(raw).unwrap_or_else(|| "(unknown queue)".to_string());
         return Some(format!(
             "ℹ {queue}: idle — waiting for session-tagged message (normal)"
         ));
     }
 
     // ── TenantCache benign warning at emulator boot ────────────────────
-    if raw.contains("TenantCache")
-        && raw.contains("PlatformNotSupportedException")
-    {
-        return Some(
-            "ℹ TenantCache refresh skipped on this platform (harmless)".into()
-        );
+    if raw.contains("TenantCache") && raw.contains("PlatformNotSupportedException") {
+        return Some("ℹ TenantCache refresh skipped on this platform (harmless)".into());
     }
 
     // Anything else passes through unchanged.
@@ -135,8 +131,8 @@ fn classify_emu_line(raw: &str) -> Option<String> {
 /// matches Config.json queue names.
 fn extract_queue_from_source(raw: &str) -> Option<String> {
     let start = raw.find("source(address:/")?;
-    let rest  = &raw[start + "source(address:/".len()..];
-    let end   = rest.find(',').or_else(|| rest.find(')'))?;
+    let rest = &raw[start + "source(address:/".len()..];
+    let end = rest.find(',').or_else(|| rest.find(')'))?;
     Some(rest[..end].to_string())
 }
 
@@ -146,17 +142,21 @@ fn extract_queue_from_source(raw: &str) -> Option<String> {
 /// `feed()` which returns Vec<String> — possibly empty, possibly one, very
 /// rarely two (the flushed previous + the new distinct one).
 struct EmuLineDeduper {
-    last:        Option<String>,
-    repeat:      u32,
+    last: Option<String>,
+    repeat: u32,
     /// Index of the last entry we wrote to `emu_lines`, so we can rewrite
     /// it in place when a duplicate arrives instead of appending another
     /// `(×N)` line. -1 sentinel = no current entry.
-    last_idx:    isize,
+    last_idx: isize,
 }
 
 impl EmuLineDeduper {
     fn new() -> Self {
-        Self { last: None, repeat: 0, last_idx: -1 }
+        Self {
+            last: None,
+            repeat: 0,
+            last_idx: -1,
+        }
     }
 
     /// Decide what to do with a fresh line. Returns one of:
@@ -173,15 +173,12 @@ impl EmuLineDeduper {
         if self.last.as_deref() == Some(visible.as_str()) && self.last_idx >= 0 {
             self.repeat += 1;
             let count = self.repeat + 1;
-            return DedupAction::Rewrite(
-                self.last_idx as usize,
-                format!("{visible}  (×{count})"),
-            );
+            return DedupAction::Rewrite(self.last_idx as usize, format!("{visible}  (×{count})"));
         }
 
         // Different line — reset state and append.
-        self.last     = Some(visible.clone());
-        self.repeat   = 0;
+        self.last = Some(visible.clone());
+        self.repeat = 0;
         self.last_idx = current_len as isize;
         DedupAction::Append(visible)
     }
@@ -199,14 +196,20 @@ enum DedupAction {
 /// underscores, hyphens, periods, or slashes.
 pub fn is_valid_sb_queue_name(name: &str) -> bool {
     let bytes = name.as_bytes();
-    if bytes.is_empty() { return false; }
+    if bytes.is_empty() {
+        return false;
+    }
     let is_alnum = |b: u8| b.is_ascii_alphanumeric();
-    let is_interior = |b: u8| {
-        b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'/')
-    };
-    if !is_alnum(bytes[0]) { return false; }
-    if !is_alnum(bytes[bytes.len() - 1]) { return false; }
-    bytes[1..bytes.len().saturating_sub(1)].iter().all(|&b| is_interior(b))
+    let is_interior = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'/');
+    if !is_alnum(bytes[0]) {
+        return false;
+    }
+    if !is_alnum(bytes[bytes.len() - 1]) {
+        return false;
+    }
+    bytes[1..bytes.len().saturating_sub(1)]
+        .iter()
+        .all(|&b| is_interior(b))
 }
 
 /// Docker Compose expects forward-slash paths even on Windows.
@@ -275,13 +278,12 @@ networks:
   sbnet:
 "#,
         sql_img = SQL_EDGE_IMAGE,
-        sb_img  = SB_EMULATOR_IMAGE,
-        pw      = MSSQL_PASSWORD,
+        sb_img = SB_EMULATOR_IMAGE,
+        pw = MSSQL_PASSWORD,
         config_dir = config_dir_docker,
-        port    = SB_EMULATOR_PORT,
+        port = SB_EMULATOR_PORT,
     );
-    std::fs::write(dir.join("docker-compose.yml"), compose)
-        .map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("docker-compose.yml"), compose).map_err(|e| e.to_string())?;
 
     // ── config.json ──────────────────────────────────────────────────────
     // Merge: start from workflow-detected queues, then preserve any extra queues
@@ -299,7 +301,9 @@ networks:
             // Detect and auto-fix known bad Config.json patterns.
             // Rather than failing, delete the file so it gets regenerated correctly below.
             let bad_namespace = v["UserConfig"]["Namespaces"][0]["Name"]
-                .as_str().map(|n| n != "sbemulatorns").unwrap_or(false);
+                .as_str()
+                .map(|n| n != "sbemulatorns")
+                .unwrap_or(false);
             let bad_logging = v["UserConfig"]["LoggingConfig"].is_object()
                 && !v["UserConfig"]["Logging"].is_object();
             if bad_namespace || bad_logging {
@@ -317,7 +321,9 @@ networks:
                         }
                         if !effective_queues.iter().any(|(n, _)| n == name) {
                             // Preserve existing session setting from config.json
-                            let session = q["Properties"]["RequiresSession"].as_bool().unwrap_or(false);
+                            let session = q["Properties"]["RequiresSession"]
+                                .as_bool()
+                                .unwrap_or(false);
                             effective_queues.push((name.to_string(), session));
                         }
                     }
@@ -352,8 +358,11 @@ networks:
     // (function host JIT + child-workflow warmup + SQL roundtrips), producing
     // confusing MessageLockLost errors at the default PT1M. Real production
     // queues should tune this per workflow; PT5M is a safe local default.
-    let queue_entries: String = effective_queues.iter().map(|(q, session)| format!(
-        r#"          {{
+    let queue_entries: String = effective_queues
+        .iter()
+        .map(|(q, session)| {
+            format!(
+                r#"          {{
             "Name": "{q}",
             "Properties": {{
               "DeadLetteringOnMessageExpiration": false,
@@ -364,9 +373,12 @@ networks:
               "RequiresSession": {session}
             }}
           }}"#,
-        q = q,
-        session = session
-    )).collect::<Vec<_>>().join(",\n");
+                q = q,
+                session = session
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
 
     // Deliberately no "Topics" key — an empty array crashes the emulator's C#
     // model with NullReferenceException on startup just as reliably as a
@@ -390,8 +402,7 @@ networks:
         queues = queue_entries,
     );
     // Use capital-C filename to match the emulator's expected path inside the container.
-    std::fs::write(dir.join("Config.json"), config)
-        .map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("Config.json"), config).map_err(|e| e.to_string())?;
 
     Ok((dir, dropped_queues))
 }
@@ -428,17 +439,20 @@ pub fn add_queue_to_emulator_config(queue_name: &str) -> Result<bool, String> {
         ));
     }
     let path = work_dir().join("Config.json");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Could not read config.json: {}", e))?;
-    let mut root: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| format!("Could not parse config.json: {}", e))?;
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("Could not read config.json: {}", e))?;
+    let mut root: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("Could not parse config.json: {}", e))?;
 
     let queues = root["UserConfig"]["Namespaces"][0]["Queues"]
         .as_array_mut()
         .ok_or("Unexpected config.json shape")?;
 
     // Idempotent — don't add duplicates
-    if queues.iter().any(|q| q["Name"].as_str() == Some(queue_name)) {
+    if queues
+        .iter()
+        .any(|q| q["Name"].as_str() == Some(queue_name))
+    {
         return Ok(false);
     }
 
@@ -454,10 +468,8 @@ pub fn add_queue_to_emulator_config(queue_name: &str) -> Result<bool, String> {
         }
     }));
 
-    let new_text = serde_json::to_string_pretty(&root)
-        .map_err(|e| e.to_string())?;
-    std::fs::write(&path, new_text)
-        .map_err(|e| format!("Could not write config.json: {}", e))?;
+    let new_text = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
+    std::fs::write(&path, new_text).map_err(|e| format!("Could not write config.json: {}", e))?;
 
     Ok(true)
 }
@@ -482,26 +494,24 @@ fn patch_local_settings_conn_str(logic_apps_dir: &str) -> Result<bool, String> {
         .unwrap_or_else(|| "serviceBus_connectionString".to_string());
 
     // Read current value (may be empty for the fallback key).
-    let text = settings_file::read_local_settings(logic_apps_dir)
-        .map_err(|e| e.to_string())?;
-    let root_check: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| e.to_string())?;
-    let current = root_check["Values"][&key].as_str().unwrap_or("").to_string();
+    let text = settings_file::read_local_settings(logic_apps_dir).map_err(|e| e.to_string())?;
+    let root_check: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let current = root_check["Values"][&key]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
 
     // Already pointing at the emulator — nothing to do.
     if current.contains("UseDevelopmentEmulator=true") {
         return Ok(false);
     }
 
-    let mut root: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| e.to_string())?;
+    let mut root: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
 
     root["Values"][&key] = serde_json::Value::String(EMULATOR_CONN_STR.to_string());
 
-    let new_text = serde_json::to_string_pretty(&root)
-        .map_err(|e| e.to_string())?;
-    settings_file::write_local_settings(logic_apps_dir, &new_text)
-        .map_err(|e| e.to_string())?;
+    let new_text = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
+    settings_file::write_local_settings(logic_apps_dir, &new_text).map_err(|e| e.to_string())?;
 
     Ok(true)
 }
@@ -509,9 +519,9 @@ fn patch_local_settings_conn_str(logic_apps_dir: &str) -> Result<bool, String> {
 // ── handlers ─────────────────────────────────────────────────────────────────
 
 pub fn handle_start(
-    mut state:     Signal<ServiceState>,
-    proc:          Signal<Arc<ManagedProcess>>,
-    log_lines:     Signal<Vec<LogLine>>,
+    mut state: Signal<ServiceState>,
+    proc: Signal<Arc<ManagedProcess>>,
+    log_lines: Signal<Vec<LogLine>>,
     mut emu_lines: Signal<Vec<String>>,
     logic_apps_dir: String,
 ) {
@@ -530,16 +540,15 @@ pub fn handle_start(
     let mut queues: Vec<(String, bool)> = Vec::new();
     for q in queue_infos {
         let name = q.queue.trim().to_string();
-        if name.is_empty()
-            || name.contains('@')
-            || name.contains('?')
-            || name.contains('[')
-        {
+        if name.is_empty() || name.contains('@') || name.contains('?') || name.contains('[') {
             continue;
         }
         if !is_valid_sb_queue_name(&name) {
             push(
-                format!("⚠ Skipping invalid queue name '{}' (does not match SB naming rules)", name),
+                format!(
+                    "⚠ Skipping invalid queue name '{}' (does not match SB naming rules)",
+                    name
+                ),
                 LogLevel::Warn,
             );
             continue;
@@ -550,10 +559,13 @@ pub fn handle_start(
     }
 
     let (dir, dropped_queues) = match write_compose_files(&queues) {
-        Ok(d)  => d,
+        Ok(d) => d,
         Err(e) => {
             state.set(ServiceState::Stopped);
-            push(format!("❌ Could not write compose files: {}", e), LogLevel::Error);
+            push(
+                format!("❌ Could not write compose files: {}", e),
+                LogLevel::Error,
+            );
             return;
         }
     };
@@ -573,15 +585,28 @@ pub fn handle_start(
     // write_compose_files silently deletes a bad Config.json (wrong namespace name
     // or wrong logging key) and regenerates it correctly. Inform the user.
     push(
-        format!("✅ Config.json written to {} (namespace: sbemulatorns, logging: Console)", dir.display()),
+        format!(
+            "✅ Config.json written to {} (namespace: sbemulatorns, logging: Console)",
+            dir.display()
+        ),
         LogLevel::Info,
     );
 
     if !queues.is_empty() {
-        let queue_names: Vec<String> = queues.iter().map(|(n, s)| {
-            if *s { format!("{} (session)", n) } else { n.clone() }
-        }).collect();
-        push(format!("Pre-creating queues: {}", queue_names.join(", ")), LogLevel::Info);
+        let queue_names: Vec<String> = queues
+            .iter()
+            .map(|(n, s)| {
+                if *s {
+                    format!("{} (session)", n)
+                } else {
+                    n.clone()
+                }
+            })
+            .collect();
+        push(
+            format!("Pre-creating queues: {}", queue_names.join(", ")),
+            LogLevel::Info,
+        );
     }
 
     let compose_file = dir.join("docker-compose.yml");
@@ -604,23 +629,47 @@ pub fn handle_start(
     // `docker_compose_cmd` wrapper as the other call sites for Windows-safe
     // invocation through `cmd /c`.
     let _ = docker_compose_cmd(&[
-        "-f", &compose_file_str,
-        "down", "--volumes", "--remove-orphans", "--timeout", "10",
-    ]).output();
+        "-f",
+        &compose_file_str,
+        "down",
+        "--volumes",
+        "--remove-orphans",
+        "--timeout",
+        "10",
+    ])
+    .output();
 
-    push(format!("$ docker compose -f {} up", compose_file_str), LogLevel::Info);
+    push(
+        format!("$ docker compose -f {} up", compose_file_str),
+        LogLevel::Info,
+    );
 
     // Build the ManagedProcess start args through docker_compose_cmd so the
     // platform-specific wrapping is handled, but we need a raw binary + args
     // for ManagedProcess::start.  Extract them from the Command.
     let docker = runtime_manager::resolve_tool("docker");
     let up_args: Vec<String> = if cfg!(target_os = "windows") {
-        vec!["/c".into(), docker.clone(), "compose".into(),
-             "-f".into(), compose_file_str.clone(), "up".into()]
+        vec![
+            "/c".into(),
+            docker.clone(),
+            "compose".into(),
+            "-f".into(),
+            compose_file_str.clone(),
+            "up".into(),
+        ]
     } else {
-        vec!["compose".into(), "-f".into(), compose_file_str.clone(), "up".into()]
+        vec![
+            "compose".into(),
+            "-f".into(),
+            compose_file_str.clone(),
+            "up".into(),
+        ]
     };
-    let bin = if cfg!(target_os = "windows") { "cmd".to_string() } else { docker };
+    let bin = if cfg!(target_os = "windows") {
+        "cmd".to_string()
+    } else {
+        docker
+    };
     let up_args_ref: Vec<&str> = up_args.iter().map(|s| s.as_str()).collect();
 
     // Raised by the log-stream task the moment the emulator reports a missing
@@ -640,13 +689,15 @@ pub fn handle_start(
             // alarming `WRN`/`ERR` traces every 30 s for queues that are
             // simply waiting for traffic.
             let mount_failed_w = Arc::clone(&mount_failed);
-            let mut push_mount  = make_push(log_lines);
-            let mount_dir       = dir.display().to_string();
+            let mut push_mount = make_push(log_lines);
+            let mount_dir = dir.display().to_string();
             spawn(async move {
                 let mut dedup = EmuLineDeduper::new();
                 while let Some((line, _)) = rx.recv().await {
                     let line = line.trim().to_string();
-                    if line.is_empty() { continue; }
+                    if line.is_empty() {
+                        continue;
+                    }
                     // Surface the empty-mount crash on the main log too — the
                     // Service Bus tab shows a .NET stack trace that says nothing
                     // about file sharing. Once per start.
@@ -671,13 +722,17 @@ pub fn handle_start(
                         DedupAction::Append(s) => {
                             w.push(s);
                             let len = w.len();
-                            if len > 2000 { w.drain(..len - 2000); }
+                            if len > 2000 {
+                                w.drain(..len - 2000);
+                            }
                         }
                         DedupAction::Rewrite(idx, s) => {
                             // The drain above can shift indices; only rewrite
                             // when the slot is still in range and matches our
                             // expectation.
-                            if idx < w.len() { w[idx] = s; }
+                            if idx < w.len() {
+                                w[idx] = s;
+                            }
                         }
                     }
                 }
@@ -688,20 +743,25 @@ pub fn handle_start(
             // 10 retries × 10s), then the emulator itself needs ~30 s on top.
             // Allow 4 minutes total.
             let mut state2 = state;
-            let mut push2  = make_push(log_lines);
+            let mut push2 = make_push(log_lines);
             let logic_apps_dir = logic_apps_dir.clone();
             let mount_failed_r = Arc::clone(&mount_failed);
             spawn(async move {
                 // Phase 1: wait for the port to open (SQL Edge + emulator start)
                 let mut port_open = false;
-                for _ in 0..480 {    // 480 × 500 ms = 4 minutes
+                for _ in 0..480 {
+                    // 480 × 500 ms = 4 minutes
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     if mount_failed_r.load(std::sync::atomic::Ordering::SeqCst) {
-                        break;   // config never reached the container; it will not bind
+                        break; // config never reached the container; it will not bind
                     }
-                    if tokio::net::TcpStream::connect(
-                        std::net::SocketAddr::from(([127, 0, 0, 1], SB_EMULATOR_PORT))
-                    ).await.is_ok() {
+                    if tokio::net::TcpStream::connect(std::net::SocketAddr::from((
+                        [127, 0, 0, 1],
+                        SB_EMULATOR_PORT,
+                    )))
+                    .await
+                    .is_ok()
+                    {
                         port_open = true;
                         break;
                     }
@@ -711,7 +771,10 @@ pub fn handle_start(
                 // port appears. Retry for up to 60 s before declaring failure.
                 let mut up = false;
                 if port_open {
-                    push2("⏳ Port open — waiting for AMQP broker…".into(), LogLevel::Info);
+                    push2(
+                        "⏳ Port open — waiting for AMQP broker…".into(),
+                        LogLevel::Info,
+                    );
                     for _ in 0..60 {
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                         if crate::services::sb_amqp::probe_amqp("localhost").await {
@@ -723,7 +786,10 @@ pub fn handle_start(
                 if up {
                     state2.set(ServiceState::Running);
                     push2(
-                        format!("Service Bus emulator ready — AMQP :{} (see Service Bus tab for logs)", SB_EMULATOR_PORT),
+                        format!(
+                            "Service Bus emulator ready — AMQP :{} (see Service Bus tab for logs)",
+                            SB_EMULATOR_PORT
+                        ),
                         LogLevel::Ok,
                     );
 
@@ -731,9 +797,10 @@ pub fn handle_start(
                     // Only writes if the key is currently empty or a real Azure endpoint —
                     // never overwrites another emulator value that's already set.
                     let dir2 = logic_apps_dir.clone();
-                    let patched = tokio::task::spawn_blocking(move || {
-                        patch_local_settings_conn_str(&dir2)
-                    }).await.unwrap_or(Ok(false));
+                    let patched =
+                        tokio::task::spawn_blocking(move || patch_local_settings_conn_str(&dir2))
+                            .await
+                            .unwrap_or(Ok(false));
 
                     match patched {
                         Ok(true)  => push2(
@@ -755,7 +822,8 @@ pub fn handle_start(
                 } else {
                     state2.set(ServiceState::Stopped);
                     push2(
-                        "⚠ SB emulator didn't bind in 4 min — see Service Bus tab for errors.".into(),
+                        "⚠ SB emulator didn't bind in 4 min — see Service Bus tab for errors."
+                            .into(),
                         LogLevel::Error,
                     );
                 }
@@ -764,7 +832,10 @@ pub fn handle_start(
         Err(e) => {
             state.set(ServiceState::Stopped);
             push(
-                format!("Service Bus emulator error: {} — is Docker installed and running?", e),
+                format!(
+                    "Service Bus emulator error: {} — is Docker installed and running?",
+                    e
+                ),
                 LogLevel::Error,
             );
         }
@@ -773,7 +844,7 @@ pub fn handle_start(
 
 pub fn handle_stop(
     mut state: Signal<ServiceState>,
-    proc:      Signal<Arc<ManagedProcess>>,
+    proc: Signal<Arc<ManagedProcess>>,
     log_lines: Signal<Vec<LogLine>>,
 ) {
     let mut push = make_push(log_lines);
@@ -784,11 +855,14 @@ pub fn handle_stop(
         let _ = docker_compose_cmd(&["-f", &compose_file_str, "down"]).output();
     }
     match proc.read().stop() {
-        Ok(_)  => {
+        Ok(_) => {
             state.set(ServiceState::Stopped);
             push("Service Bus emulator stopped.".into(), LogLevel::Warn);
         }
-        Err(e) => push(format!("Error stopping SB emulator: {}", e), LogLevel::Error),
+        Err(e) => push(
+            format!("Error stopping SB emulator: {}", e),
+            LogLevel::Error,
+        ),
     }
 }
 
@@ -799,14 +873,17 @@ pub fn handle_stop(
 ///   • "NullReferenceException" / "Out of memory" on startup
 ///   • AMQP broker stuck in a bad state after a crash
 pub fn handle_reset(
-    state:         Signal<ServiceState>,
-    proc:          Signal<Arc<ManagedProcess>>,
-    log_lines:     Signal<Vec<LogLine>>,
-    emu_lines:     Signal<Vec<String>>,
+    state: Signal<ServiceState>,
+    proc: Signal<Arc<ManagedProcess>>,
+    log_lines: Signal<Vec<LogLine>>,
+    emu_lines: Signal<Vec<String>>,
     logic_apps_dir: String,
 ) {
     let mut push = make_push(log_lines);
-    push("⟳ Resetting SB Emulator — stopping containers and wiping state…".into(), LogLevel::Warn);
+    push(
+        "⟳ Resetting SB Emulator — stopping containers and wiping state…".into(),
+        LogLevel::Warn,
+    );
 
     // Stop running containers + network
     let compose_file = work_dir().join("docker-compose.yml");
@@ -824,15 +901,24 @@ pub fn handle_reset(
         let cfg = work_dir().join("Config.json");
         if cfg.exists() {
             match std::fs::remove_file(&cfg) {
-                Ok(_)  => push2("🗑 Config.json removed — will be regenerated with correct settings.".into(), LogLevel::Ok),
-                Err(e) => push2(format!("⚠ Could not remove Config.json: {}", e), LogLevel::Warn),
+                Ok(_) => push2(
+                    "🗑 Config.json removed — will be regenerated with correct settings.".into(),
+                    LogLevel::Ok,
+                ),
+                Err(e) => push2(
+                    format!("⚠ Could not remove Config.json: {}", e),
+                    LogLevel::Warn,
+                ),
             }
         }
 
         // Wait briefly for Docker to release ports
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-        push2("✅ Reset complete — restarting SB Emulator…".into(), LogLevel::Ok);
+        push2(
+            "✅ Reset complete — restarting SB Emulator…".into(),
+            LogLevel::Ok,
+        );
         handle_start(state, proc, log_lines, emu_lines, logic_apps_dir);
     });
 }
@@ -849,8 +935,14 @@ mod tests {
     #[test]
     fn idle_session_warning_is_rewritten_with_queue_name() {
         let out = classify_emu_line(IDLE_WRN).unwrap();
-        assert!(out.contains("ais.teams.notif"), "rewrite should mention the queue, got: {out}");
-        assert!(out.contains("idle"), "rewrite should signal idle state, got: {out}");
+        assert!(
+            out.contains("ais.teams.notif"),
+            "rewrite should mention the queue, got: {out}"
+        );
+        assert!(
+            out.contains("idle"),
+            "rewrite should signal idle state, got: {out}"
+        );
         // The rewrite must not preserve the original alarming `WRN`/stack-trace text.
         assert!(!out.contains("ERR"));
         assert!(!out.contains("Stack Trace"));
@@ -868,7 +960,10 @@ mod tests {
     #[test]
     fn tenant_cache_platform_exception_is_demoted() {
         let out = classify_emu_line(TENANT_WRN).unwrap();
-        assert!(out.contains("harmless"), "rewrite should mark it harmless, got: {out}");
+        assert!(
+            out.contains("harmless"),
+            "rewrite should mark it harmless, got: {out}"
+        );
         assert!(!out.contains("PlatformNotSupportedException"));
     }
 
@@ -908,7 +1003,7 @@ mod tests {
         let mut d = EmuLineDeduper::new();
         let _ = d.feed(IDLE_WRN, 0);
         let _ = d.feed(IDLE_WRN, 1); // ×2
-        // A distinct line → append, not rewrite.
+                                     // A distinct line → append, not rewrite.
         match d.feed(REAL_ERR, 1) {
             DedupAction::Append(s) => assert_eq!(s, REAL_ERR),
             _ => panic!("distinct line should append"),
@@ -941,14 +1036,16 @@ mod tests {
         assert!(!is_missing_config_crash(REAL_ERR));
         assert!(!is_missing_config_crash(IDLE_ERR));
         // A line that merely names the config file isn't the crash either.
-        assert!(!is_missing_config_crash("Loaded ConfigFiles/Config.json (3 queues)"));
+        assert!(!is_missing_config_crash(
+            "Loaded ConfigFiles/Config.json (3 queues)"
+        ));
     }
 
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn work_dir_is_under_home_so_every_docker_backend_can_mount_it() {
         let home = dirs::home_dir().expect("HOME must be set in the test env");
-        let dir  = work_dir();
+        let dir = work_dir();
         assert!(
             dir.starts_with(&home),
             "work dir must live under $HOME (Colima/Lima share only that), got {}",

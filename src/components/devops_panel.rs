@@ -1,32 +1,37 @@
-use std::collections::HashMap;
-use dioxus::prelude::*;
 use crate::services::{
+    azure_cli::AzError,
     config,
     devops_cli::{self, EnvInfo, Pipeline, PipelineRun, ReleaseArtifact},
-    azure_cli::AzError,
 };
+use dioxus::prelude::*;
+use std::collections::HashMap;
 
 fn run_icon(run: &PipelineRun) -> &'static str {
     match run.state.as_str() {
         "inProgress" | "canceling" => "⏳",
         "completed" => match run.result.as_deref() {
-            Some("succeeded")          => "✅",
+            Some("succeeded") => "✅",
             Some("partiallySucceeded") => "⚠️",
-            Some("canceled")           => "🚫",
-            _                          => "❌",
+            Some("canceled") => "🚫",
+            _ => "❌",
         },
         _ => "⬜",
     }
 }
 
 fn short_date(s: &str) -> String {
-    s.get(..16).map(|s| s.replace('T', " ")).unwrap_or_else(|| s.to_string())
+    s.get(..16)
+        .map(|s| s.replace('T', " "))
+        .unwrap_or_else(|| s.to_string())
 }
 
 fn fmt_error(e: &AzError) -> String {
     match e {
-        AzError::NotLoggedIn => "Azure session expired — click ⟳ in the header to re-authenticate, then Load again.".into(),
-        AzError::Other(msg)  => format!("Error: {}", msg),
+        AzError::NotLoggedIn => {
+            "Azure session expired — click ⟳ in the header to re-authenticate, then Load again."
+                .into()
+        }
+        AzError::Other(msg) => format!("Error: {}", msg),
     }
 }
 
@@ -39,40 +44,43 @@ pub struct DevOpsPanelProps {
 pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
     let dir = props.logic_apps_dir.clone();
 
-    let cfg        = config::load();
-    let link       = cfg.get_link(&dir);
-    let saved_org  = link.and_then(|l| l.devops_org.clone()).unwrap_or_default();
-    let saved_proj = link.and_then(|l| l.devops_project.clone()).unwrap_or_default();
+    let cfg = config::load();
+    let link = cfg.get_link(&dir);
+    let saved_org = link.and_then(|l| l.devops_org.clone()).unwrap_or_default();
+    let saved_proj = link
+        .and_then(|l| l.devops_project.clone())
+        .unwrap_or_default();
 
-    let mut org     = use_signal(|| saved_org);
+    let mut org = use_signal(|| saved_org);
     let mut project = use_signal(|| saved_proj);
-    let mut status  = use_signal(|| String::new());
-    let mut is_err  = use_signal(|| false);
+    let mut status = use_signal(|| String::new());
+    let mut is_err = use_signal(|| false);
 
     // ── pipeline list ─────────────────────────────────────────────────────
-    let mut pipelines:    Signal<Vec<Pipeline>>    = use_signal(Vec::new);
-    let mut sel_pipeline: Signal<Option<u64>>      = use_signal(|| None);
-    let mut loading_pipes: Signal<bool>            = use_signal(|| false);
+    let mut pipelines: Signal<Vec<Pipeline>> = use_signal(Vec::new);
+    let mut sel_pipeline: Signal<Option<u64>> = use_signal(|| None);
+    let mut loading_pipes: Signal<bool> = use_signal(|| false);
 
     // ── runs + linked release info ────────────────────────────────────────
-    let mut runs:          Signal<Vec<PipelineRun>>                         = use_signal(Vec::new);
-    let mut loading_runs:  Signal<bool>                                     = use_signal(|| false);
+    let mut runs: Signal<Vec<PipelineRun>> = use_signal(Vec::new);
+    let mut loading_runs: Signal<bool> = use_signal(|| false);
     // env columns from the auto-detected release definition
-    let mut def_envs:      Signal<Vec<EnvInfo>>                             = use_signal(Vec::new);
+    let mut def_envs: Signal<Vec<EnvInfo>> = use_signal(Vec::new);
     // env_name → (release_name, artifact) for the currently-deployed build
-    let mut cur_art:       Signal<HashMap<String, (String, ReleaseArtifact)>> = use_signal(HashMap::new);
+    let mut cur_art: Signal<HashMap<String, (String, ReleaseArtifact)>> = use_signal(HashMap::new);
     // name of the auto-detected release pipeline
-    let mut linked_rel_name: Signal<String>       = use_signal(String::new);
+    let mut linked_rel_name: Signal<String> = use_signal(String::new);
     // id of the auto-detected release definition (needed for create_release)
     let mut linked_rel_def_id: Signal<Option<u64>> = use_signal(|| None);
     // artifact alias from the release definition (authoritative source for create_release)
-    let mut linked_artifact_alias: Signal<String>  = use_signal(String::new);
+    let mut linked_artifact_alias: Signal<String> = use_signal(String::new);
 
     // ── dialogs ───────────────────────────────────────────────────────────
     // (pipeline_id, pipeline_name, recent_branches)
     let mut build_dialog: Signal<Option<(u64, String, Vec<String>)>> = use_signal(|| None);
     // (build_num, build_id, artifact_alias, env_name, branch)
-    let mut deploy_dialog: Signal<Option<(String, String, String, String, String)>> = use_signal(|| None);
+    let mut deploy_dialog: Signal<Option<(String, String, String, String, String)>> =
+        use_signal(|| None);
 
     // ── filter ────────────────────────────────────────────────────────────
     let mut show_deployed_only: Signal<bool> = use_signal(|| false);
@@ -81,13 +89,13 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
     let mut repo_branches: Signal<Vec<String>> = use_signal(Vec::new);
 
     // ── dialog-local state (hoisted — hooks must be unconditional) ─────────
-    let mut deploying    = use_signal(|| false);
-    let mut dep_status   = use_signal(|| String::new());
-    let mut dep_err      = use_signal(|| false);
+    let mut deploying = use_signal(|| false);
+    let mut dep_status = use_signal(|| String::new());
+    let mut dep_err = use_signal(|| false);
     let mut branch_input = use_signal(|| String::new());
-    let mut triggering   = use_signal(|| false);
-    let mut trig_status  = use_signal(|| String::new());
-    let mut trig_err     = use_signal(|| false);
+    let mut triggering = use_signal(|| false);
+    let mut trig_status = use_signal(|| String::new());
+    let mut trig_err = use_signal(|| false);
 
     // Reset dialog state whenever a dialog opens.
     use_effect(move || {
@@ -109,17 +117,22 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
     // ── fetch build pipelines ─────────────────────────────────────────────
     let mut fetch_pipelines = move |o: String, p: String| {
         loading_pipes.set(true);
-        status.set(String::new()); is_err.set(false);
+        status.set(String::new());
+        is_err.set(false);
         spawn(async move {
             let res = tokio::task::spawn_blocking(move || devops_cli::list_pipelines(&o, &p))
-                .await.unwrap_or_else(|e| Err(AzError::Other(e.to_string())));
+                .await
+                .unwrap_or_else(|e| Err(AzError::Other(e.to_string())));
             loading_pipes.set(false);
             match res {
                 Ok(mut list) => {
                     list.sort_by(|a, b| a.folder.cmp(&b.folder).then(a.name.cmp(&b.name)));
                     pipelines.set(list);
                 }
-                Err(e) => { status.set(fmt_error(&e)); is_err.set(true); }
+                Err(e) => {
+                    status.set(fmt_error(&e));
+                    is_err.set(true);
+                }
             }
         });
     };
@@ -128,11 +141,14 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
     use_effect(move || {
         let o = org.read().trim().to_string();
         let p = project.read().trim().to_string();
-        if o.is_empty() || p.is_empty() || !pipelines.read().is_empty() { return; }
+        if o.is_empty() || p.is_empty() || !pipelines.read().is_empty() {
+            return;
+        }
         loading_pipes.set(true);
         spawn(async move {
             let res = tokio::task::spawn_blocking(move || devops_cli::list_pipelines(&o, &p))
-                .await.unwrap_or_else(|e| Err(AzError::Other(e.to_string())));
+                .await
+                .unwrap_or_else(|e| Err(AzError::Other(e.to_string())));
             loading_pipes.set(false);
             if let Ok(mut list) = res {
                 list.sort_by(|a, b| a.folder.cmp(&b.folder).then(a.name.cmp(&b.name)));
@@ -148,20 +164,31 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
             let o = org.read().trim().to_string();
             let p = project.read().trim().to_string();
             if o.is_empty() || p.is_empty() {
-                status.set("Enter org URL and project name.".into()); is_err.set(true); return;
+                status.set("Enter org URL and project name.".into());
+                is_err.set(true);
+                return;
             }
-            let dir2 = dir.clone(); let o2 = o.clone(); let p2 = p.clone();
+            let dir2 = dir.clone();
+            let o2 = o.clone();
+            let p2 = p.clone();
             spawn(async move {
                 tokio::task::spawn_blocking(move || {
                     let mut cfg = config::load();
                     let link = cfg.workspace_links.entry(dir2).or_default();
-                    link.devops_org = Some(o2); link.devops_project = Some(p2);
+                    link.devops_org = Some(o2);
+                    link.devops_project = Some(p2);
                     config::save(&cfg);
-                }).await.ok();
+                })
+                .await
+                .ok();
             });
-            pipelines.write().clear(); sel_pipeline.set(None);
-            runs.write().clear(); def_envs.write().clear(); cur_art.write().clear();
-            linked_rel_name.set(String::new()); linked_rel_def_id.set(None);
+            pipelines.write().clear();
+            sel_pipeline.set(None);
+            runs.write().clear();
+            def_envs.write().clear();
+            cur_art.write().clear();
+            linked_rel_name.set(String::new());
+            linked_rel_def_id.set(None);
             fetch_pipelines(o, p);
         }
     };
@@ -177,28 +204,39 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
         linked_rel_def_id.set(None);
         linked_artifact_alias.set(String::new());
         loading_runs.set(true);
-        status.set(String::new()); is_err.set(false);
+        status.set(String::new());
+        is_err.set(false);
 
         let o = org.read().trim().to_string();
         let p = project.read().trim().to_string();
 
         spawn(async move {
             // fetch runs + find linked release definition + repo branches in parallel
-            let o1 = o.clone(); let p1 = p.clone();
-            let o2 = o.clone(); let p2 = p.clone();
-            let o3 = o.clone(); let p3 = p.clone();
+            let o1 = o.clone();
+            let p1 = p.clone();
+            let o2 = o.clone();
+            let p2 = p.clone();
+            let o3 = o.clone();
+            let p3 = p.clone();
 
             let (runs_res, rel_res, branches_res) = tokio::join!(
                 tokio::task::spawn_blocking(move || devops_cli::list_runs(&o1, &p1, id)),
-                tokio::task::spawn_blocking(move || devops_cli::find_release_defs_for_pipeline(&o2, &p2, id)),
-                tokio::task::spawn_blocking(move || devops_cli::list_pipeline_branches(&o3, &p3, id)),
+                tokio::task::spawn_blocking(move || devops_cli::find_release_defs_for_pipeline(
+                    &o2, &p2, id
+                )),
+                tokio::task::spawn_blocking(move || devops_cli::list_pipeline_branches(
+                    &o3, &p3, id
+                )),
             );
 
             loading_runs.set(false);
 
             match runs_res.unwrap_or_else(|e| Err(AzError::Other(e.to_string()))) {
                 Ok(list) => runs.set(list),
-                Err(e)   => { status.set(fmt_error(&e)); is_err.set(true); }
+                Err(e) => {
+                    status.set(fmt_error(&e));
+                    is_err.set(true);
+                }
             }
 
             if let Ok(Ok(branches)) = branches_res {
@@ -208,30 +246,41 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
             // use the first matched release definition
             if let Ok(Ok(mut defs)) = rel_res {
                 if let Some(def) = defs.drain(..).next() {
-                    let def_id   = def.id;
+                    let def_id = def.id;
                     let def_name = def.name.clone();
                     linked_rel_name.set(def_name);
                     linked_rel_def_id.set(Some(def_id));
 
                     // fetch artifact alias + env columns in parallel
-                    let o_alias = o.clone(); let p_alias = p.clone();
+                    let o_alias = o.clone();
+                    let p_alias = p.clone();
                     let alias_res = tokio::task::spawn_blocking(move || {
                         devops_cli::get_release_def_artifact_alias(&o_alias, &p_alias, def_id)
                     });
 
                     if let Ok(env_list) = tokio::task::spawn_blocking({
-                        let o3 = o.clone(); let p3 = p.clone();
+                        let o3 = o.clone();
+                        let p3 = p.clone();
                         move || devops_cli::get_release_definition_envs(&o3, &p3, def_id)
-                    }).await.unwrap_or(Err(AzError::Other(String::new()))) {
+                    })
+                    .await
+                    .unwrap_or(Err(AzError::Other(String::new())))
+                    {
                         for env_info in &env_list {
-                            if env_info.current_release_id == 0 { continue; }
-                            let o4 = o.clone(); let p4 = p.clone();
-                            let env_name   = env_info.name.clone();
+                            if env_info.current_release_id == 0 {
+                                continue;
+                            }
+                            let o4 = o.clone();
+                            let p4 = p.clone();
+                            let env_name = env_info.name.clone();
                             let cur_rel_id = env_info.current_release_id;
                             spawn(async move {
                                 if let Ok(art) = tokio::task::spawn_blocking(move || {
                                     devops_cli::get_release_artifact(&o4, &p4, cur_rel_id)
-                                }).await.unwrap_or(Err(AzError::Other(String::new()))) {
+                                })
+                                .await
+                                .unwrap_or(Err(AzError::Other(String::new())))
+                                {
                                     let rel_name = art.release_name.clone();
                                     cur_art.write().insert(env_name, (rel_name, art));
                                 }
@@ -249,21 +298,22 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
     };
 
     // ── derived ───────────────────────────────────────────────────────────
-    let all_runs     = runs.read().clone();
+    let all_runs = runs.read().clone();
     let env_names: Vec<String> = def_envs.read().iter().map(|e| e.name.clone()).collect();
-    let cur_snap     = cur_art.read().clone();
+    let cur_snap = cur_art.read().clone();
 
     // env_name → build_number currently deployed
-    let deployed: HashMap<String, String> = cur_snap.iter()
+    let deployed: HashMap<String, String> = cur_snap
+        .iter()
         .map(|(env, (_, art))| (env.clone(), art.build_number.clone()))
         .collect();
 
     // build numbers that are currently deployed in any env
-    let deployed_builds: std::collections::HashSet<String> =
-        deployed.values().cloned().collect();
+    let deployed_builds: std::collections::HashSet<String> = deployed.values().cloned().collect();
 
     // apply deployed-only filter
-    let displayed_runs: Vec<&PipelineRun> = all_runs.iter()
+    let displayed_runs: Vec<&PipelineRun> = all_runs
+        .iter()
         .filter(|r| !*show_deployed_only.read() || deployed_builds.contains(&r.name))
         .collect();
 
@@ -272,16 +322,27 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
         let list = pipelines.read();
         let mut map: Vec<(String, Vec<Pipeline>)> = Vec::new();
         for pipe in list.iter() {
-            let folder = if pipe.folder.is_empty() || pipe.folder == "\\" { "General".into() }
-                         else { pipe.folder.trim_matches('\\').to_string() };
-            if let Some(e) = map.iter_mut().find(|(f, _)| f == &folder) { e.1.push(pipe.clone()); }
-            else { map.push((folder, vec![pipe.clone()])); }
+            let folder = if pipe.folder.is_empty() || pipe.folder == "\\" {
+                "General".into()
+            } else {
+                pipe.folder.trim_matches('\\').to_string()
+            };
+            if let Some(e) = map.iter_mut().find(|(f, _)| f == &folder) {
+                e.1.push(pipe.clone());
+            } else {
+                map.push((folder, vec![pipe.clone()]));
+            }
         }
         map
     };
 
-    let sel_pipe_name = sel_pipeline.read()
-        .and_then(|id| pipelines.read().iter().find(|p| p.id == id).map(|p| p.name.clone()));
+    let sel_pipe_name = sel_pipeline.read().and_then(|id| {
+        pipelines
+            .read()
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.name.clone())
+    });
 
     rsx! {
         div { id: "settings-panel",

@@ -9,14 +9,14 @@ pub const EMULATOR_KEY: &str =
 #[derive(Debug, Clone, PartialEq)]
 pub struct CosmosConnection {
     pub connection_name: String,
-    pub display_name:    String,
+    pub display_name: String,
     /// appsetting key for accountEndpoint
-    pub endpoint_key:    Option<String>,
+    pub endpoint_key: Option<String>,
     /// appsetting key for authenticationPolicy / account key
-    pub key_key:         Option<String>,
+    pub key_key: Option<String>,
     /// Resolved values
-    pub endpoint:        String,
-    pub account_key:     String,
+    pub endpoint: String,
+    pub account_key: String,
 }
 
 fn extract_appsetting(val: &str) -> Option<String> {
@@ -39,11 +39,10 @@ pub fn detect_cosmos_connections(logic_apps_dir: &str) -> Vec<CosmosConnection> 
         Err(_) => return vec![],
     };
 
-    let settings: serde_json::Value =
-        std::fs::read_to_string(dir.join("local.settings.json"))
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
+    let settings: serde_json::Value = std::fs::read_to_string(dir.join("local.settings.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
 
     let mut result = Vec::new();
     if let Some(providers) = conn_json["serviceProviderConnections"].as_object() {
@@ -51,9 +50,11 @@ pub fn detect_cosmos_connections(logic_apps_dir: &str) -> Vec<CosmosConnection> 
             let provider_id = conn["serviceProvider"]["id"].as_str().unwrap_or("");
             let pid_lower = provider_id.to_lowercase();
             let is_cosmos = pid_lower == "/serviceproviders/azurecosmosdb"
-                         || pid_lower == "/serviceproviders/cosmosdb"
-                         || pid_lower == "/serviceproviders/documentdb";
-            if !is_cosmos { continue; }
+                || pid_lower == "/serviceproviders/cosmosdb"
+                || pid_lower == "/serviceproviders/documentdb";
+            if !is_cosmos {
+                continue;
+            }
             let display = conn["displayName"].as_str().unwrap_or(name).to_string();
             let pv = &conn["parameterValues"];
 
@@ -68,26 +69,35 @@ pub fn detect_cosmos_connections(logic_apps_dir: &str) -> Vec<CosmosConnection> 
             // 1. connectionString  →  "AccountEndpoint=...;AccountKey=..."
             // 2. accountEndpoint + authenticationPolicy.credential.accountKey (legacy)
             let conn_str_key = pv["connectionString"].as_str().and_then(extract_appsetting);
-            let (endpoint, account_key, endpoint_key, key_key) = if let Some(ref cs_key) = conn_str_key {
-                let cs = resolve_setting(&conn_str_key);
-                let endpoint = cs.split(';')
-                    .find_map(|p| p.strip_prefix("AccountEndpoint=").map(str::to_string))
-                    .unwrap_or_default();
-                let key = cs.split(';')
-                    .find_map(|p| p.strip_prefix("AccountKey=").map(str::to_string))
-                    .unwrap_or_default();
-                (endpoint, key, Some(cs_key.clone()), Some(cs_key.clone()))
-            } else {
-                let endpoint_key = pv["accountEndpoint"].as_str().and_then(extract_appsetting);
-                let key_key = pv["authenticationPolicy"]["credential"]["accountKey"].as_str()
-                    .or_else(|| pv["accountKey"].as_str())
-                    .and_then(extract_appsetting);
-                (resolve_setting(&endpoint_key), resolve_setting(&key_key), endpoint_key, key_key)
-            };
+            let (endpoint, account_key, endpoint_key, key_key) =
+                if let Some(ref cs_key) = conn_str_key {
+                    let cs = resolve_setting(&conn_str_key);
+                    let endpoint = cs
+                        .split(';')
+                        .find_map(|p| p.strip_prefix("AccountEndpoint=").map(str::to_string))
+                        .unwrap_or_default();
+                    let key = cs
+                        .split(';')
+                        .find_map(|p| p.strip_prefix("AccountKey=").map(str::to_string))
+                        .unwrap_or_default();
+                    (endpoint, key, Some(cs_key.clone()), Some(cs_key.clone()))
+                } else {
+                    let endpoint_key = pv["accountEndpoint"].as_str().and_then(extract_appsetting);
+                    let key_key = pv["authenticationPolicy"]["credential"]["accountKey"]
+                        .as_str()
+                        .or_else(|| pv["accountKey"].as_str())
+                        .and_then(extract_appsetting);
+                    (
+                        resolve_setting(&endpoint_key),
+                        resolve_setting(&key_key),
+                        endpoint_key,
+                        key_key,
+                    )
+                };
 
             result.push(CosmosConnection {
                 connection_name: name.clone(),
-                display_name:    display,
+                display_name: display,
                 endpoint,
                 account_key,
                 endpoint_key,
@@ -119,13 +129,18 @@ pub async fn test_cosmos_endpoint(endpoint: &str) -> Result<u64, String> {
     // If TLS negotiation fails, retry with http:// on the same host:port.
     let resp = match result {
         Ok(r) => r,
-        Err(ref e) if e.to_string().contains("wrong version number")
-                   || e.to_string().contains("tls")
-                   || e.to_string().contains("ssl")
-                   || e.to_string().contains("SSL") =>
+        Err(ref e)
+            if e.to_string().contains("wrong version number")
+                || e.to_string().contains("tls")
+                || e.to_string().contains("ssl")
+                || e.to_string().contains("SSL") =>
         {
             let http_url = url.replacen("https://", "http://", 1);
-            client.get(&http_url).send().await.map_err(|e2| e2.to_string())?
+            client
+                .get(&http_url)
+                .send()
+                .await
+                .map_err(|e2| e2.to_string())?
         }
         Err(e) => return Err(e.to_string()),
     };
@@ -138,9 +153,13 @@ pub async fn test_cosmos_endpoint(endpoint: &str) -> Result<u64, String> {
         //       service on that port, or a real Azure endpoint (not the local emulator).
         401 => Err("HTTP 401 — endpoint reachable but authentication failed. \
                     If testing the local emulator, check it is running and the key matches. \
-                    If using an Azure endpoint, the emulator is not running locally.".into()),
+                    If using an Azure endpoint, the emulator is not running locally."
+            .into()),
         // 403 = auth error variant
         403 => Err("HTTP 403 — endpoint reachable but access denied.".into()),
-        _ => Err(format!("HTTP {} — unexpected response from endpoint.", status)),
+        _ => Err(format!(
+            "HTTP {} — unexpected response from endpoint.",
+            status
+        )),
     }
 }

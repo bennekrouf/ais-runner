@@ -239,7 +239,9 @@ mod tests {
         // a corrupt file and regenerates.
         assert!(v["UserConfig"]["Logging"].is_object());
 
-        let queues = v["UserConfig"]["Namespaces"][0]["Queues"].as_array().unwrap();
+        let queues = v["UserConfig"]["Namespaces"][0]["Queues"]
+            .as_array()
+            .unwrap();
         assert_eq!(queues.len(), 2);
         assert_eq!(queues[0]["Name"], "a.b");
         assert_eq!(queues[1]["Properties"]["RequiresSession"], true);
@@ -253,7 +255,9 @@ mod tests {
         }
         // The SB emulator must not start before SQL Edge is healthy.
         assert!(yaml.contains("condition: service_healthy"));
-        assert!(yaml.contains(&format!("./{SB_CONFIG_DIR}:/ServiceBus_Emulator/ConfigFiles")));
+        assert!(yaml.contains(&format!(
+            "./{SB_CONFIG_DIR}:/ServiceBus_Emulator/ConfigFiles"
+        )));
     }
 
     #[test]

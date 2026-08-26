@@ -41,8 +41,8 @@ pub mod server;
 pub mod writer;
 
 pub use contract::{
-    AppSetting, AuthKind, DiscoveryRef, Endpoint, MockContract,
-    RequestSpec, ResponseSpec, SettingKind, Warning, WarningLevel,
+    AppSetting, AuthKind, DiscoveryRef, Endpoint, MockContract, RequestSpec, ResponseSpec,
+    SettingKind, Warning, WarningLevel,
 };
 pub use events::{EventBus, LogLevel, MockEvent, ResponseSource};
 pub use runtime::MockRuntime;
@@ -54,6 +54,6 @@ use std::path::{Path, PathBuf};
 /// Phase 1 one-shot: scan, cache, return.
 pub fn scan_workspace(workspace: &Path) -> Result<(MockContract, PathBuf), ScanError> {
     let contract = Scanner::new(workspace)?.scan()?;
-    let path     = writer::write(&contract, workspace)?;
+    let path = writer::write(&contract, workspace)?;
     Ok((contract, path))
 }

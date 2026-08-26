@@ -42,14 +42,7 @@ use serde_json::Value;
 /// customer and every workflow — they are part of the Logic Apps schema, not
 /// a naming convention. Anything with a child `actions` object behaves like
 /// a container regardless of `type`, so we fall back to that check too.
-const CONTAINER_TYPES: &[&str] = &[
-    "Scope",
-    "If",
-    "Switch",
-    "Foreach",
-    "Until",
-    "Try",
-];
+const CONTAINER_TYPES: &[&str] = &["Scope", "If", "Switch", "Foreach", "Until", "Try"];
 
 /// What kind of section this is — drives the icon shown next to it in the rail.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -90,39 +83,39 @@ impl ServiceTag {
     /// Short display label for the chip (3–4 chars to keep the rail compact).
     pub fn chip_label(&self) -> &'static str {
         match self {
-            ServiceTag::Sql        => "SQL",
+            ServiceTag::Sql => "SQL",
             ServiceTag::ServiceBus => "SB",
-            ServiceTag::Teams      => "Teams",
-            ServiceTag::Outlook    => "Mail",
-            ServiceTag::Blob       => "Blob",
-            ServiceTag::Cosmos     => "Cosmos",
-            ServiceTag::Http       => "HTTP",
-            ServiceTag::Function   => "ƒn",
-            ServiceTag::KeyVault   => "KV",
-            ServiceTag::EventGrid  => "EG",
-            ServiceTag::Sftp       => "SFTP",
-            ServiceTag::Maps       => "Maps",
-            ServiceTag::AzureFile  => "File",
-            ServiceTag::Code       => "Code",
+            ServiceTag::Teams => "Teams",
+            ServiceTag::Outlook => "Mail",
+            ServiceTag::Blob => "Blob",
+            ServiceTag::Cosmos => "Cosmos",
+            ServiceTag::Http => "HTTP",
+            ServiceTag::Function => "ƒn",
+            ServiceTag::KeyVault => "KV",
+            ServiceTag::EventGrid => "EG",
+            ServiceTag::Sftp => "SFTP",
+            ServiceTag::Maps => "Maps",
+            ServiceTag::AzureFile => "File",
+            ServiceTag::Code => "Code",
         }
     }
     /// CSS class suffix — used as `chip chip-{slug}` for per-service color.
     pub fn css_slug(&self) -> &'static str {
         match self {
-            ServiceTag::Sql        => "sql",
+            ServiceTag::Sql => "sql",
             ServiceTag::ServiceBus => "sb",
-            ServiceTag::Teams      => "teams",
-            ServiceTag::Outlook    => "mail",
-            ServiceTag::Blob       => "blob",
-            ServiceTag::Cosmos     => "cosmos",
-            ServiceTag::Http       => "http",
-            ServiceTag::Function   => "fn",
-            ServiceTag::KeyVault   => "kv",
-            ServiceTag::EventGrid  => "eg",
-            ServiceTag::Sftp       => "sftp",
-            ServiceTag::Maps       => "maps",
-            ServiceTag::AzureFile  => "file",
-            ServiceTag::Code       => "code",
+            ServiceTag::Teams => "teams",
+            ServiceTag::Outlook => "mail",
+            ServiceTag::Blob => "blob",
+            ServiceTag::Cosmos => "cosmos",
+            ServiceTag::Http => "http",
+            ServiceTag::Function => "fn",
+            ServiceTag::KeyVault => "kv",
+            ServiceTag::EventGrid => "eg",
+            ServiceTag::Sftp => "sftp",
+            ServiceTag::Maps => "maps",
+            ServiceTag::AzureFile => "file",
+            ServiceTag::Code => "code",
         }
     }
 }
@@ -132,9 +125,9 @@ pub struct OutlineSection {
     /// Display label for the rail. For containers, the author's action name;
     /// for triggers and synthetic step groups, a generated label.
     pub label: String,
-    pub kind:  SectionKind,
+    pub kind: SectionKind,
     /// Brief one-liner shown under the label (e.g. action type, step count).
-    pub hint:  String,
+    pub hint: String,
     /// Nesting level. 0 = top-level (under `actions` or the trigger).
     pub depth: u8,
     /// Index in the outer `Vec` of this section's parent container, if any.
@@ -144,7 +137,7 @@ pub struct OutlineSection {
     /// 1-based line numbers in the pretty-printed source. None when the
     /// action's key could not be located (defensive — should be rare).
     pub start_line: Option<u32>,
-    pub end_line:   Option<u32>,
+    pub end_line: Option<u32>,
     /// Services this section touches (deduped, ordered by first appearance
     /// in the workflow). For a container, this is the union of every leaf
     /// action in its subtree. For a synthetic Steps group, it's the union
@@ -169,21 +162,24 @@ pub fn build_outline(source: &str) -> Vec<OutlineSection> {
     // ── 1. Trigger ────────────────────────────────────────────────────────
     if let Some(triggers) = definition.get("triggers").and_then(Value::as_object) {
         if let Some((name, body)) = triggers.iter().next() {
-            let kind = body.get("type").and_then(Value::as_str).unwrap_or("Trigger");
+            let kind = body
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("Trigger");
             let kind_hint = body.get("kind").and_then(Value::as_str);
             let hint = match kind_hint {
                 Some(k) => format!("{kind} · {k}"),
-                None    => kind.to_string(),
+                None => kind.to_string(),
             };
             let trigger_tags = classify_action(body).into_iter().collect::<Vec<_>>();
             sections.push(OutlineSection {
                 label: name.clone(),
-                kind:  SectionKind::Trigger,
+                kind: SectionKind::Trigger,
                 hint,
                 depth: 0,
                 parent: None,
                 start_line: None,
-                end_line:   None,
+                end_line: None,
                 tags: trigger_tags,
             });
         }
@@ -217,18 +213,26 @@ fn emit_actions(
     // re-classify each named action. Captured by reference into the closure.
     let actions_ref = actions;
     let flush_flat = |run: &mut Vec<(String, Vec<ServiceTag>)>, out: &mut Vec<OutlineSection>| {
-        if run.is_empty() { return; }
+        if run.is_empty() {
+            return;
+        }
         let label = if run.len() == 1 {
             run[0].0.clone()
         } else {
             format!("{} steps", run.len())
         };
-        let hint = run.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(" → ");
+        let hint = run
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(" → ");
         // Union of the leaves' tags, in first-occurrence order.
         let mut tags: Vec<ServiceTag> = Vec::new();
         for (_, ts) in run.iter() {
             for t in ts {
-                if !tags.contains(t) { tags.push(t.clone()); }
+                if !tags.contains(t) {
+                    tags.push(t.clone());
+                }
             }
         }
         out.push(OutlineSection {
@@ -238,7 +242,7 @@ fn emit_actions(
             depth,
             parent,
             start_line: None,
-            end_line:   None,
+            end_line: None,
             tags,
         });
         run.clear();
@@ -257,21 +261,23 @@ fn emit_actions(
             flush_flat(&mut flat_run, out);
 
             // Count inner actions across all the schemas a container can use.
-            let inner_count = inner.map(|m| m.len()).unwrap_or(0)
-                + count_switch_branches(body);
+            let inner_count = inner.map(|m| m.len()).unwrap_or(0) + count_switch_branches(body);
             let hint = if inner_count > 0 {
-                format!("{ty} · {inner_count} step{}", if inner_count == 1 { "" } else { "s" })
+                format!(
+                    "{ty} · {inner_count} step{}",
+                    if inner_count == 1 { "" } else { "s" }
+                )
             } else {
                 ty.to_string()
             };
             out.push(OutlineSection {
                 label: name.clone(),
-                kind:  SectionKind::Container(ty.to_string()),
+                kind: SectionKind::Container(ty.to_string()),
                 hint,
                 depth,
                 parent,
                 start_line: None,
-                end_line:   None,
+                end_line: None,
                 tags: collect_tags(body),
             });
             let my_idx = out.len() - 1;
@@ -286,58 +292,98 @@ fn emit_actions(
             if ty == "Switch" {
                 if let Some(cases) = body.get("cases").and_then(Value::as_object) {
                     for (case_name, case_body) in cases {
-                        if let Some(case_actions) = case_body.get("actions").and_then(Value::as_object) {
+                        if let Some(case_actions) =
+                            case_body.get("actions").and_then(Value::as_object)
+                        {
                             // Each case becomes a labelled mini-section at the
                             // child depth. Its hint says the branch is a "case".
                             out.push(OutlineSection {
                                 label: case_name.clone(),
-                                kind:  SectionKind::Container("Case".to_string()),
-                                hint:  format!("case · {} step{}", case_actions.len(), if case_actions.len() == 1 { "" } else { "s" }),
+                                kind: SectionKind::Container("Case".to_string()),
+                                hint: format!(
+                                    "case · {} step{}",
+                                    case_actions.len(),
+                                    if case_actions.len() == 1 { "" } else { "s" }
+                                ),
                                 depth: child_depth,
                                 parent: Some(my_idx),
                                 start_line: None,
-                                end_line:   None,
+                                end_line: None,
                                 tags: collect_tags(case_body),
                             });
                             let case_idx = out.len() - 1;
-                            emit_actions(case_actions, child_depth.saturating_add(1), Some(case_idx), out);
+                            emit_actions(
+                                case_actions,
+                                child_depth.saturating_add(1),
+                                Some(case_idx),
+                                out,
+                            );
                         }
                     }
                 }
-                if let Some(default_actions) = body.get("default").and_then(|d| d.get("actions")).and_then(Value::as_object) {
-                    let default_node = body.get("default").cloned().unwrap_or(serde_json::Value::Null);
+                if let Some(default_actions) = body
+                    .get("default")
+                    .and_then(|d| d.get("actions"))
+                    .and_then(Value::as_object)
+                {
+                    let default_node = body
+                        .get("default")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
                     out.push(OutlineSection {
                         label: "default".to_string(),
-                        kind:  SectionKind::Container("Case".to_string()),
-                        hint:  format!("default · {} step{}", default_actions.len(), if default_actions.len() == 1 { "" } else { "s" }),
+                        kind: SectionKind::Container("Case".to_string()),
+                        hint: format!(
+                            "default · {} step{}",
+                            default_actions.len(),
+                            if default_actions.len() == 1 { "" } else { "s" }
+                        ),
                         depth: child_depth,
                         parent: Some(my_idx),
                         start_line: None,
-                        end_line:   None,
+                        end_line: None,
                         tags: collect_tags(&default_node),
                     });
                     let default_idx = out.len() - 1;
-                    emit_actions(default_actions, child_depth.saturating_add(1), Some(default_idx), out);
+                    emit_actions(
+                        default_actions,
+                        child_depth.saturating_add(1),
+                        Some(default_idx),
+                        out,
+                    );
                 }
             }
             // `If` actions have separate `actions` (then-branch) and `else`
             // (else-branch). The `actions` branch was already recursed above
             // via `inner`. Add the `else` branch if present.
             if ty == "If" {
-                if let Some(else_actions) = body.get("else").and_then(|e| e.get("actions")).and_then(Value::as_object) {
+                if let Some(else_actions) = body
+                    .get("else")
+                    .and_then(|e| e.get("actions"))
+                    .and_then(Value::as_object)
+                {
                     let else_node = body.get("else").cloned().unwrap_or(serde_json::Value::Null);
                     out.push(OutlineSection {
                         label: "else".to_string(),
-                        kind:  SectionKind::Container("Case".to_string()),
-                        hint:  format!("else · {} step{}", else_actions.len(), if else_actions.len() == 1 { "" } else { "s" }),
+                        kind: SectionKind::Container("Case".to_string()),
+                        hint: format!(
+                            "else · {} step{}",
+                            else_actions.len(),
+                            if else_actions.len() == 1 { "" } else { "s" }
+                        ),
                         depth: child_depth,
                         parent: Some(my_idx),
                         start_line: None,
-                        end_line:   None,
+                        end_line: None,
                         tags: collect_tags(&else_node),
                     });
                     let else_idx = out.len() - 1;
-                    emit_actions(else_actions, child_depth.saturating_add(1), Some(else_idx), out);
+                    emit_actions(
+                        else_actions,
+                        child_depth.saturating_add(1),
+                        Some(else_idx),
+                        out,
+                    );
                 }
             }
         } else {
@@ -351,15 +397,19 @@ fn emit_actions(
             let leaf_tags = classify_action(body).into_iter().collect::<Vec<_>>();
             if !leaf_tags.is_empty() {
                 flush_flat(&mut flat_run, out);
-                let ty = body.get("type").and_then(Value::as_str).unwrap_or("").to_string();
+                let ty = body
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 out.push(OutlineSection {
                     label: name.clone(),
-                    kind:  SectionKind::Steps,
-                    hint:  ty,
+                    kind: SectionKind::Steps,
+                    hint: ty,
                     depth,
                     parent,
                     start_line: None,
-                    end_line:   None,
+                    end_line: None,
                     tags: leaf_tags,
                 });
             } else {
@@ -386,7 +436,9 @@ pub fn is_under_collapsed(
 ) -> bool {
     let mut cur = sections[idx].parent;
     while let Some(p) = cur {
-        if collapsed.contains(&p) { return true; }
+        if collapsed.contains(&p) {
+            return true;
+        }
         cur = sections[p].parent;
     }
     false
@@ -401,14 +453,15 @@ fn classify_action(body: &Value) -> Option<ServiceTag> {
 
     // ── Built-in action types ─────────────────────────────────────────
     match ty {
-        "Http"        => return Some(ServiceTag::Http),
-        "Function"    => return Some(ServiceTag::Function),
+        "Http" => return Some(ServiceTag::Http),
+        "Function" => return Some(ServiceTag::Function),
         // The two ways Logic Apps Standard refers to nested function calls.
         "InvokeFunction" | "Workflow" => return Some(ServiceTag::Function),
         // Inline code actions — surfacing them on the rail matters because
         // they often hold business-critical validation / transform logic.
-        "JavaScriptCode" | "CSharpScriptCode" | "ExecuteJavaScriptCode"
-            => return Some(ServiceTag::Code),
+        "JavaScriptCode" | "CSharpScriptCode" | "ExecuteJavaScriptCode" => {
+            return Some(ServiceTag::Code)
+        }
         _ => {}
     }
 
@@ -423,7 +476,9 @@ fn classify_action(body: &Value) -> Option<ServiceTag> {
         .to_ascii_lowercase();
     if !sp_id.is_empty() {
         let tag = match_service_slug(&sp_id);
-        if tag.is_some() { return tag; }
+        if tag.is_some() {
+            return tag;
+        }
     }
 
     // ── ApiConnection actions (managed connectors) ──────────────────────
@@ -449,7 +504,9 @@ fn classify_action(body: &Value) -> Option<ServiceTag> {
             .unwrap_or("")
             .to_ascii_lowercase();
         for hay in [&api_id, &path, &conn_ref] {
-            if let Some(t) = match_service_slug(hay) { return Some(t); }
+            if let Some(t) = match_service_slug(hay) {
+                return Some(t);
+            }
         }
     }
 
@@ -465,26 +522,43 @@ fn classify_action(body: &Value) -> Option<ServiceTag> {
 /// another (e.g. `azureblob` contains `blob`); we list the more-specific
 /// matches first.
 fn match_service_slug(hay: &str) -> Option<ServiceTag> {
-    if hay.contains("servicebus")           { return Some(ServiceTag::ServiceBus); }
-    if hay.contains("/sql")
-        || hay.contains("sqlserver")
-        || hay.contains("azuresql")          { return Some(ServiceTag::Sql); }
-    if hay.contains("teams")                { return Some(ServiceTag::Teams); }
+    if hay.contains("servicebus") {
+        return Some(ServiceTag::ServiceBus);
+    }
+    if hay.contains("/sql") || hay.contains("sqlserver") || hay.contains("azuresql") {
+        return Some(ServiceTag::Sql);
+    }
+    if hay.contains("teams") {
+        return Some(ServiceTag::Teams);
+    }
     if hay.contains("outlook")
         || hay.contains("office365")
         || hay.contains("sendgrid")
-        || hay.contains("smtp")              { return Some(ServiceTag::Outlook); }
-    if hay.contains("azureblob")
-        || hay.contains("blob")              { return Some(ServiceTag::Blob); }
-    if hay.contains("cosmosdb")
-        || hay.contains("/cosmos")           { return Some(ServiceTag::Cosmos); }
-    if hay.contains("keyvault")             { return Some(ServiceTag::KeyVault); }
-    if hay.contains("eventgrid")            { return Some(ServiceTag::EventGrid); }
-    if hay.contains("/sftp")                { return Some(ServiceTag::Sftp); }
+        || hay.contains("smtp")
+    {
+        return Some(ServiceTag::Outlook);
+    }
+    if hay.contains("azureblob") || hay.contains("blob") {
+        return Some(ServiceTag::Blob);
+    }
+    if hay.contains("cosmosdb") || hay.contains("/cosmos") {
+        return Some(ServiceTag::Cosmos);
+    }
+    if hay.contains("keyvault") {
+        return Some(ServiceTag::KeyVault);
+    }
+    if hay.contains("eventgrid") {
+        return Some(ServiceTag::EventGrid);
+    }
+    if hay.contains("/sftp") {
+        return Some(ServiceTag::Sftp);
+    }
     if hay.contains("azuremaps") || hay.contains("/maps") {
         return Some(ServiceTag::Maps);
     }
-    if hay.contains("azurefile")            { return Some(ServiceTag::AzureFile); }
+    if hay.contains("azurefile") {
+        return Some(ServiceTag::AzureFile);
+    }
     None
 }
 
@@ -500,33 +574,51 @@ pub fn collect_tags(body: &Value) -> Vec<ServiceTag> {
 
 fn visit_for_tags(body: &Value, out: &mut Vec<ServiceTag>) {
     if let Some(tag) = classify_action(body) {
-        if !out.contains(&tag) { out.push(tag); }
+        if !out.contains(&tag) {
+            out.push(tag);
+        }
     }
     if let Some(actions) = body.get("actions").and_then(Value::as_object) {
-        for (_, child) in actions { visit_for_tags(child, out); }
+        for (_, child) in actions {
+            visit_for_tags(child, out);
+        }
     }
     if let Some(else_node) = body.get("else") {
         if let Some(actions) = else_node.get("actions").and_then(Value::as_object) {
-            for (_, child) in actions { visit_for_tags(child, out); }
+            for (_, child) in actions {
+                visit_for_tags(child, out);
+            }
         }
     }
     if let Some(cases) = body.get("cases").and_then(Value::as_object) {
         for (_, case_body) in cases {
             if let Some(actions) = case_body.get("actions").and_then(Value::as_object) {
-                for (_, child) in actions { visit_for_tags(child, out); }
+                for (_, child) in actions {
+                    visit_for_tags(child, out);
+                }
             }
         }
     }
     if let Some(default) = body.get("default") {
         if let Some(actions) = default.get("actions").and_then(Value::as_object) {
-            for (_, child) in actions { visit_for_tags(child, out); }
+            for (_, child) in actions {
+                visit_for_tags(child, out);
+            }
         }
     }
 }
 
 fn count_switch_branches(body: &Value) -> usize {
-    let cases = body.get("cases").and_then(Value::as_object).map(|m| m.len()).unwrap_or(0);
-    let default = if body.get("default").and_then(|d| d.get("actions")).is_some() { 1 } else { 0 };
+    let cases = body
+        .get("cases")
+        .and_then(Value::as_object)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let default = if body.get("default").and_then(|d| d.get("actions")).is_some() {
+        1
+    } else {
+        0
+    };
     cases + default
 }
 
@@ -539,9 +631,15 @@ fn annotate_line_ranges(source: &str, sections: &mut [OutlineSection]) {
 
     for (i, line) in source.lines().enumerate() {
         let trimmed = line.trim_start();
-        if !trimmed.starts_with('"') { continue; }
-        let Some(rest) = trimmed.strip_prefix('"') else { continue };
-        let Some(end) = rest.find("\":") else { continue };
+        if !trimmed.starts_with('"') {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = rest.find("\":") else {
+            continue;
+        };
         let key = &rest[..end];
         lookup.entry(key.to_string()).or_insert((i + 1) as u32);
     }
@@ -562,7 +660,11 @@ fn annotate_line_ranges(source: &str, sections: &mut [OutlineSection]) {
     let starts: Vec<Option<u32>> = sections.iter().map(|s| s.start_line).collect();
     for (i, s) in sections.iter_mut().enumerate() {
         let next_start = starts.iter().skip(i + 1).flatten().next().copied();
-        s.end_line = Some(next_start.map(|n| n.saturating_sub(1)).unwrap_or(total_lines));
+        s.end_line = Some(
+            next_start
+                .map(|n| n.saturating_sub(1))
+                .unwrap_or(total_lines),
+        );
     }
 }
 
@@ -644,35 +746,45 @@ mod tests {
         // HTTP_Get + HTTP_Post are both classified as Http, so under the
         // "notable leaves stand alone" rule each becomes its own depth-1
         // section under the Scope.
-        let children: Vec<&OutlineSection> = o.iter()
-            .filter(|s| s.parent == Some(scope_idx))
-            .collect();
-        assert!(children.iter().any(|s| s.label == "HTTP_Get" && s.depth == 1),
-            "HTTP_Get should appear as its own depth-1 section under the Scope");
-        assert!(children.iter().any(|s| s.label == "HTTP_Post" && s.depth == 1),
-            "HTTP_Post should appear as its own depth-1 section under the Scope");
+        let children: Vec<&OutlineSection> =
+            o.iter().filter(|s| s.parent == Some(scope_idx)).collect();
+        assert!(
+            children
+                .iter()
+                .any(|s| s.label == "HTTP_Get" && s.depth == 1),
+            "HTTP_Get should appear as its own depth-1 section under the Scope"
+        );
+        assert!(
+            children
+                .iter()
+                .any(|s| s.label == "HTTP_Post" && s.depth == 1),
+            "HTTP_Post should appear as its own depth-1 section under the Scope"
+        );
     }
 
     #[test]
     fn if_else_branches_both_appear_as_sub_sections() {
         let o = build_outline(SAMPLE);
         let if_idx = o.iter().position(|s| s.label == "If_HasErrors").unwrap();
-        let children: Vec<&OutlineSection> = o.iter()
-            .filter(|s| s.parent == Some(if_idx))
-            .collect();
-        assert!(children.iter().any(|s| s.label == "else"),
-            "If section should expose an else branch as a sub-section");
+        let children: Vec<&OutlineSection> =
+            o.iter().filter(|s| s.parent == Some(if_idx)).collect();
+        assert!(
+            children.iter().any(|s| s.label == "else"),
+            "If section should expose an else branch as a sub-section"
+        );
         // Notify_OnError is an Http action → notable leaf → its own section
         // labelled by the action name.
-        assert!(children.iter().any(|s| s.label == "Notify_OnError"),
-            "the then-branch's Http leaf should appear as its own section");
+        assert!(
+            children.iter().any(|s| s.label == "Notify_OnError"),
+            "the then-branch's Http leaf should appear as its own section"
+        );
     }
 
     #[test]
     fn has_children_reflects_emit_order() {
         let o = build_outline(SAMPLE);
         let scope_idx = o.iter().position(|s| s.label == "Scope_FetchData").unwrap();
-        let leaf_idx  = o.iter().position(|s| s.label == "Final_Step").unwrap();
+        let leaf_idx = o.iter().position(|s| s.label == "Final_Step").unwrap();
         assert!(has_children(&o, scope_idx));
         assert!(!has_children(&o, leaf_idx));
     }
@@ -699,7 +811,13 @@ mod tests {
         let mut last = 0u32;
         for s in &o {
             if let Some(start) = s.start_line {
-                assert!(start >= last, "section {} starts at line {} before previous {}", s.label, start, last);
+                assert!(
+                    start >= last,
+                    "section {} starts at line {} before previous {}",
+                    s.label,
+                    start,
+                    last
+                );
                 last = start;
             }
         }

@@ -24,7 +24,7 @@ use crate::services::workflows;
 pub struct MissingSetting {
     /// The app-setting key the workflow expects but `local.settings.json`
     /// doesn't define. Stripped of the `@appsetting('…')` envelope.
-    pub key:           String,
+    pub key: String,
     /// Every workflow / file that references this key, sorted alphabetically
     /// so the report is stable across runs. Workflow entries are bare names
     /// (e.g. `Verify-Ignite-Trade`); root-level files are surfaced with their
@@ -45,7 +45,9 @@ pub fn scan(project_dir: &str) -> Vec<MissingSetting> {
     let mut refs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     let mut record = |key: String, source: String| {
-        if local_keys.contains(&key) { return; }
+        if local_keys.contains(&key) {
+            return;
+        }
         refs.entry(key).or_default().insert(source);
     };
 
@@ -53,10 +55,16 @@ pub fn scan(project_dir: &str) -> Vec<MissingSetting> {
     if let Ok(entries) = std::fs::read_dir(&logic) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() { continue; }
+            if !path.is_dir() {
+                continue;
+            }
             let wf_file = path.join("workflow.json");
-            if !wf_file.is_file() { continue; }
-            let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+            if !wf_file.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
             if let Ok(text) = std::fs::read_to_string(&wf_file) {
                 for key in extract_appsetting_keys(&text) {
                     record(key, name.to_string());
@@ -89,8 +97,12 @@ pub fn scan(project_dir: &str) -> Vec<MissingSetting> {
 /// nothing.
 fn load_local_keys(logic_dir: &Path) -> BTreeSet<String> {
     let path = logic_dir.join("local.settings.json");
-    let Ok(text) = std::fs::read_to_string(&path) else { return BTreeSet::new(); };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return BTreeSet::new(); };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return BTreeSet::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return BTreeSet::new();
+    };
     v.get("Values")
         .and_then(|x| x.as_object())
         .map(|o| o.keys().cloned().collect())
@@ -105,7 +117,9 @@ fn extract_appsetting_keys(text: &str) -> Vec<String> {
     // (`@{appsetting('K')}`) is a strict superset of the bare form because we
     // only match what's inside the parens.
     let mut out: Vec<String> = Vec::new();
-    let mut push = |k: &str| { out.push(k.to_string()); };
+    let mut push = |k: &str| {
+        out.push(k.to_string());
+    };
 
     for re in [
         r"@\{?appsetting\('([^']+)'\)\}?",
@@ -113,7 +127,9 @@ fn extract_appsetting_keys(text: &str) -> Vec<String> {
     ] {
         if let Ok(re) = regex::Regex::new(re) {
             for cap in re.captures_iter(text) {
-                if let Some(m) = cap.get(1) { push(m.as_str()); }
+                if let Some(m) = cap.get(1) {
+                    push(m.as_str());
+                }
             }
         }
     }
@@ -128,12 +144,21 @@ mod tests {
 
     /// Build a tiny project tree under `dir` and return its path as a string
     /// the way `workflows::resolve_logic_apps_dir` would consume it.
-    fn make_project(values: &[(&str, &str)], workflows_text: &[(&str, &str)], connections: Option<&str>) -> tempfile::TempDir {
+    fn make_project(
+        values: &[(&str, &str)],
+        workflows_text: &[(&str, &str)],
+        connections: Option<&str>,
+    ) -> tempfile::TempDir {
         let dir = tempdir().unwrap();
         // Logic Apps Standard's standard layout: workflow folders + settings live
         // at the root the user picks (no `logic_apps/` subfolder).
         let mut vals_map = serde_json::Map::new();
-        for (k, v) in values { vals_map.insert((*k).to_string(), serde_json::Value::String((*v).to_string())); }
+        for (k, v) in values {
+            vals_map.insert(
+                (*k).to_string(),
+                serde_json::Value::String((*v).to_string()),
+            );
+        }
         let local_settings = serde_json::json!({
             "IsEncrypted": false,
             "Values": vals_map,
@@ -141,7 +166,8 @@ mod tests {
         fs::write(
             dir.path().join("local.settings.json"),
             serde_json::to_string_pretty(&local_settings).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
         for (wf_name, body) in workflows_text {
             let wf_dir = dir.path().join(wf_name);
             fs::create_dir_all(&wf_dir).unwrap();
@@ -157,7 +183,10 @@ mod tests {
     fn returns_empty_when_every_key_is_defined() {
         let tmp = make_project(
             &[("Jde_Url", "https://jde")],
-            &[("Wf", r#"{"definition":{"actions":{"H":{"type":"Http","inputs":{"uri":"@{appsetting('Jde_Url')}"}}}}}"#)],
+            &[(
+                "Wf",
+                r#"{"definition":{"actions":{"H":{"type":"Http","inputs":{"uri":"@{appsetting('Jde_Url')}"}}}}}"#,
+            )],
             None,
         );
         let r = scan(tmp.path().to_str().unwrap());
@@ -168,7 +197,10 @@ mod tests {
     fn surfaces_each_missing_key_with_referencing_workflow() {
         let tmp = make_project(
             &[], // no values
-            &[("Wf", r#"{"definition":{"actions":{"H":{"type":"Http","inputs":{"uri":"@{appsetting('Jde_Url')}"}}}}}"#)],
+            &[(
+                "Wf",
+                r#"{"definition":{"actions":{"H":{"type":"Http","inputs":{"uri":"@{appsetting('Jde_Url')}"}}}}}"#,
+            )],
             None,
         );
         let r = scan(tmp.path().to_str().unwrap());
@@ -180,21 +212,21 @@ mod tests {
     #[test]
     fn groups_a_key_referenced_by_multiple_workflows() {
         let body = r#"{"definition":{"actions":{"H":{"type":"Http","inputs":{"uri":"@{appsetting('Shared_Key')}"}}}}}"#;
-        let tmp = make_project(
-            &[],
-            &[("Wf_A", body), ("Wf_B", body)],
-            None,
-        );
+        let tmp = make_project(&[], &[("Wf_A", body), ("Wf_B", body)], None);
         let r = scan(tmp.path().to_str().unwrap());
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].key, "Shared_Key");
         // Sources are alphabetised by the BTreeSet so the report is stable.
-        assert_eq!(r[0].referenced_by, vec!["Wf_A".to_string(), "Wf_B".to_string()]);
+        assert_eq!(
+            r[0].referenced_by,
+            vec!["Wf_A".to_string(), "Wf_B".to_string()]
+        );
     }
 
     #[test]
     fn picks_up_connections_json_references_at_root() {
-        let conn = r#"{"sb": {"parameterValues": {"connectionString": "@appsetting('SB_ConnStr')"}}}"#;
+        let conn =
+            r#"{"sb": {"parameterValues": {"connectionString": "@appsetting('SB_ConnStr')"}}}"#;
         let tmp = make_project(&[], &[], Some(conn));
         let r = scan(tmp.path().to_str().unwrap());
         assert_eq!(r.len(), 1);
@@ -226,7 +258,8 @@ mod tests {
         fs::write(
             wf_dir.join("workflow.json"),
             r#"{"x":"@appsetting('Anything')"}"#,
-        ).unwrap();
+        )
+        .unwrap();
         let r = scan(dir.path().to_str().unwrap());
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].key, "Anything");

@@ -18,7 +18,11 @@ enum FetchState {
 
 impl FetchState {
     fn snap(&self) -> Option<&SecuritySnapshot> {
-        if let FetchState::Done(s) = self { Some(s) } else { None }
+        if let FetchState::Done(s) = self {
+            Some(s)
+        } else {
+            None
+        }
     }
 }
 
@@ -26,7 +30,7 @@ impl FetchState {
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SecurityComparePanelProps {
-    pub groups:    Signal<Vec<VarGroup>>,
+    pub groups: Signal<Vec<VarGroup>>,
     pub col_order: Signal<Vec<String>>,
 }
 
@@ -34,17 +38,18 @@ pub struct SecurityComparePanelProps {
 
 #[component]
 pub fn SecurityComparePanel(props: SecurityComparePanelProps) -> Element {
-    let mut states:    Signal<HashMap<String, FetchState>>   = use_signal(HashMap::new);
-    let mut only_diff: Signal<bool>                          = use_signal(|| false);
-    let mut overrides: Signal<HashMap<String, EnvTarget>>    = use_signal(HashMap::new);
-    let mut editing:   Signal<Option<String>>                = use_signal(|| None);
-    let mut edit_buf:  Signal<EnvTarget>                     = use_signal(EnvTarget::default);
+    let mut states: Signal<HashMap<String, FetchState>> = use_signal(HashMap::new);
+    let mut only_diff: Signal<bool> = use_signal(|| false);
+    let mut overrides: Signal<HashMap<String, EnvTarget>> = use_signal(HashMap::new);
+    let mut editing: Signal<Option<String>> = use_signal(|| None);
+    let mut edit_buf: Signal<EnvTarget> = use_signal(EnvTarget::default);
     // Cell detail popup: (key, env_name, full_value)
-    let mut detail:    Signal<Option<(String, String, String)>> = use_signal(|| None);
+    let mut detail: Signal<Option<(String, String, String)>> = use_signal(|| None);
 
     let groups = props.groups.read().clone();
-    let order  = props.col_order.read().clone();
-    let envs: Vec<VarGroup> = order.iter()
+    let order = props.col_order.read().clone();
+    let envs: Vec<VarGroup> = order
+        .iter()
         .filter_map(|n| groups.iter().find(|g| &g.name == n).cloned())
         .collect();
 
@@ -58,10 +63,12 @@ pub fn SecurityComparePanel(props: SecurityComparePanelProps) -> Element {
 
     // Effective targets: override (if set) wins over inference.
     let overrides_read = overrides.read().clone();
-    let targets: Vec<(String, EnvTarget)> = envs.iter()
+    let targets: Vec<(String, EnvTarget)> = envs
+        .iter()
         .map(|g| {
             let name = g.name.clone();
-            let target = overrides_read.get(&name)
+            let target = overrides_read
+                .get(&name)
                 .cloned()
                 .unwrap_or_else(|| security_compare::infer_env_from_group(g));
             (name, target)
@@ -74,52 +81,74 @@ pub fn SecurityComparePanel(props: SecurityComparePanelProps) -> Element {
             let n = name.clone();
             let res = tokio::task::spawn_blocking(move || {
                 security_compare::fetch_security_snapshot(&n, &target)
-            }).await;
+            })
+            .await;
             match res {
-                Ok(snap) => { states.write().insert(name, FetchState::Done(snap)); }
-                Err(_)   => { states.write().insert(name, FetchState::Err("task failed".into())); }
+                Ok(snap) => {
+                    states.write().insert(name, FetchState::Done(snap));
+                }
+                Err(_) => {
+                    states
+                        .write()
+                        .insert(name, FetchState::Err("task failed".into()));
+                }
             }
         });
     };
 
     // Auto-fetch any env with an actionable target that hasn't been fetched yet.
     {
-        let pending: Vec<(String, EnvTarget)> = targets.iter()
+        let pending: Vec<(String, EnvTarget)> = targets
+            .iter()
             .filter(|(name, target)| target.is_actionable() && !states.read().contains_key(name))
             .cloned()
             .collect();
-        for (name, target) in pending { fetch_one(name, target); }
+        for (name, target) in pending {
+            fetch_one(name, target);
+        }
     }
 
     let states_read = states.read().clone();
-    let diff_on     = *only_diff.read();
+    let diff_on = *only_diff.read();
 
-    let snapshots: Vec<Option<&SecuritySnapshot>> = targets.iter()
+    let snapshots: Vec<Option<&SecuritySnapshot>> = targets
+        .iter()
         .map(|(name, _)| states_read.get(name).and_then(FetchState::snap))
         .collect();
 
     let rows = build_rows(&snapshots);
-    let visible_rows: Vec<&Row> = rows.iter()
-        .filter(|r| !diff_on || r.has_diff())
-        .collect();
+    let visible_rows: Vec<&Row> = rows.iter().filter(|r| !diff_on || r.has_diff()).collect();
 
     // Accurate empty-state messaging — distinguishes "loading", "nothing to do",
     // "fetch finished but empty", and "fetch failed".
-    let any_loading      = targets.iter().any(|(n, _)| matches!(states_read.get(n), Some(FetchState::Loading)));
-    let any_actionable   = targets.iter().any(|(_, t)| t.is_actionable());
-    let any_done         = targets.iter().any(|(n, _)| matches!(states_read.get(n), Some(FetchState::Done(_))));
-    let any_err: Vec<(String, String)> = targets.iter().filter_map(|(n, _)| {
-        match states_read.get(n) {
+    let any_loading = targets
+        .iter()
+        .any(|(n, _)| matches!(states_read.get(n), Some(FetchState::Loading)));
+    let any_actionable = targets.iter().any(|(_, t)| t.is_actionable());
+    let any_done = targets
+        .iter()
+        .any(|(n, _)| matches!(states_read.get(n), Some(FetchState::Done(_))));
+    let any_err: Vec<(String, String)> = targets
+        .iter()
+        .filter_map(|(n, _)| match states_read.get(n) {
             Some(FetchState::Err(e)) => Some((n.clone(), e.clone())),
             Some(FetchState::Done(s)) => {
                 let mut parts = Vec::new();
-                if let Some(e) = &s.cosmos_err    { parts.push(format!("cosmos: {}", e)); }
-                if let Some(e) = &s.key_vault_err { parts.push(format!("kv: {}", e)); }
-                if parts.is_empty() { None } else { Some((n.clone(), parts.join("; "))) }
+                if let Some(e) = &s.cosmos_err {
+                    parts.push(format!("cosmos: {}", e));
+                }
+                if let Some(e) = &s.key_vault_err {
+                    parts.push(format!("kv: {}", e));
+                }
+                if parts.is_empty() {
+                    None
+                } else {
+                    Some((n.clone(), parts.join("; ")))
+                }
             }
             _ => None,
-        }
-    }).collect();
+        })
+        .collect();
 
     let empty_msg: String = if !any_actionable {
         "No environment has a complete Azure target. Click ⚙ Configure in a column header to set subscription / resource group / Cosmos / Key Vault for that env.".into()
@@ -422,13 +451,15 @@ pub fn SecurityComparePanel(props: SecurityComparePanelProps) -> Element {
 // ── Row model (just strings) ──────────────────────────────────────────────────
 
 struct Row {
-    label:  String,
+    label: String,
     values: Vec<String>,
 }
 
 impl Row {
     fn has_diff(&self) -> bool {
-        let known: Vec<&String> = self.values.iter()
+        let known: Vec<&String> = self
+            .values
+            .iter()
             .filter(|v| !v.is_empty() && v.as_str() != "…")
             .collect();
         known.windows(2).any(|w| w[0] != w[1])
@@ -441,25 +472,38 @@ fn build_rows(snaps: &[Option<&SecuritySnapshot>]) -> Vec<Row> {
     let n = snaps.len();
     let mut rows: Vec<Row> = Vec::new();
 
-    let cosmos = |i: usize| -> Option<&CosmosSecurity> {
-        snaps[i].and_then(|s| s.cosmos.as_ref())
-    };
-    let vault = |i: usize| -> Option<&KeyVaultSecurity> {
-        snaps[i].and_then(|s| s.key_vault.as_ref())
-    };
+    let cosmos = |i: usize| -> Option<&CosmosSecurity> { snaps[i].and_then(|s| s.cosmos.as_ref()) };
+    let vault =
+        |i: usize| -> Option<&KeyVaultSecurity> { snaps[i].and_then(|s| s.key_vault.as_ref()) };
     let pending = |i: usize| -> bool { snaps[i].is_none() };
 
-    let any_cosmos = (0..n).any(|i| cosmos(i).is_some() || snaps[i].map(|s| s.target.cosmos_account.is_some()).unwrap_or(false));
-    let any_vault  = (0..n).any(|i| vault(i).is_some()  || snaps[i].map(|s| s.target.key_vault.is_some()).unwrap_or(false));
+    let any_cosmos = (0..n).any(|i| {
+        cosmos(i).is_some()
+            || snaps[i]
+                .map(|s| s.target.cosmos_account.is_some())
+                .unwrap_or(false)
+    });
+    let any_vault = (0..n).any(|i| {
+        vault(i).is_some()
+            || snaps[i]
+                .map(|s| s.target.key_vault.is_some())
+                .unwrap_or(false)
+    });
 
     let bool_str = |b: Option<bool>| -> String {
-        match b { Some(true) => "true".into(), Some(false) => "false".into(), None => "—".into() }
+        match b {
+            Some(true) => "true".into(),
+            Some(false) => "false".into(),
+            None => "—".into(),
+        }
     };
-    let str_or_dash = |s: &Option<String>| -> String {
-        s.clone().unwrap_or_else(|| "—".into())
-    };
+    let str_or_dash = |s: &Option<String>| -> String { s.clone().unwrap_or_else(|| "—".into()) };
     let list_str = |items: &[String]| -> String {
-        if items.is_empty() { "(none)".into() } else { items.join(", ") }
+        if items.is_empty() {
+            "(none)".into()
+        } else {
+            items.join(", ")
+        }
     };
 
     // ── Cosmos DB ────────────────────────────────────────────────────────
@@ -467,22 +511,45 @@ fn build_rows(snaps: &[Option<&SecuritySnapshot>]) -> Vec<Row> {
         let cosmos_row = |label: &str, f: &dyn Fn(&CosmosSecurity) -> String| -> Row {
             Row {
                 label: label.to_string(),
-                values: (0..n).map(|i| {
-                    if pending(i) { "…".into() }
-                    else { cosmos(i).map(f).unwrap_or_else(|| "—".into()) }
-                }).collect(),
+                values: (0..n)
+                    .map(|i| {
+                        if pending(i) {
+                            "…".into()
+                        } else {
+                            cosmos(i).map(f).unwrap_or_else(|| "—".into())
+                        }
+                    })
+                    .collect(),
             }
         };
 
-        rows.push(cosmos_row("Cosmos / account name",          &|c| c.account_name.clone()));
-        rows.push(cosmos_row("Cosmos / disableLocalAuth",      &|c| bool_str(c.disable_local_auth)));
-        rows.push(cosmos_row("Cosmos / publicNetworkAccess",   &|c| str_or_dash(&c.public_network_access)));
-        rows.push(cosmos_row("Cosmos / networkAclBypass",      &|c| str_or_dash(&c.network_acl_bypass)));
-        rows.push(cosmos_row("Cosmos / key metadata write",    &|c| bool_str(c.key_metadata_write_enabled)));
-        rows.push(cosmos_row("Cosmos / firewall IP rules",     &|c| list_str(&c.ip_rules)));
-        rows.push(cosmos_row("Cosmos / VNet rules",            &|c| list_str(&c.vnet_rules)));
-        rows.push(cosmos_row("Cosmos / SQL role assignments",  &|c| roles_str(&c.sql_role_assignments)));
-        rows.push(cosmos_row("Cosmos / ARM role assignments",  &|c| roles_str(&c.arm_role_assignments)));
+        rows.push(cosmos_row("Cosmos / account name", &|c| {
+            c.account_name.clone()
+        }));
+        rows.push(cosmos_row("Cosmos / disableLocalAuth", &|c| {
+            bool_str(c.disable_local_auth)
+        }));
+        rows.push(cosmos_row("Cosmos / publicNetworkAccess", &|c| {
+            str_or_dash(&c.public_network_access)
+        }));
+        rows.push(cosmos_row("Cosmos / networkAclBypass", &|c| {
+            str_or_dash(&c.network_acl_bypass)
+        }));
+        rows.push(cosmos_row("Cosmos / key metadata write", &|c| {
+            bool_str(c.key_metadata_write_enabled)
+        }));
+        rows.push(cosmos_row("Cosmos / firewall IP rules", &|c| {
+            list_str(&c.ip_rules)
+        }));
+        rows.push(cosmos_row("Cosmos / VNet rules", &|c| {
+            list_str(&c.vnet_rules)
+        }));
+        rows.push(cosmos_row("Cosmos / SQL role assignments", &|c| {
+            roles_str(&c.sql_role_assignments)
+        }));
+        rows.push(cosmos_row("Cosmos / ARM role assignments", &|c| {
+            roles_str(&c.arm_role_assignments)
+        }));
     }
 
     // ── Key Vault ────────────────────────────────────────────────────────
@@ -490,46 +557,88 @@ fn build_rows(snaps: &[Option<&SecuritySnapshot>]) -> Vec<Row> {
         let kv_row = |label: &str, f: &dyn Fn(&KeyVaultSecurity) -> String| -> Row {
             Row {
                 label: label.to_string(),
-                values: (0..n).map(|i| {
-                    if pending(i) { "…".into() }
-                    else { vault(i).map(f).unwrap_or_else(|| "—".into()) }
-                }).collect(),
+                values: (0..n)
+                    .map(|i| {
+                        if pending(i) {
+                            "…".into()
+                        } else {
+                            vault(i).map(f).unwrap_or_else(|| "—".into())
+                        }
+                    })
+                    .collect(),
             }
         };
 
-        rows.push(kv_row("KeyVault / vault name",                 &|v| v.vault_name.clone()));
-        rows.push(kv_row("KeyVault / enableRbacAuthorization",    &|v| bool_str(v.enable_rbac_authorization)));
-        rows.push(kv_row("KeyVault / publicNetworkAccess",        &|v| str_or_dash(&v.public_network_access)));
-        rows.push(kv_row("KeyVault / purge protection",           &|v| bool_str(v.purge_protection)));
-        rows.push(kv_row("KeyVault / soft-delete retention days", &|v| v.soft_delete_retention_days.map(|d| d.to_string()).unwrap_or_else(|| "—".into())));
-        rows.push(kv_row("KeyVault / firewall IP rules",          &|v| list_str(&v.ip_rules)));
-        rows.push(kv_row("KeyVault / VNet rules",                 &|v| list_str(&v.vnet_rules)));
-        rows.push(kv_row("KeyVault / role assignments",           &|v| roles_str(&v.role_assignments)));
-        rows.push(kv_row("KeyVault / access policies",            &|v| policies_str(&v.access_policies)));
+        rows.push(kv_row("KeyVault / vault name", &|v| v.vault_name.clone()));
+        rows.push(kv_row("KeyVault / enableRbacAuthorization", &|v| {
+            bool_str(v.enable_rbac_authorization)
+        }));
+        rows.push(kv_row("KeyVault / publicNetworkAccess", &|v| {
+            str_or_dash(&v.public_network_access)
+        }));
+        rows.push(kv_row("KeyVault / purge protection", &|v| {
+            bool_str(v.purge_protection)
+        }));
+        rows.push(kv_row("KeyVault / soft-delete retention days", &|v| {
+            v.soft_delete_retention_days
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "—".into())
+        }));
+        rows.push(kv_row("KeyVault / firewall IP rules", &|v| {
+            list_str(&v.ip_rules)
+        }));
+        rows.push(kv_row("KeyVault / VNet rules", &|v| {
+            list_str(&v.vnet_rules)
+        }));
+        rows.push(kv_row("KeyVault / role assignments", &|v| {
+            roles_str(&v.role_assignments)
+        }));
+        rows.push(kv_row("KeyVault / access policies", &|v| {
+            policies_str(&v.access_policies)
+        }));
     }
 
     rows
 }
 
 fn roles_str(roles: &[RoleAssignment]) -> String {
-    if roles.is_empty() { return "(none)".into(); }
-    let mut out: Vec<String> = roles.iter().map(|ra| {
-        let role = ra.role_name.clone().unwrap_or_else(|| short_guid(&ra.role_definition_id));
-        format!("{} → {}", role, short_guid(&ra.principal_id))
-    }).collect();
+    if roles.is_empty() {
+        return "(none)".into();
+    }
+    let mut out: Vec<String> = roles
+        .iter()
+        .map(|ra| {
+            let role = ra
+                .role_name
+                .clone()
+                .unwrap_or_else(|| short_guid(&ra.role_definition_id));
+            format!("{} → {}", role, short_guid(&ra.principal_id))
+        })
+        .collect();
     out.sort();
     out.join(" · ")
 }
 
 fn policies_str(policies: &[AccessPolicy]) -> String {
-    if policies.is_empty() { return "(none)".into(); }
-    let mut out: Vec<String> = policies.iter().map(|ap| {
-        let mut parts = Vec::new();
-        if !ap.permissions_keys.is_empty()    { parts.push(format!("keys:{}",    ap.permissions_keys.join(","))); }
-        if !ap.permissions_secrets.is_empty() { parts.push(format!("secrets:{}", ap.permissions_secrets.join(","))); }
-        if !ap.permissions_certs.is_empty()   { parts.push(format!("certs:{}",   ap.permissions_certs.join(","))); }
-        format!("{} [{}]", short_guid(&ap.object_id), parts.join(" "))
-    }).collect();
+    if policies.is_empty() {
+        return "(none)".into();
+    }
+    let mut out: Vec<String> = policies
+        .iter()
+        .map(|ap| {
+            let mut parts = Vec::new();
+            if !ap.permissions_keys.is_empty() {
+                parts.push(format!("keys:{}", ap.permissions_keys.join(",")));
+            }
+            if !ap.permissions_secrets.is_empty() {
+                parts.push(format!("secrets:{}", ap.permissions_secrets.join(",")));
+            }
+            if !ap.permissions_certs.is_empty() {
+                parts.push(format!("certs:{}", ap.permissions_certs.join(",")));
+            }
+            format!("{} [{}]", short_guid(&ap.object_id), parts.join(" "))
+        })
+        .collect();
     out.sort();
     out.join(" · ")
 }
@@ -538,28 +647,43 @@ fn policies_str(policies: &[AccessPolicy]) -> String {
 
 fn pick_class(value: &str) -> &'static str {
     match value {
-        "" | "—"            => "env-val-missing",
-        "…"                 => "env-val-empty",
-        "(none)"            => "env-val-empty",
-        "true"  | "Enabled" => "env-val-local",
+        "" | "—" => "env-val-missing",
+        "…" => "env-val-empty",
+        "(none)" => "env-val-empty",
+        "true" | "Enabled" => "env-val-local",
         "false" | "Disabled" => "env-val-differs",
-        _                   => "env-val-local",
+        _ => "env-val-local",
     }
 }
 
 fn short_guid(s: &str) -> String {
     let tail = s.rsplit('/').next().unwrap_or(s);
-    if tail.len() >= 8 { tail.chars().take(8).collect::<String>() + "…" } else { tail.to_string() }
+    if tail.len() >= 8 {
+        tail.chars().take(8).collect::<String>() + "…"
+    } else {
+        tail.to_string()
+    }
 }
 
 fn trunc(s: &str, max: usize) -> String {
-    if s.chars().count() <= max { s.to_string() }
-    else { format!("{}…", s.chars().take(max).collect::<String>()) }
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    }
 }
 
 fn describe_target(t: &EnvTarget) -> String {
     let mut bits = Vec::new();
-    if let Some(c) = &t.cosmos_account { bits.push(format!("cosmos: {}", c)); }
-    if let Some(v) = &t.key_vault      { bits.push(format!("kv: {}", v)); }
-    if bits.is_empty() { "—".into() } else { bits.join(" · ") }
+    if let Some(c) = &t.cosmos_account {
+        bits.push(format!("cosmos: {}", c));
+    }
+    if let Some(v) = &t.key_vault {
+        bits.push(format!("kv: {}", v));
+    }
+    if bits.is_empty() {
+        "—".into()
+    } else {
+        bits.join(" · ")
+    }
 }

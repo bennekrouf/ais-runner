@@ -2,8 +2,8 @@
 //! `properties.error` for several failure modes, so we dig the real message
 //! out of the expanded action detail or the Functions host stdout.
 
-use std::collections::HashMap;
 use crate::components::log_panel::LogLine;
+use std::collections::HashMap;
 
 // ── Failed-action message extraction ──────────────────────────────────────
 //
@@ -27,20 +27,28 @@ pub(super) fn extract_error_from_detail(v: &serde_json::Value) -> Option<String>
     for p in PATHS {
         if let Some(s) = v.pointer(p).and_then(|x| x.as_str()) {
             let s = s.trim();
-            if !s.is_empty() { return Some(s.to_string()); }
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
         }
     }
     // Fallback: if outputs.body is itself a JSON-encoded string from a
     // ParseJson failure, the message may be the body text directly.
-    if let Some(s) = v.pointer("/properties/outputs/body").and_then(|x| x.as_str()) {
+    if let Some(s) = v
+        .pointer("/properties/outputs/body")
+        .and_then(|x| x.as_str())
+    {
         let s = s.trim();
-        if !s.is_empty() { return Some(s.to_string()); }
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
     }
     // Last resort: surface the error code so the user at least sees *what*
     // kind of failure it was rather than a silent red row. The runtime puts
     // the code at one of two paths depending on the action type — Foreach
     // and Scope put it at properties.code, leaf actions at properties.error.code.
-    let code = v.pointer("/properties/error/code")
+    let code = v
+        .pointer("/properties/error/code")
         .or_else(|| v.pointer("/properties/code"))
         .and_then(|x| x.as_str())
         .map(str::trim)
@@ -56,13 +64,22 @@ pub(super) fn extract_error_from_detail(v: &serde_json::Value) -> Option<String>
         // message to the action record — it goes to the Functions host
         // stdout instead (known Logic Apps Standard limitation). Tell the
         // user where to look so they don't think this is an ais-runner bug.
-        let atype = v.pointer("/properties/type")
+        let atype = v
+            .pointer("/properties/type")
             .and_then(|x| x.as_str())
             .unwrap_or("");
         let is_scope = matches!(atype, "Foreach" | "Scope" | "Until" | "If");
-        let is_expr  = matches!(atype, "ParseJson" | "Compose" | "InitializeVariable"
-                              | "SetVariable" | "AppendToStringVariable" | "AppendToArrayVariable"
-                              | "IncrementVariable" | "DecrementVariable");
+        let is_expr = matches!(
+            atype,
+            "ParseJson"
+                | "Compose"
+                | "InitializeVariable"
+                | "SetVariable"
+                | "AppendToStringVariable"
+                | "AppendToArrayVariable"
+                | "IncrementVariable"
+                | "DecrementVariable"
+        );
         if c.eq_ignore_ascii_case("NotSpecified") && is_scope {
             format!("{c} — a child action failed; expand to see which.")
         } else if c.eq_ignore_ascii_case("NotSpecified") && is_expr {
@@ -122,7 +139,10 @@ mod extract_error_tests {
     fn falls_back_to_top_level_properties_code() {
         // For_each_page shape: code is at properties.code, no error object.
         let v = json!({ "properties": { "status": "Failed", "code": "ActionFailed" } });
-        assert_eq!(extract_error_from_detail(&v).as_deref(), Some("ActionFailed"));
+        assert_eq!(
+            extract_error_from_detail(&v).as_deref(),
+            Some("ActionFailed")
+        );
     }
 
     #[test]
@@ -132,7 +152,10 @@ mod extract_error_tests {
         });
         let msg = extract_error_from_detail(&v).unwrap();
         assert!(msg.contains("NotSpecified"));
-        assert!(msg.contains("child"), "expected child-action hint, got: {msg}");
+        assert!(
+            msg.contains("child"),
+            "expected child-action hint, got: {msg}"
+        );
     }
 
     #[test]
@@ -141,9 +164,14 @@ mod extract_error_tests {
             "properties": { "status": "Failed", "code": "NotSpecified", "type": "ParseJson" }
         });
         let msg = extract_error_from_detail(&v).unwrap();
-        assert!(msg.contains("ParseJson"), "expected action type in hint, got: {msg}");
-        assert!(msg.contains("func start") || msg.contains("console"),
-                "expected console hint, got: {msg}");
+        assert!(
+            msg.contains("ParseJson"),
+            "expected action type in hint, got: {msg}"
+        );
+        assert!(
+            msg.contains("func start") || msg.contains("console"),
+            "expected console hint, got: {msg}"
+        );
     }
 
     #[test]
@@ -152,7 +180,6 @@ mod extract_error_tests {
         assert_eq!(extract_error_from_detail(&v), None);
     }
 }
-
 
 // ── Log-derived action error extraction ───────────────────────────────────
 //
@@ -191,7 +218,9 @@ fn parse_action_error_line(line: &str) -> Option<(String, String)> {
         || lower.contains("exception")
         || lower.contains("invalid")
         || lower.contains("schema validation");
-    if !has_err_keyword { return None; }
+    if !has_err_keyword {
+        return None;
+    }
 
     // Most Logic Apps runtime error lines name the action in single quotes,
     // e.g. "Action 'Restrictive_Parse_JSON' failed: ..." or
@@ -203,7 +232,9 @@ fn parse_action_error_line(line: &str) -> Option<(String, String)> {
 
     // Trim known fluff to surface the bit the user actually cares about.
     let msg = clean_action_error_message(line, &action);
-    if msg.trim().is_empty() { return None; }
+    if msg.trim().is_empty() {
+        return None;
+    }
     Some((action, msg))
 }
 
@@ -216,7 +247,11 @@ fn extract_quoted_after(line: &str, marker: &str) -> Option<String> {
     let after_q1 = &tail[q1 + 1..];
     let q2 = after_q1.find('\'')?;
     let inner = &after_q1[..q2];
-    if inner.is_empty() { None } else { Some(inner.to_string()) }
+    if inner.is_empty() {
+        None
+    } else {
+        Some(inner.to_string())
+    }
 }
 
 /// Cut the action-error line down to the part the user cares about: take
@@ -227,10 +262,12 @@ fn clean_action_error_message(line: &str, action: &str) -> String {
     if let Some(i) = line.find(&needle) {
         let after = &line[i + needle.len()..];
         // Strip leading punctuation/spaces — ":" / "." / " " / ","
-        let trimmed = after.trim_start_matches(|c: char|
+        let trimmed = after.trim_start_matches(|c: char| {
             c.is_whitespace() || c == ':' || c == '.' || c == ',' || c == '-'
-        );
-        if !trimmed.is_empty() { return trimmed.to_string(); }
+        });
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
     }
     line.trim().to_string()
 }
@@ -241,7 +278,11 @@ mod log_scrape_tests {
     use crate::components::log_panel::LogLevel;
 
     fn mk(msg: &str) -> LogLine {
-        LogLine { time: "00:00:00".into(), msg: msg.into(), level: LogLevel::Error }
+        LogLine {
+            time: "00:00:00".into(),
+            msg: msg.into(),
+            level: LogLevel::Error,
+        }
     }
 
     #[test]
@@ -279,4 +320,3 @@ mod log_scrape_tests {
         assert!(build_action_error_map(&logs).is_empty());
     }
 }
-

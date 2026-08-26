@@ -118,7 +118,11 @@ mod tests {
         // start: snapshot, then patch in place
         assert!(snapshot(&ws).unwrap());
         std::fs::write(&conn, patched(CLOUD)).unwrap();
-        assert_ne!(std::fs::read_to_string(&conn).unwrap(), CLOUD, "test premise: the patch changes the file");
+        assert_ne!(
+            std::fs::read_to_string(&conn).unwrap(),
+            CLOUD,
+            "test premise: the patch changes the file"
+        );
 
         // stop: the developer gets their file back untouched
         assert!(restore(&ws).unwrap());
@@ -139,7 +143,10 @@ mod tests {
         snapshot(&ws).unwrap();
         std::fs::write(&conn, patched(CLOUD)).unwrap();
         // crash — no restore. Next start:
-        assert!(!snapshot(&ws).unwrap(), "must not snapshot an already-patched file");
+        assert!(
+            !snapshot(&ws).unwrap(),
+            "must not snapshot an already-patched file"
+        );
 
         restore(&ws).unwrap();
         assert_eq!(std::fs::read_to_string(&conn).unwrap(), CLOUD);
@@ -152,7 +159,10 @@ mod tests {
         let ws = workspace();
         std::fs::write(ws.join("connections.json"), CLOUD).unwrap();
         assert!(!restore(&ws).unwrap());
-        assert_eq!(std::fs::read_to_string(ws.join("connections.json")).unwrap(), CLOUD);
+        assert_eq!(
+            std::fs::read_to_string(ws.join("connections.json")).unwrap(),
+            CLOUD
+        );
         std::fs::remove_dir_all(&ws).ok();
     }
 }

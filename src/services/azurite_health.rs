@@ -38,7 +38,10 @@ pub fn record_startup_note(line: String) {
 /// Drain the recorded notes. Returns them once; later calls see an empty list,
 /// so a re-render cannot duplicate them in the log.
 pub fn take_startup_notes() -> Vec<String> {
-    notes().lock().map(|mut g| std::mem::take(&mut *g)).unwrap_or_default()
+    notes()
+        .lock()
+        .map(|mut g| std::mem::take(&mut *g))
+        .unwrap_or_default()
 }
 
 /// Azurite writes its table service to this LokiJS database.
@@ -212,7 +215,9 @@ pub fn provisioned_flow_names(dir: &Path) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     if let Some(cols) = parsed.get("collections").and_then(|c| c.as_array()) {
         for col in cols {
-            let Some(rows) = col.get("data").and_then(|d| d.as_array()) else { continue };
+            let Some(rows) = col.get("data").and_then(|d| d.as_array()) else {
+                continue;
+            };
             for row in rows {
                 if let Some(name) = row
                     .get("properties")
@@ -392,10 +397,12 @@ mod tests {
     #[test]
     fn single_site_is_healthy() {
         let d = tmp("single");
-        write(&d, TABLE_DB, &db(
-            r#"{"name":"devstoreaccount1$flow8e478029a1a5452flows"},
-               {"name":"devstoreaccount1$flow8e478029a1a5452cu00abcruns"}"#,
-        ));
+        write(
+            &d,
+            TABLE_DB,
+            &db(r#"{"name":"devstoreaccount1$flow8e478029a1a5452flows"},
+               {"name":"devstoreaccount1$flow8e478029a1a5452cu00abcruns"}"#),
+        );
         assert_eq!(inspect(&d), Verdict::Healthy);
     }
 
@@ -409,10 +416,12 @@ mod tests {
     #[test]
     fn two_site_identities_are_corrupt() {
         let d = tmp("twosites");
-        write(&d, TABLE_DB, &db(
-            r#"{"name":"devstoreaccount1$flow8e478029a1a5452flows"},
-               {"name":"devstoreaccount1$flow99998029a1a5452flows"}"#,
-        ));
+        write(
+            &d,
+            TABLE_DB,
+            &db(r#"{"name":"devstoreaccount1$flow8e478029a1a5452flows"},
+               {"name":"devstoreaccount1$flow99998029a1a5452flows"}"#),
+        );
         match inspect(&d) {
             Verdict::Corrupt { reason } => assert!(reason.contains("site identities"), "{reason}"),
             v => panic!("expected corrupt, got {v:?}"),
@@ -456,7 +465,11 @@ mod tests {
         let msgs = startup_check(&d);
         assert_eq!(msgs.len(), 1, "{msgs:?}");
         assert!(msgs[0].contains("unusable"), "{}", msgs[0]);
-        assert_eq!(inspect(&d), Verdict::Healthy, "state must be usable afterwards");
+        assert_eq!(
+            inspect(&d),
+            Verdict::Healthy,
+            "state must be usable afterwards"
+        );
     }
 
     // ── provisioning gap ───────────────────────────────────────────────────
@@ -484,7 +497,11 @@ mod tests {
     #[test]
     fn reports_workflows_registered_but_never_provisioned() {
         let d = tmp("gap-partial");
-        write(&d, TABLE_DB, &flows_db(&["AIS-GenericCatch", "Test-AppConfig"]));
+        write(
+            &d,
+            TABLE_DB,
+            &flows_db(&["AIS-GenericCatch", "Test-AppConfig"]),
+        );
         let registered = vec![
             "AIS-GenericCatch".to_string(),
             "Test-AppConfig".to_string(),
@@ -494,7 +511,10 @@ mod tests {
         let gap = provisioning_gap(&d, &registered).expect("gap expected");
         assert_eq!(gap.registered, 4);
         assert_eq!(gap.provisioned, 2);
-        assert_eq!(gap.missing, vec!["Check-Ignite-Payment-File", "Send-Kyriba-files"]);
+        assert_eq!(
+            gap.missing,
+            vec!["Check-Ignite-Payment-File", "Send-Kyriba-files"]
+        );
     }
 
     /// A workspace where func has never started has no table storage at all.
@@ -519,15 +539,19 @@ mod tests {
     #[test]
     fn flow_names_are_collected_across_tables_and_deduplicated() {
         let d = tmp("gap-dedup");
-        write(&d, TABLE_DB, &format!(
-            r#"{{"collections":[
+        write(
+            &d,
+            TABLE_DB,
+            &format!(
+                r#"{{"collections":[
                 {{"name":"devstoreaccount1$flowabcflows","data":[
                     {{"properties":{{"FlowName":"A"}}}}]}},
                 {{"name":"devstoreaccount1$flowabccu0012flows","data":[
                     {{"properties":{{"FlowName":"A"}}}},
                     {{"properties":{{"FlowName":"B"}}}}]}}
             ]}}"#
-        ));
+            ),
+        );
         let names = provisioned_flow_names(&d);
         assert_eq!(names.len(), 2);
         assert!(names.contains("A") && names.contains("B"));
@@ -536,10 +560,17 @@ mod tests {
     #[test]
     fn oversized_debug_log_is_truncated_but_kept() {
         let d = tmp("biglog");
-        std::fs::write(d.join(DEBUG_LOG), vec![b'x'; (MAX_DEBUG_LOG_BYTES + 1) as usize]).unwrap();
+        std::fs::write(
+            d.join(DEBUG_LOG),
+            vec![b'x'; (MAX_DEBUG_LOG_BYTES + 1) as usize],
+        )
+        .unwrap();
         let was = trim_debug_log(&d).expect("should truncate");
         assert!(was > MAX_DEBUG_LOG_BYTES);
-        assert!(d.join(DEBUG_LOG).exists(), "Azurite keeps writing to it — must not be deleted");
+        assert!(
+            d.join(DEBUG_LOG).exists(),
+            "Azurite keeps writing to it — must not be deleted"
+        );
         assert_eq!(std::fs::metadata(d.join(DEBUG_LOG)).unwrap().len(), 0);
     }
 
@@ -554,7 +585,11 @@ mod tests {
     #[test]
     fn startup_check_is_silent_on_a_healthy_workspace() {
         let d = tmp("silent");
-        write(&d, TABLE_DB, &db(r#"{"name":"devstoreaccount1$flow8e478029a1a5452flows"}"#));
+        write(
+            &d,
+            TABLE_DB,
+            &db(r#"{"name":"devstoreaccount1$flow8e478029a1a5452flows"}"#),
+        );
         assert!(startup_check(&d).is_empty());
     }
 }

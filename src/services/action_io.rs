@@ -28,7 +28,7 @@ impl DownloadFormat {
     /// Filename extension for native save-dialog defaults.
     pub fn extension(&self) -> &'static str {
         match self {
-            DownloadFormat::Csv  => "csv",
+            DownloadFormat::Csv => "csv",
             DownloadFormat::Html => "html",
             DownloadFormat::Json => "json",
             DownloadFormat::Text => "txt",
@@ -38,7 +38,7 @@ impl DownloadFormat {
     /// Human label for the save dialog filter ("CSV files", "JSON files"…).
     pub fn label(&self) -> &'static str {
         match self {
-            DownloadFormat::Csv  => "CSV files",
+            DownloadFormat::Csv => "CSV files",
             DownloadFormat::Html => "HTML files",
             DownloadFormat::Json => "JSON files",
             DownloadFormat::Text => "Text files",
@@ -50,8 +50,8 @@ impl DownloadFormat {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedDownload {
     /// Bytes to write to disk. UTF-8 for every format we support today.
-    pub bytes:        Vec<u8>,
-    pub format:       DownloadFormat,
+    pub bytes: Vec<u8>,
+    pub format: DownloadFormat,
     /// Suggested filename (sans path) including extension. Includes the
     /// action name so a user dumping outputs from multiple actions in the
     /// same run gets distinct filenames by default.
@@ -83,10 +83,14 @@ pub fn prepare_download(
     let body = outputs.get("body").unwrap_or(outputs).clone();
 
     let format = infer_format(action_type, requested_format, &body);
-    let bytes  = serialise(&body, &format);
+    let bytes = serialise(&body, &format);
     let suggested_filename = format!("{}.{}", sanitise_filename(action_name), format.extension());
 
-    Some(PreparedDownload { bytes, format, suggested_filename })
+    Some(PreparedDownload {
+        bytes,
+        format,
+        suggested_filename,
+    })
 }
 
 /// Choose the right file format for the body. The decision tree:
@@ -99,16 +103,24 @@ pub fn prepare_download(
 ///    Functions / custom code that compose CSV manually.
 /// 3. Body is a JSON object or array → JSON.
 /// 4. Anything else (plain string, number, bool, null) → Text.
-fn infer_format(action_type: Option<&str>, requested_format: Option<&str>, body: &Value) -> DownloadFormat {
+fn infer_format(
+    action_type: Option<&str>,
+    requested_format: Option<&str>,
+    body: &Value,
+) -> DownloadFormat {
     if action_type == Some("Table") {
         return match requested_format.map(str::to_ascii_lowercase).as_deref() {
             Some("html") => DownloadFormat::Html,
-            _            => DownloadFormat::Csv,
+            _ => DownloadFormat::Csv,
         };
     }
     if let Value::String(s) = body {
-        if looks_like_csv(s) { return DownloadFormat::Csv; }
-        if looks_like_html(s) { return DownloadFormat::Html; }
+        if looks_like_csv(s) {
+            return DownloadFormat::Csv;
+        }
+        if looks_like_html(s) {
+            return DownloadFormat::Html;
+        }
         return DownloadFormat::Text;
     }
     if matches!(body, Value::Object(_) | Value::Array(_)) {
@@ -119,21 +131,31 @@ fn infer_format(action_type: Option<&str>, requested_format: Option<&str>, body:
 
 fn serialise(body: &Value, format: &DownloadFormat) -> Vec<u8> {
     match (body, format) {
-        (Value::String(s), DownloadFormat::Csv | DownloadFormat::Html | DownloadFormat::Text) =>
-            s.clone().into_bytes(),
-        (v, DownloadFormat::Json) =>
-            serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string()).into_bytes(),
+        (Value::String(s), DownloadFormat::Csv | DownloadFormat::Html | DownloadFormat::Text) => {
+            s.clone().into_bytes()
+        }
+        (v, DownloadFormat::Json) => serde_json::to_string_pretty(v)
+            .unwrap_or_else(|_| v.to_string())
+            .into_bytes(),
         (v, _) =>
-            // Defensive: a non-string body labelled CSV/HTML/Text — fall back
-            // to the JSON serialisation rather than producing garbage.
-            serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string()).into_bytes(),
+        // Defensive: a non-string body labelled CSV/HTML/Text — fall back
+        // to the JSON serialisation rather than producing garbage.
+        {
+            serde_json::to_string_pretty(v)
+                .unwrap_or_else(|_| v.to_string())
+                .into_bytes()
+        }
     }
 }
 
 fn looks_like_csv(s: &str) -> bool {
-    if s.starts_with('{') || s.starts_with('[') || s.starts_with('<') { return false; }
+    if s.starts_with('{') || s.starts_with('[') || s.starts_with('<') {
+        return false;
+    }
     let first_lines: Vec<&str> = s.lines().take(5).collect();
-    if first_lines.is_empty() { return false; }
+    if first_lines.is_empty() {
+        return false;
+    }
     first_lines.iter().all(|l| l.contains(','))
 }
 
@@ -149,7 +171,13 @@ fn looks_like_html(s: &str) -> bool {
 /// as a default filename without surprising the OS save dialog.
 fn sanitise_filename(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -231,9 +259,8 @@ mod tests {
     #[test]
     fn unsafe_characters_in_action_name_are_sanitised() {
         let d = detail_with_body(json!("a,b"));
-        let p = prepare_download(
-            "Create CSV / dump:file?", Some("Table"), Some("CSV"), &d,
-        ).unwrap();
+        let p =
+            prepare_download("Create CSV / dump:file?", Some("Table"), Some("CSV"), &d).unwrap();
         // Spaces, slash, colon, question-mark all become `_`.
         assert_eq!(p.suggested_filename, "Create_CSV___dump_file_.csv");
     }

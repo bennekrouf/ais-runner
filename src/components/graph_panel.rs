@@ -1,8 +1,8 @@
+use crate::services::config;
 use dioxus::prelude::*;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
-use std::collections::HashMap;
-use crate::services::config;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct GraphPanelProps {
@@ -35,12 +35,17 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
     // ── Restore saved preferences ────────────────────────────────────────────
     let saved = config::load().get_graph_prefs(&dir);
 
-    let mut graph_data      = use_signal(|| Option::<GraphData>::None);
-    let mut selected_chain  = use_signal(|| saved.selected_chain.clone().unwrap_or_else(|| "All".to_string()));
-    let mut show_all_pills  = use_signal(|| false);
+    let mut graph_data = use_signal(|| Option::<GraphData>::None);
+    let mut selected_chain = use_signal(|| {
+        saved
+            .selected_chain
+            .clone()
+            .unwrap_or_else(|| "All".to_string())
+    });
+    let mut show_all_pills = use_signal(|| false);
     let mut excluded_nodes: Signal<HashSet<String>> = use_signal(|| saved.excluded_nodes.clone());
-    let mut filter_open     = use_signal(|| false);
-    let mut filter_search   = use_signal(String::new);
+    let mut filter_open = use_signal(|| false);
+    let mut filter_search = use_signal(String::new);
     // Incrementing this re-runs the data-load effect
     let mut refresh_tick: Signal<u32> = use_signal(|| 0);
 
@@ -48,18 +53,23 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
     use_effect({
         let dir = dir.clone();
         move || {
-            let sel  = selected_chain.read().clone();
+            let sel = selected_chain.read().clone();
             let excl = excluded_nodes.read().clone();
-            let d    = dir.clone();
+            let d = dir.clone();
             spawn(async move {
                 tokio::task::spawn_blocking(move || {
                     let mut cfg = config::load();
-                    cfg.set_graph_prefs(d, config::GraphPrefs {
-                        selected_chain: if sel == "All" { None } else { Some(sel) },
-                        excluded_nodes: excl,
-                    });
+                    cfg.set_graph_prefs(
+                        d,
+                        config::GraphPrefs {
+                            selected_chain: if sel == "All" { None } else { Some(sel) },
+                            excluded_nodes: excl,
+                        },
+                    );
                     config::save(&cfg);
-                }).await.ok();
+                })
+                .await
+                .ok();
             });
         }
     });
@@ -69,11 +79,12 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
         move || {
             let _tick = *refresh_tick.read(); // reactive dependency
             let d = dir.clone();
-            graph_data.set(None);             // show "Loading…" while scanning
+            graph_data.set(None); // show "Loading…" while scanning
             spawn(async move {
-                let data = tokio::task::spawn_blocking(move || {
-                    build_graph_data(&d)
-                }).await.ok().flatten();
+                let data = tokio::task::spawn_blocking(move || build_graph_data(&d))
+                    .await
+                    .ok()
+                    .flatten();
                 graph_data.set(data);
             });
         }
@@ -101,8 +112,8 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
             // Clone data for the effect closure
             let eff_data = data.clone();
             use_effect(move || {
-                let sel      = selected_chain.read().clone();
-                let light    = *is_light.read();
+                let sel = selected_chain.read().clone();
+                let light = *is_light.read();
                 let excluded = excluded_nodes.read().clone();
                 let data_ref = eff_data.clone();
 
@@ -113,31 +124,49 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
                         let theme = Theme::from_light(light);
 
                         let chain_ids: HashSet<String> = if sel == "All" {
-                            data_ref.node_objects.iter().map(|(id, _)| id.clone()).collect()
-                        } else if let Some(chain) = data_ref.chains.iter().find(|c| c.label == sel) {
+                            data_ref
+                                .node_objects
+                                .iter()
+                                .map(|(id, _)| id.clone())
+                                .collect()
+                        } else if let Some(chain) = data_ref.chains.iter().find(|c| c.label == sel)
+                        {
                             chain.workflows.clone()
                         } else {
-                            data_ref.node_objects.iter().map(|(id, _)| id.clone()).collect()
+                            data_ref
+                                .node_objects
+                                .iter()
+                                .map(|(id, _)| id.clone())
+                                .collect()
                         };
 
-                        let visible: HashSet<&str> = chain_ids.iter()
+                        let visible: HashSet<&str> = chain_ids
+                            .iter()
                             .filter(|id| !excluded.contains(*id))
                             .map(|s| s.as_str())
                             .collect();
 
-                        let nodes: Vec<&str> = data_ref.node_objects.iter()
+                        let nodes: Vec<&str> = data_ref
+                            .node_objects
+                            .iter()
                             .filter(|(id, _)| visible.contains(id.as_str()))
                             .map(|(_, json)| json.as_str())
                             .collect();
-                        let edges: Vec<&str> = data_ref.edge_objects.iter()
-                            .filter(|(from, to, _)| visible.contains(from.as_str()) && visible.contains(to.as_str()))
+                        let edges: Vec<&str> = data_ref
+                            .edge_objects
+                            .iter()
+                            .filter(|(from, to, _)| {
+                                visible.contains(from.as_str()) && visible.contains(to.as_str())
+                            })
                             .map(|(_, _, json)| json.as_str())
                             .collect();
 
                         let fn_str = format!("[{}]", nodes.join(","));
                         let fe_str = format!("[{}]", edges.join(","));
                         build_d3_script(&fn_str, &fe_str, &theme)
-                    }).await.unwrap_or_default();
+                    })
+                    .await
+                    .unwrap_or_default();
 
                     document::eval(&script);
                 });
@@ -520,18 +549,24 @@ fn build_graph_data(logic_apps_dir: &str) -> Option<GraphData> {
     };
 
     let workflows = ais_chain::parser::parse_all(&path);
-    if workflows.is_empty() { return None; }
+    if workflows.is_empty() {
+        return None;
+    }
 
     // Workflows whose workflow.json exists on disk but failed to parse —
     // parse_all drops them silently, which fragments chains with no visible
     // cause. Surface them as red "broken" nodes instead.
     let parsed_names: HashSet<&str> = workflows.iter().map(|w| w.name.as_str()).collect();
-    let broken: Vec<String> = std::fs::read_dir(&path).ok()
-        .map(|entries| entries.flatten()
-            .filter(|e| e.path().is_dir() && e.path().join("workflow.json").is_file())
-            .filter_map(|e| e.file_name().into_string().ok())
-            .filter(|name| !parsed_names.contains(name.as_str()))
-            .collect())
+    let broken: Vec<String> = std::fs::read_dir(&path)
+        .ok()
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.path().is_dir() && e.path().join("workflow.json").is_file())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|name| !parsed_names.contains(name.as_str()))
+                .collect()
+        })
         .unwrap_or_default();
 
     // Manual links live in the tool home (~/.ais/chains/<key>.txt), never in
@@ -542,7 +577,10 @@ fn build_graph_data(logic_apps_dir: &str) -> Option<GraphData> {
     let mut link_warnings = loaded.warnings;
     link_warnings.extend(ais_chain::links::validate(
         &manual_links,
-        &workflows.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
+        &workflows
+            .iter()
+            .map(|w| w.name.as_str())
+            .collect::<Vec<_>>(),
     ));
     for w in &link_warnings {
         eprintln!("[ais-chain links] {w}");
@@ -552,7 +590,8 @@ fn build_graph_data(logic_apps_dir: &str) -> Option<GraphData> {
     let edges = graph.all_edges();
 
     let raw_chains = graph.find_chains();
-    let chains: Vec<ChainInfo> = raw_chains.iter()
+    let chains: Vec<ChainInfo> = raw_chains
+        .iter()
         .filter(|c| c.steps.len() > 1)
         .map(|c| ChainInfo {
             label: c.steps[0].workflow.clone(),
@@ -573,43 +612,82 @@ fn build_graph_data(logic_apps_dir: &str) -> Option<GraphData> {
     let mut node_objects: Vec<(String, String)> = Vec::new();
     for name in &nodes_set {
         let wf = workflows.iter().find(|w| w.name == **name);
-        let trigger = wf.map(|w| {
-            w.triggers.iter()
-                .map(|t| format!("{}:{}", t.kind, t.target))
-                .collect::<Vec<_>>()
-                .join(", ")
-        }).unwrap_or_default();
+        let trigger = wf
+            .map(|w| {
+                w.triggers
+                    .iter()
+                    .map(|t| format!("{}:{}", t.kind, t.target))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
 
-        let group = if trigger.contains("http") { "http" }
-            else if trigger.contains("queue") { "queue" }
-            else if trigger.contains("blob") { "blob" }
-            else if trigger.contains("recurrence") { "recurrence" }
-            else { "generic" };
+        let group = if trigger.contains("http") {
+            "http"
+        } else if trigger.contains("queue") {
+            "queue"
+        } else if trigger.contains("blob") {
+            "blob"
+        } else if trigger.contains("recurrence") {
+            "recurrence"
+        } else {
+            "generic"
+        };
 
         let json = format!(r#"{{ "id": "{name}", "trigger": "{trigger}", "group": "{group}" }}"#);
         node_objects.push((name.to_string(), json));
     }
 
     for name in &broken {
-        let json = format!(r#"{{ "id": "{name}", "trigger": "⚠ workflow.json is invalid JSON — fix it to restore this node's chain links", "group": "broken" }}"#);
+        let json = format!(
+            r#"{{ "id": "{name}", "trigger": "⚠ workflow.json is invalid JSON — fix it to restore this node's chain links", "group": "broken" }}"#
+        );
         node_objects.push((name.clone(), json));
     }
 
     let mut edge_objects: Vec<(String, String, String)> = Vec::new();
     for (from, to, link) in &edges {
-        let kind = if link.starts_with("queue:") { "queue" }
-            else if *link == "EventGrid" { "eventgrid" }
-            else if *link == "invoke" { "invoke" }
-            else if link.starts_with("function:") { "function" }
-            else { "other" };
-        let json = format!(r#"{{ "source": "{from}", "target": "{to}", "label": "{link}", "kind": "{kind}" }}"#);
+        let kind = if link.starts_with("queue:") {
+            "queue"
+        } else if *link == "EventGrid" {
+            "eventgrid"
+        } else if *link == "invoke" {
+            "invoke"
+        } else if link.starts_with("function:") {
+            "function"
+        } else {
+            "other"
+        };
+        let json = format!(
+            r#"{{ "source": "{from}", "target": "{to}", "label": "{link}", "kind": "{kind}" }}"#
+        );
         edge_objects.push((from.to_string(), to.to_string(), json));
     }
 
-    let nodes_json = format!("[{}]", node_objects.iter().map(|(_, j)| j.as_str()).collect::<Vec<_>>().join(","));
-    let edges_json = format!("[{}]", edge_objects.iter().map(|(_, _, j)| j.as_str()).collect::<Vec<_>>().join(","));
+    let nodes_json = format!(
+        "[{}]",
+        node_objects
+            .iter()
+            .map(|(_, j)| j.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let edges_json = format!(
+        "[{}]",
+        edge_objects
+            .iter()
+            .map(|(_, _, j)| j.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
 
-    Some(GraphData { nodes_json, edges_json, node_objects, edge_objects, chains })
+    Some(GraphData {
+        nodes_json,
+        edges_json,
+        node_objects,
+        edge_objects,
+        chains,
+    })
 }
 
 // ── D3 script ────────────────────────────────────────────────────────────────
@@ -618,7 +696,8 @@ fn build_d3_script(nodes_json: &str, edges_json: &str, theme: &Theme) -> String 
     let nodes = nodes_json.replace('\\', "\\\\");
     let edges = edges_json.replace('\\', "\\\\");
 
-    format!(r#"
+    format!(
+        r#"
 (function() {{
     var oldSvg = document.getElementById('graph-svg');
     if (!oldSvg) return;

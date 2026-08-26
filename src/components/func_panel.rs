@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use dioxus::prelude::*;
+use std::sync::Arc;
 
 use crate::components::log_panel::LogLine;
 use crate::handlers::java;
@@ -15,31 +15,38 @@ pub struct FuncFile {
 #[derive(Props, Clone, PartialEq)]
 pub struct FuncPanelProps {
     pub func_apps_dir: String,
-    pub state:         Signal<ServiceState>,
-    pub proc:          Signal<Arc<ManagedProcess>>,
-    pub log_lines:     Signal<Vec<LogLine>>,
-    pub java_lines:    Signal<Vec<String>>,
+    pub state: Signal<ServiceState>,
+    pub proc: Signal<Arc<ManagedProcess>>,
+    pub log_lines: Signal<Vec<LogLine>>,
+    pub java_lines: Signal<Vec<String>>,
 }
 
 fn scan_func_files(func_apps_dir: &str) -> Vec<FuncFile> {
     let extensions = ["java", "cs", "py", "js", "ts"];
-    let mut files  = Vec::new();
-    let base       = std::path::Path::new(func_apps_dir);
-    if !base.exists() { return files; }
+    let mut files = Vec::new();
+    let base = std::path::Path::new(func_apps_dir);
+    if !base.exists() {
+        return files;
+    }
 
     fn walk(dir: &std::path::Path, exts: &[&str], out: &mut Vec<FuncFile>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
-                if matches!(name.as_ref(), "target" | "node_modules" | ".git" | "__pycache__") {
+                if matches!(
+                    name.as_ref(),
+                    "target" | "node_modules" | ".git" | "__pycache__"
+                ) {
                     continue;
                 }
                 walk(&path, exts, out);
             } else {
                 let fname = path.file_name().unwrap_or_default().to_string_lossy();
-                let ext   = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                 if exts.contains(&ext) {
                     out.push(FuncFile {
                         name: fname.to_string(),
@@ -57,32 +64,39 @@ fn scan_func_files(func_apps_dir: &str) -> Vec<FuncFile> {
 }
 
 fn lang_icon(lang: &str) -> &'static str {
-    match lang { "java" => "☕", "cs" => "⬡", "py" => "🐍", "ts" | "js" => "⚡", "json" => "{ }", _ => "📄" }
+    match lang {
+        "java" => "☕",
+        "cs" => "⬡",
+        "py" => "🐍",
+        "ts" | "js" => "⚡",
+        "json" => "{ }",
+        _ => "📄",
+    }
 }
 
 fn hljs_lang(lang: &str) -> &'static str {
     match lang {
         "java" => "java",
-        "cs"   => "csharp",
-        "py"   => "python",
-        "js"   => "javascript",
-        "ts"   => "typescript",
+        "cs" => "csharp",
+        "py" => "python",
+        "js" => "javascript",
+        "ts" => "typescript",
         "json" => "json",
-        _      => "plaintext",
+        _ => "plaintext",
     }
 }
 
 #[component]
 pub fn FuncPanel(props: FuncPanelProps) -> Element {
-    let dir              = props.func_apps_dir.clone();
-    let files            = use_memo(move || scan_func_files(&props.func_apps_dir));
-    let mut selected     = use_signal(|| Option::<FuncFile>::None);
-    let mut content      = use_signal(String::new);
-    let mut copied           = use_signal(|| false);
+    let dir = props.func_apps_dir.clone();
+    let files = use_memo(move || scan_func_files(&props.func_apps_dir));
+    let mut selected = use_signal(|| Option::<FuncFile>::None);
+    let mut content = use_signal(String::new);
+    let mut copied = use_signal(|| false);
     let mut highlighted_html = use_signal(String::new);
-    let state                = props.state;
-    let is_running           = matches!(*state.read(), ServiceState::Running);
-    let is_starting          = matches!(*state.read(), ServiceState::Starting);
+    let state = props.state;
+    let is_running = matches!(*state.read(), ServiceState::Running);
+    let is_starting = matches!(*state.read(), ServiceState::Starting);
 
     // Auto-select first file on mount
     use_effect(move || {
@@ -96,8 +110,8 @@ pub fn FuncPanel(props: FuncPanelProps) -> Element {
     // Load file content when selection changes
     use_effect(move || {
         if let Some(f) = selected.read().clone() {
-            let text = std::fs::read_to_string(&f.path)
-                .unwrap_or_else(|e| format!("// Error: {e}"));
+            let text =
+                std::fs::read_to_string(&f.path).unwrap_or_else(|e| format!("// Error: {e}"));
             content.set(text);
         } else {
             content.set(String::new());
@@ -108,17 +122,23 @@ pub fn FuncPanel(props: FuncPanelProps) -> Element {
     // Highlight via JS in a throwaway element — result sent back via dioxus.send()
     // so Dioxus never touches the rendered HTML directly (no VDOM conflict).
     use_effect(move || {
-        let raw  = content.read().clone();
-        let lang = selected.read().as_ref()
+        let raw = content.read().clone();
+        let lang = selected
+            .read()
+            .as_ref()
             .map(|f| hljs_lang(&f.lang))
             .unwrap_or("plaintext");
 
-        if raw.is_empty() { highlighted_html.set(String::new()); return; }
+        if raw.is_empty() {
+            highlighted_html.set(String::new());
+            return;
+        }
 
         // JSON-encode so newlines / quotes are safely embedded in JS
         let raw_json = serde_json::to_string(&raw).unwrap_or_else(|_| "\"\"".into());
 
-        let script = format!(r#"
+        let script = format!(
+            r#"
 (function() {{
     var raw  = {raw_json};
     var lang = '{lang}';
@@ -151,7 +171,8 @@ pub fn FuncPanel(props: FuncPanelProps) -> Element {
         document.head.appendChild(s);
     }}
 }})();
-"#);
+"#
+        );
         spawn(async move {
             let mut eval = document::eval(&script);
             if let Ok(val) = eval.recv().await {
@@ -164,9 +185,17 @@ pub fn FuncPanel(props: FuncPanelProps) -> Element {
         });
     });
 
-    let n_files    = files.read().len();
-    let file_lbl   = if n_files == 1 { "Functions (1)".to_string() } else { format!("Functions ({n_files})") };
-    let fname_opacity = if selected.read().is_none() { "0.35" } else { "1" };
+    let n_files = files.read().len();
+    let file_lbl = if n_files == 1 {
+        "Functions (1)".to_string()
+    } else {
+        format!("Functions ({n_files})")
+    };
+    let fname_opacity = if selected.read().is_none() {
+        "0.35"
+    } else {
+        "1"
+    };
 
     rsx! {
         div { id: "func-panel", style: "display:flex; flex:1; overflow:hidden; flex-direction:column;",

@@ -1,9 +1,9 @@
 //! One collapsible block per run: header, failure summary, storage-events
 //! strip (with per-run snapshot cache), and the action rows.
 
+use crate::services::workflows::{ActionItem, RunItem};
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
-use crate::services::workflows::{ActionItem, RunItem};
 
 use super::action_row::ActionRow;
 use super::storage_events::{storage_events_for_run, summarize_storage_events};
@@ -12,25 +12,25 @@ use super::storage_events::{storage_events_for_run, summarize_storage_events};
 
 #[derive(Props, Clone, PartialEq)]
 pub(super) struct RunBlockProps {
-    pub(super) run:            RunItem,
-    pub(super) actions:        Vec<ActionItem>,
-    pub(super) max_ms:         i64,
-    pub(super) is_live:        bool,
-    pub(super) workflow:       String,
-    pub(super) on_select_run:  EventHandler<String>,
+    pub(super) run: RunItem,
+    pub(super) actions: Vec<ActionItem>,
+    pub(super) max_ms: i64,
+    pub(super) is_live: bool,
+    pub(super) workflow: String,
+    pub(super) on_select_run: EventHandler<String>,
     pub(super) collapsed_runs: Signal<HashSet<String>>,
     /// Live Azurite debug.log buffer. Filtered per-run by time window to
     /// surface storage events (4xx/5xx, table conflicts) inside this block.
-    pub(super) az_lines:       Signal<Vec<String>>,
+    pub(super) az_lines: Signal<Vec<String>>,
     /// Session cache of each run's storage events, owned by RunDetail. The
     /// live buffer rotates/evicts — this keeps a finished run's events
     /// visible while the user is still investigating it.
-    pub(super) events_cache:   Signal<HashMap<String, Vec<String>>>,
+    pub(super) events_cache: Signal<HashMap<String, Vec<String>>>,
     /// When true, the action list is filtered to just the first action whose
     /// status indicates failure (failed / timedout / cancelled). Lets the
     /// user pin down the culprit in a long action list without skipping past
     /// downstream "skipped" noise.
-    pub(super) failures_only:  bool,
+    pub(super) failures_only: bool,
     /// Pre-computed `action_name → error message` map, scraped from the
     /// Functions host stdout that this run produced. Used as the fallback
     /// when the Logic Apps management API returns NotSpecified — the real
@@ -42,7 +42,7 @@ pub(super) struct RunBlockProps {
 pub(super) fn RunBlock(props: RunBlockProps) -> Element {
     let status_lower = props.run.properties.status.to_lowercase();
     let status_class = format!("run-status {}", status_lower);
-    let run_id  = props.run.name.clone();
+    let run_id = props.run.name.clone();
     let run_id2 = run_id.clone();
     let run_id3 = run_id.clone();
 
@@ -76,7 +76,9 @@ pub(super) fn RunBlock(props: RunBlockProps) -> Element {
             // computation — don't let that shrink an earlier, richer capture.
             if !live.is_empty() {
                 let mut cache = events_cache.write();
-                let keep = cache.get(&run_key).map_or(true, |old| live.len() >= old.len());
+                let keep = cache
+                    .get(&run_key)
+                    .map_or(true, |old| live.len() >= old.len());
                 if keep {
                     cache.insert(run_key.clone(), live.clone());
                 }
@@ -85,7 +87,11 @@ pub(super) fn RunBlock(props: RunBlockProps) -> Element {
     }
     let from_cache = live_events.is_empty();
     let events = if from_cache {
-        events_cache.read().get(&run_id).cloned().unwrap_or_default()
+        events_cache
+            .read()
+            .get(&run_id)
+            .cloned()
+            .unwrap_or_default()
     } else {
         live_events
     };
@@ -93,7 +99,7 @@ pub(super) fn RunBlock(props: RunBlockProps) -> Element {
     // Raw lines stay in the cache; summarizing at render time keeps the
     // cache format stable and the work is trivial (<500 lines).
     let ev_summaries = summarize_storage_events(&events);
-    let ev_count  = ev_summaries.len();
+    let ev_count = ev_summaries.len();
     // Only REAL errors flip the strip to error state — 404 TableNotFound is
     // routine Logic Apps↔Azurite chatter (run/history tables created lazily).
     let ev_has_err = ev_summaries.iter().any(|s| s.is_real_error());
@@ -101,7 +107,9 @@ pub(super) fn RunBlock(props: RunBlockProps) -> Element {
     // Auto-expand when any request is a real 4xx/5xx so storage failures
     // surface without the user having to flip to the Azurite log tab.
     use_effect(use_reactive!(|ev_has_err| {
-        if ev_has_err { ev_open.set(true); }
+        if ev_has_err {
+            ev_open.set(true);
+        }
     }));
 
     rsx! {
@@ -291,4 +299,3 @@ pub(super) fn RunBlock(props: RunBlockProps) -> Element {
         }
     }
 }
-

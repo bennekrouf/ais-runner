@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 use dioxus::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 fn epoch_now() -> u64 {
     std::time::SystemTime::now()
@@ -20,13 +20,20 @@ use crate::utils::{filter_cleared, make_push, sweep_run_history};
 /// Apply the fixes ais-runner can make on the user's behalf after they consent
 /// in the readiness gate. Thin wrapper so the UI depends on the handler layer
 /// rather than reaching into services directly.
-pub fn apply_readiness_fixes(dir: &str, readiness: &run_readiness::RunReadiness) -> run_readiness::FixReport {
+pub fn apply_readiness_fixes(
+    dir: &str,
+    readiness: &run_readiness::RunReadiness,
+) -> run_readiness::FixReport {
     run_readiness::apply_fixes(dir, readiness)
 }
 
 fn blob_container_for(dir: &str, name: &str, trigger_type: &str) -> Option<String> {
-    if trigger_type.to_lowercase() != "serviceprovider" { return None; }
-    let src_path = workflows::resolve_logic_apps_dir(dir).join(name).join("workflow.json");
+    if trigger_type.to_lowercase() != "serviceprovider" {
+        return None;
+    }
+    let src_path = workflows::resolve_logic_apps_dir(dir)
+        .join(name)
+        .join("workflow.json");
     let json = std::fs::read_to_string(&src_path).ok()?;
     workflows::read_blob_trigger_info(&json).map(|(container, _)| container)
 }
@@ -39,45 +46,88 @@ pub fn handle_open_dialog(
     mut selected_wf: Signal<Option<String>>,
     mut source_text: Signal<String>,
     mut active_tab: Signal<String>,
-    mut run_dialog: Signal<Option<(String, String, String, String, Option<String>, Option<String>)>>,
+    mut run_dialog: Signal<
+        Option<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )>,
+    >,
     log_lines: Signal<Vec<LogLine>>,
 ) {
     // Local workflow triggering hits localhost:7071 — no Azure credentials needed.
     let _push = make_push(log_lines); // keep log_lines used
     selected_wf.set(Some(name.clone()));
     active_tab.set("Run".into());
-    let src_path = workflows::resolve_logic_apps_dir(dir).join(&name).join("workflow.json");
+    let src_path = workflows::resolve_logic_apps_dir(dir)
+        .join(&name)
+        .join("workflow.json");
     let wf_text = match std::fs::read_to_string(&src_path) {
         Ok(txt) => txt,
-        Err(e)  => format!("// could not read {}: {}", src_path.display(), e),
+        Err(e) => format!("// could not read {}: {}", src_path.display(), e),
     };
     source_text.set(wf_text.clone());
     let blob_container = blob_container_for(dir, &name, &trigger_type);
-    let queue_name     = sb_check::trigger_queue_for(dir, &name).map(|(_fqdn, q)| q);
+    let queue_name = sb_check::trigger_queue_for(dir, &name).map(|(_fqdn, q)| q);
     // Prefer the last body the user entered for this workflow (persisted across
     // restarts in the OS config dir); fall back to the schema-derived suggestion.
     let initial_body = crate::services::config::load()
         .get_last_payload(dir, &name)
         .unwrap_or_else(|| payload::suggest_payload(dir, &name));
-    run_dialog.set(Some((name, trigger_name, trigger_type, initial_body, blob_container, queue_name)));
+    run_dialog.set(Some((
+        name,
+        trigger_name,
+        trigger_type,
+        initial_body,
+        blob_container,
+        queue_name,
+    )));
 }
 
 pub fn handle_trigger_from_detail(
     dir: &str,
     workflows_sig: Signal<Vec<WorkflowItem>>,
     selected_wf: Signal<Option<String>>,
-    mut run_dialog: Signal<Option<(String, String, String, String, Option<String>, Option<String>)>>,
+    mut run_dialog: Signal<
+        Option<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )>,
+    >,
     log_lines: Signal<Vec<LogLine>>,
 ) {
     let _push = make_push(log_lines);
-    let Some(wf_name) = selected_wf.read().clone() else { return };
-    let Some(wf) = workflows_sig.read().iter().find(|w| w.name == wf_name).cloned() else { return };
+    let Some(wf_name) = selected_wf.read().clone() else {
+        return;
+    };
+    let Some(wf) = workflows_sig
+        .read()
+        .iter()
+        .find(|w| w.name == wf_name)
+        .cloned()
+    else {
+        return;
+    };
     let blob_container = blob_container_for(dir, &wf.name, &wf.trigger_type);
-    let queue_name     = sb_check::trigger_queue_for(dir, &wf.name).map(|(_fqdn, q)| q);
+    let queue_name = sb_check::trigger_queue_for(dir, &wf.name).map(|(_fqdn, q)| q);
     let initial_body = crate::services::config::load()
         .get_last_payload(dir, &wf.name)
         .unwrap_or_else(|| payload::suggest_payload(dir, &wf.name));
-    run_dialog.set(Some((wf.name, wf.trigger_name, wf.trigger_type, initial_body, blob_container, queue_name)));
+    run_dialog.set(Some((
+        wf.name,
+        wf.trigger_name,
+        wf.trigger_type,
+        initial_body,
+        blob_container,
+        queue_name,
+    )));
 }
 
 /// Capture a direct trigger as a `RunWorkflow` step.
@@ -108,7 +158,7 @@ pub fn handle_run(
     name: String,
     trigger_name: String,
     trigger_type: String,
-    queue_or_blob: String,   // queue name for SB triggers, blob filename for blob triggers
+    queue_or_blob: String, // queue name for SB triggers, blob filename for blob triggers
     body: String,
     dir: &str,
     runs: Signal<Vec<RunItem>>,
@@ -118,7 +168,16 @@ pub fn handle_run(
     mut active_tab: Signal<String>,
     mut traced_wfs: Signal<HashSet<String>>,
     mut cleared_wfs: Signal<HashMap<String, String>>,
-    mut run_dialog: Signal<Option<(String, String, String, String, Option<String>, Option<String>)>>,
+    mut run_dialog: Signal<
+        Option<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )>,
+    >,
     mut last_ran: Signal<HashMap<String, u64>>,
     mut run_gate: Signal<Option<run_readiness::RunReadiness>>,
     recorder: Signal<crate::services::recorder::RecorderState>,
@@ -150,39 +209,44 @@ pub fn handle_run(
     let trigger_ts = Utc::now().to_rfc3339();
     cleared_wfs.write().insert(name.clone(), trigger_ts.clone());
 
-    let wf         = name.clone();
+    let wf = name.clone();
     let cleared_at = Some(trigger_ts);
-    let dir_diag   = dir.to_string();
-    let mut push   = make_push(log_lines);
-    let cleared    = cleared_wfs;
+    let dir_diag = dir.to_string();
+    let mut push = make_push(log_lines);
+    let cleared = cleared_wfs;
 
     let t = trigger_type.to_lowercase();
     let is_recurrence = t == "recurrence" || t == "schedule";
-    let is_http       = matches!(t.as_str(), "request" | "http");
+    let is_http = matches!(t.as_str(), "request" | "http");
 
     // Derive blob trigger and container directly from the workflow JSON so this
     // works regardless of whether the dialog passed a blob_name.
     let blob_container = blob_container_for(&dir_diag, &wf, &trigger_type);
-    let is_blob        = blob_container.is_some();
+    let is_blob = blob_container.is_some();
     let blob_container = blob_container.unwrap_or_default();
     // SB polling triggers (receiveQueueMessages, onNewMessagesFromQueue) poll
     // on a recurrence — typically every 1 minute — so they need the same
     // extended patience window as blob triggers.
-    let is_sb_polling  = !queue_or_blob.is_empty() && !is_blob;
+    let is_sb_polling = !queue_or_blob.is_empty() && !is_blob;
 
     push(format!("Triggering: {}", wf), LogLevel::Info);
     running_wfs.write().insert(wf.clone());
     last_ran.write().insert(wf.clone(), epoch_now());
 
     spawn(async move {
-        let not_found_hints = |push: &mut dyn FnMut(String, LogLevel), dir: &str, wf: &str, hints: Vec<String>| {
+        let not_found_hints = |push: &mut dyn FnMut(String, LogLevel),
+                               dir: &str,
+                               wf: &str,
+                               hints: Vec<String>| {
             for (conn, key) in connection_diag::missing_endpoints_for_workflow(dir, wf) {
                 push(
                     format!("  hint: '{}' has empty '{}' in local.settings.json — set it and restart func", conn, key),
                     LogLevel::Warn,
                 );
             }
-            for msg in hints { push(msg, LogLevel::Warn); }
+            for msg in hints {
+                push(msg, LogLevel::Warn);
+            }
         };
 
         // Fire
@@ -190,15 +254,23 @@ pub fn handle_run(
             let check_container = blob_container.clone();
             let existing = tokio::task::spawn_blocking(move || {
                 crate::services::azurite_client::list_blobs(&check_container)
-            }).await.ok().and_then(|r| r.ok()).unwrap_or_default();
+            })
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
 
-            let pending: Vec<_> = existing.iter()
+            let pending: Vec<_> = existing
+                .iter()
                 .filter(|b| !b.name.ends_with(".keep"))
                 .collect();
 
             if pending.is_empty() {
                 push(
-                    format!("❌ Container '{}' is empty — upload a file first.", blob_container),
+                    format!(
+                        "❌ Container '{}' is empty — upload a file first.",
+                        blob_container
+                    ),
                     LogLevel::Error,
                 );
                 running_wfs.write().remove(&wf);
@@ -207,14 +279,21 @@ pub fn handle_run(
 
             // Pre-flight: check every container the workflow references exists in Azurite.
             // Missing containers would cause the workflow to fail mid-run, wasting a trigger.
-            let src_path2 = workflows::resolve_logic_apps_dir(&dir_diag).join(&wf).join("workflow.json");
+            let src_path2 = workflows::resolve_logic_apps_dir(&dir_diag)
+                .join(&wf)
+                .join("workflow.json");
             if let Ok(wf_json) = std::fs::read_to_string(&src_path2) {
-                let needed  = workflows::extract_all_blob_containers(&wf_json);
+                let needed = workflows::extract_all_blob_containers(&wf_json);
                 let all_containers = tokio::task::spawn_blocking(|| {
                     crate::services::azurite_client::list_containers()
-                }).await.ok().and_then(|r| r.ok()).unwrap_or_default();
+                })
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .unwrap_or_default();
 
-                let missing: Vec<_> = needed.iter()
+                let missing: Vec<_> = needed
+                    .iter()
                     .filter(|c| !all_containers.contains(*c))
                     .cloned()
                     .collect();
@@ -232,19 +311,25 @@ pub fn handle_run(
             }
 
             push(
-                format!("👁 Watching '{}' ({} file(s)) — polling for a run…", blob_container, pending.len()),
+                format!(
+                    "👁 Watching '{}' ({} file(s)) — polling for a run…",
+                    blob_container,
+                    pending.len()
+                ),
                 LogLevel::Info,
             );
         } else if is_recurrence {
             match workflows::run_trigger_direct(&wf, &trigger_name, &body).await {
-                Ok(_)  => {
+                Ok(_) => {
                     record_run(recorder, &wf, &trigger_name, &body);
                     push(format!("Run triggered ({})", trigger_type), LogLevel::Ok);
                 }
                 Err(e) => {
                     let es = e.to_string();
                     push(format!("Trigger error: {}", es), LogLevel::Error);
-                    if es.to_lowercase().contains("could not be found") || es.contains("WorkflowNotFound") {
+                    if es.to_lowercase().contains("could not be found")
+                        || es.contains("WorkflowNotFound")
+                    {
                         let hints = workflows::not_found_hints(&wf).await;
                         not_found_hints(&mut push, &dir_diag, &wf, hints);
                     }
@@ -267,7 +352,9 @@ pub fn handle_run(
                         Err(e) => {
                             let es = e.to_string();
                             push(format!("Trigger error: {}", es), LogLevel::Error);
-                            if es.to_lowercase().contains("could not be found") || es.contains("WorkflowNotFound") {
+                            if es.to_lowercase().contains("could not be found")
+                                || es.contains("WorkflowNotFound")
+                            {
                                 let hints = workflows::not_found_hints(&wf).await;
                                 not_found_hints(&mut push, &dir_diag, &wf, hints);
                             }
@@ -279,7 +366,9 @@ pub fn handle_run(
                 Err(e) => {
                     let es = e.to_string();
                     push(format!("Callback URL error: {}", es), LogLevel::Error);
-                    if es.to_lowercase().contains("could not be found") || es.contains("WorkflowNotFound") {
+                    if es.to_lowercase().contains("could not be found")
+                        || es.contains("WorkflowNotFound")
+                    {
                         let hints = workflows::not_found_hints(&wf).await;
                         not_found_hints(&mut push, &dir_diag, &wf, hints);
                     }
@@ -289,11 +378,14 @@ pub fn handle_run(
             }
         } else if !queue_or_blob.is_empty() {
             // Service Bus trigger — send the message body to the resolved queue
-            let queue  = queue_or_blob.clone();
-            let fqdn   = sb_check::trigger_queue_for(&dir_diag, &wf)
+            let queue = queue_or_blob.clone();
+            let fqdn = sb_check::trigger_queue_for(&dir_diag, &wf)
                 .map(|(f, _)| f)
                 .unwrap_or_default();
-            push(format!("📨 Sending message to {}/{}…", fqdn, queue), LogLevel::Info);
+            push(
+                format!("📨 Sending message to {}/{}…", fqdn, queue),
+                LogLevel::Info,
+            );
             let body_clone = body.clone();
             // Decide send path: AMQP to localhost if the emulator is active.
             // Three ways to detect it — any one is sufficient:
@@ -304,19 +396,29 @@ pub fn handle_run(
             let emulator_port_open = tokio::time::timeout(
                 std::time::Duration::from_millis(400),
                 tokio::net::TcpStream::connect("127.0.0.1:5672"),
-            ).await.map(|r| r.is_ok()).unwrap_or(false);
+            )
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false);
 
             let use_local = emulator_port_open
                 || sb_check::is_local_emulator(&fqdn)
                 || sb_check::is_emulator_configured(&dir_diag);
 
             let result = if use_local {
-                let r = crate::services::sb_amqp::send_amqp_message("localhost", &queue, &body_clone).await;
+                let r =
+                    crate::services::sb_amqp::send_amqp_message("localhost", &queue, &body_clone)
+                        .await;
                 // Enrich "Connection refused" with an actionable hint
-                r.map_err(|e| if e.contains("Connection refused") || e.contains("connect") {
-                    format!("{} — is the SB Emulator running? (start it from the toolbar)", e)
-                } else {
-                    e
+                r.map_err(|e| {
+                    if e.contains("Connection refused") || e.contains("connect") {
+                        format!(
+                            "{} — is the SB Emulator running? (start it from the toolbar)",
+                            e
+                        )
+                    } else {
+                        e
+                    }
                 })
             } else {
                 Err("SB Emulator is not running — start it from the toolbar first.".into())
@@ -326,12 +428,18 @@ pub fn handle_run(
                     // A queue-triggered "run" is really a send: replaying the
                     // send is what starts the workflow, and a run_workflow step
                     // would bypass the trigger this scenario exists to exercise.
-                    crate::services::recorder::record(recorder, Step::SendMessage {
-                        queue: queue.clone(),
-                        body: body_clone.clone(),
-                        content_type: "application/json".to_string(),
-                    });
-                    push("✅ Message sent — waiting for workflow run…".into(), LogLevel::Ok);
+                    crate::services::recorder::record(
+                        recorder,
+                        Step::SendMessage {
+                            queue: queue.clone(),
+                            body: body_clone.clone(),
+                            content_type: "application/json".to_string(),
+                        },
+                    );
+                    push(
+                        "✅ Message sent — waiting for workflow run…".into(),
+                        LogLevel::Ok,
+                    );
                 }
                 Err(e) => {
                     push(format!("❌ Send failed: {}", e), LogLevel::Error);
@@ -342,7 +450,8 @@ pub fn handle_run(
         } else {
             push(
                 "This workflow is triggered by Service Bus — cannot resolve the queue name. \
-                 Check ServiceBus_*QueueName in local.settings.json.".into(),
+                 Check ServiceBus_*QueueName in local.settings.json."
+                    .into(),
                 LogLevel::Warn,
             );
             running_wfs.write().remove(&wf);
@@ -350,9 +459,18 @@ pub fn handle_run(
         }
 
         poll_for_run(
-            wf, cleared_at, runs, actions, log_lines, running_wfs, traced_wfs, cleared,
-            is_blob, is_sb_polling,
-        ).await;
+            wf,
+            cleared_at,
+            runs,
+            actions,
+            log_lines,
+            running_wfs,
+            traced_wfs,
+            cleared,
+            is_blob,
+            is_sb_polling,
+        )
+        .await;
         return;
     });
 }
@@ -362,124 +480,174 @@ pub fn handle_run(
 /// `is_blob` controls the patience window: blob triggers poll every ~30 s so
 /// they need a longer wait than HTTP/recurrence triggers.
 pub async fn poll_for_run(
-    wf:          String,
-    cleared_at:  Option<String>,
-    mut runs:    Signal<Vec<workflows::RunItem>>,
+    wf: String,
+    cleared_at: Option<String>,
+    mut runs: Signal<Vec<workflows::RunItem>>,
     mut actions: Signal<Vec<workflows::ActionItem>>,
-    log_lines:   Signal<Vec<LogLine>>,
+    log_lines: Signal<Vec<LogLine>>,
     mut running_wfs: Signal<HashSet<String>>,
-    mut traced_wfs:  Signal<HashSet<String>>,
-    cleared:         Signal<HashMap<String, String>>,
-    is_blob:         bool,
-    is_sb_polling:   bool,
+    mut traced_wfs: Signal<HashSet<String>>,
+    cleared: Signal<HashMap<String, String>>,
+    is_blob: bool,
+    is_sb_polling: bool,
 ) {
-        // Patience window by trigger type:
-        //   HTTP / recurrence → runs appear within seconds → 16 s is enough
-        //   Blob              → LA runtime polls Azurite every ~30 s → 40 s
-        //   SB polling        → workflow recurrence is typically 1 min → 75 s
-        let (empty_tick_limit, patience_secs): (u32, u32) = if is_sb_polling {
-            (95, 75)  // ~75 s at 800 ms/tick — covers the 1-minute SB poll interval
-        } else if is_blob {
-            (50, 40)  // ~40 s at 800 ms/tick — covers the 30 s blob poll interval
-        } else {
-            (20, 16)  // ~16 s — fast for HTTP / recurrence
-        };
-        let mut push = make_push(log_lines);
-        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-        let deadline        = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
-        let mut empty_ticks = 0u32;
-        let mut last_err    = String::new();
-        loop {
-            match workflows::list_runs(&wf).await {
-                Err(e) => {
-                    let msg = e.to_string();
-                    if msg != last_err {
-                        push(format!("  ⚠ run history error: {}", msg), LogLevel::Warn);
-                        for hint in workflows::not_found_hints(&wf).await {
-                            push(hint, LogLevel::Warn);
-                        }
-                        last_err = msg;
+    // Patience window by trigger type:
+    //   HTTP / recurrence → runs appear within seconds → 16 s is enough
+    //   Blob              → LA runtime polls Azurite every ~30 s → 40 s
+    //   SB polling        → workflow recurrence is typically 1 min → 75 s
+    let (empty_tick_limit, patience_secs): (u32, u32) = if is_sb_polling {
+        (95, 75) // ~75 s at 800 ms/tick — covers the 1-minute SB poll interval
+    } else if is_blob {
+        (50, 40) // ~40 s at 800 ms/tick — covers the 30 s blob poll interval
+    } else {
+        (20, 16) // ~16 s — fast for HTTP / recurrence
+    };
+    let mut push = make_push(log_lines);
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+    let mut empty_ticks = 0u32;
+    let mut last_err = String::new();
+    loop {
+        match workflows::list_runs(&wf).await {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg != last_err {
+                    push(format!("  ⚠ run history error: {}", msg), LogLevel::Warn);
+                    for hint in workflows::not_found_hints(&wf).await {
+                        push(hint, LogLevel::Warn);
                     }
-                    empty_ticks += 1;
+                    last_err = msg;
                 }
-                Ok(r) => {
-                    last_err.clear();
-                    let r = filter_cleared(r, cleared_at.as_deref());
-                    if let Some(latest) = r.first() {
-                        empty_ticks = 0;
-                        let run_name   = latest.name.clone();
-                        let run_status = latest.properties.status.to_lowercase();
-                        let run_done   = matches!(run_status.as_str(),
-                            "succeeded" | "failed" | "cancelled" | "timedout");
-                        runs.set(r.clone());
-                        if let Ok(a) = workflows::list_actions(&wf, &run_name).await {
-                            let actions_terminal = a.iter().all(|act| {
-                                matches!(act.properties.status.to_lowercase().as_str(),
-                                    "succeeded" | "failed" | "skipped" | "timedout" | "cancelled")
-                            });
-                            let all_terminal = run_done && actions_terminal;
-                            actions.set(a.clone());
-                            if all_terminal {
-                                let ok  = a.iter().filter(|x| x.properties.status.to_lowercase() == "succeeded").count();
-                                let err = a.iter().filter(|x| x.properties.status.to_lowercase() == "failed").count();
-                                for act in &a {
-                                    let ms = workflows::duration_ms(&act.properties.start_time, &act.properties.end_time).unwrap_or(0);
-                                    let status = act.properties.status.to_lowercase();
-                                    let icon = match status.as_str() {
-                                        "succeeded" => "✅", "failed" => "❌", "skipped" => "⏭", _ => "⏳",
-                                    };
-                                    push(format!("  [{}] {} {}  {}ms", wf, icon, act.name, ms), LogLevel::Info);
-                                    if status == "failed" {
-                                        // Try inline error first, fall back to get_action_detail
-                                        // (the list endpoint omits error body in some runtime versions)
-                                        let err_msg = match &act.properties.error {
-                                            Some(e) if e.message.is_some() || e.code.is_some() => {
-                                                let code = e.code.as_deref().unwrap_or("");
-                                                let msg  = e.message.as_deref().unwrap_or("(no message)");
-                                                if code.is_empty() { format!("{}", msg) }
-                                                else { format!("[{}] {}", code, msg) }
+                empty_ticks += 1;
+            }
+            Ok(r) => {
+                last_err.clear();
+                let r = filter_cleared(r, cleared_at.as_deref());
+                if let Some(latest) = r.first() {
+                    empty_ticks = 0;
+                    let run_name = latest.name.clone();
+                    let run_status = latest.properties.status.to_lowercase();
+                    let run_done = matches!(
+                        run_status.as_str(),
+                        "succeeded" | "failed" | "cancelled" | "timedout"
+                    );
+                    runs.set(r.clone());
+                    if let Ok(a) = workflows::list_actions(&wf, &run_name).await {
+                        let actions_terminal = a.iter().all(|act| {
+                            matches!(
+                                act.properties.status.to_lowercase().as_str(),
+                                "succeeded" | "failed" | "skipped" | "timedout" | "cancelled"
+                            )
+                        });
+                        let all_terminal = run_done && actions_terminal;
+                        actions.set(a.clone());
+                        if all_terminal {
+                            let ok = a
+                                .iter()
+                                .filter(|x| x.properties.status.to_lowercase() == "succeeded")
+                                .count();
+                            let err = a
+                                .iter()
+                                .filter(|x| x.properties.status.to_lowercase() == "failed")
+                                .count();
+                            for act in &a {
+                                let ms = workflows::duration_ms(
+                                    &act.properties.start_time,
+                                    &act.properties.end_time,
+                                )
+                                .unwrap_or(0);
+                                let status = act.properties.status.to_lowercase();
+                                let icon = match status.as_str() {
+                                    "succeeded" => "✅",
+                                    "failed" => "❌",
+                                    "skipped" => "⏭",
+                                    _ => "⏳",
+                                };
+                                push(
+                                    format!("  [{}] {} {}  {}ms", wf, icon, act.name, ms),
+                                    LogLevel::Info,
+                                );
+                                if status == "failed" {
+                                    // Try inline error first, fall back to get_action_detail
+                                    // (the list endpoint omits error body in some runtime versions)
+                                    let err_msg = match &act.properties.error {
+                                        Some(e) if e.message.is_some() || e.code.is_some() => {
+                                            let code = e.code.as_deref().unwrap_or("");
+                                            let msg =
+                                                e.message.as_deref().unwrap_or("(no message)");
+                                            if code.is_empty() {
+                                                format!("{}", msg)
+                                            } else {
+                                                format!("[{}] {}", code, msg)
                                             }
-                                            _ => {
-                                                // Fetch detail for richer error
-                                                if let Ok(detail) = workflows::get_action_detail(&wf, &run_name, &act.name).await {
-                                                    let code = detail["properties"]["error"]["code"].as_str().unwrap_or("");
-                                                    let msg  = detail["properties"]["error"]["message"].as_str()
-                                                        .or_else(|| detail["properties"]["code"].as_str())
-                                                        .unwrap_or("(no detail)");
-                                                    if code.is_empty() { format!("{}", msg) }
-                                                    else { format!("[{}] {}", code, msg) }
+                                        }
+                                        _ => {
+                                            // Fetch detail for richer error
+                                            if let Ok(detail) = workflows::get_action_detail(
+                                                &wf, &run_name, &act.name,
+                                            )
+                                            .await
+                                            {
+                                                let code = detail["properties"]["error"]["code"]
+                                                    .as_str()
+                                                    .unwrap_or("");
+                                                let msg = detail["properties"]["error"]["message"]
+                                                    .as_str()
+                                                    .or_else(|| {
+                                                        detail["properties"]["code"].as_str()
+                                                    })
+                                                    .unwrap_or("(no detail)");
+                                                if code.is_empty() {
+                                                    format!("{}", msg)
                                                 } else {
-                                                    "(no detail — check func start log)".into()
+                                                    format!("[{}] {}", code, msg)
                                                 }
+                                            } else {
+                                                "(no detail — check func start log)".into()
                                             }
-                                        };
-                                        // Keep the workflow tag on the error line too, so
-                                        // filtering the log by workflow name never orphans
-                                        // an action from its failure reason.
-                                        push(format!("  [{}]    ↳ {}", wf, err_msg), LogLevel::Error);
-                                    }
+                                        }
+                                    };
+                                    // Keep the workflow tag on the error line too, so
+                                    // filtering the log by workflow name never orphans
+                                    // an action from its failure reason.
+                                    push(format!("  [{}]    ↳ {}", wf, err_msg), LogLevel::Error);
                                 }
-                                if err > 0 {
-                                    push(format!("Run complete — {}: {} ok, {} failed", wf, ok, err), LogLevel::Error);
-                                } else if a.is_empty() {
-                                    push(format!("Run complete — {}: {}", wf, run_status), LogLevel::Ok);
-                                } else {
-                                    push(
-                                        format!("Run complete — {}: {} actions in {:.1}s", wf, ok,
-                                            workflows::duration_ms(
-                                                &a.first().and_then(|x| x.properties.start_time.clone()),
-                                                &a.last().and_then(|x| x.properties.end_time.clone()),
-                                            ).unwrap_or(0) as f64 / 1000.0),
-                                        LogLevel::Ok,
-                                    );
-                                }
-                                break;
                             }
+                            if err > 0 {
+                                push(
+                                    format!("Run complete — {}: {} ok, {} failed", wf, ok, err),
+                                    LogLevel::Error,
+                                );
+                            } else if a.is_empty() {
+                                push(
+                                    format!("Run complete — {}: {}", wf, run_status),
+                                    LogLevel::Ok,
+                                );
+                            } else {
+                                push(
+                                    format!(
+                                        "Run complete — {}: {} actions in {:.1}s",
+                                        wf,
+                                        ok,
+                                        workflows::duration_ms(
+                                            &a.first()
+                                                .and_then(|x| x.properties.start_time.clone()),
+                                            &a.last().and_then(|x| x.properties.end_time.clone()),
+                                        )
+                                        .unwrap_or(0)
+                                            as f64
+                                            / 1000.0
+                                    ),
+                                    LogLevel::Ok,
+                                );
+                            }
+                            break;
                         }
-                    } else {
-                        empty_ticks += 1;
-                        if empty_ticks >= empty_tick_limit {
-                            push(
+                    }
+                } else {
+                    empty_ticks += 1;
+                    if empty_ticks >= empty_tick_limit {
+                        push(
                                 format!(
                                     "❌ No run appeared after {} s. Possible causes: \
                                      (1) workflow health error — check the workflow list for ⚠; \
@@ -490,18 +658,18 @@ pub async fn poll_for_run(
                                 ),
                                 LogLevel::Error,
                             );
-                            break;
-                        }
+                        break;
                     }
                 }
             }
-            if tokio::time::Instant::now() >= deadline {
-                push("Live poll timed out after 5 min".into(), LogLevel::Warn);
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
         }
-        running_wfs.write().remove(&wf);
-        let names: Vec<String> = runs.read().iter().map(|r| r.name.clone()).collect();
-        sweep_run_history(names, &mut traced_wfs, &cleared).await;
+        if tokio::time::Instant::now() >= deadline {
+            push("Live poll timed out after 5 min".into(), LogLevel::Warn);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    }
+    running_wfs.write().remove(&wf);
+    let names: Vec<String> = runs.read().iter().map(|r| r.name.clone()).collect();
+    sweep_run_history(names, &mut traced_wfs, &cleared).await;
 }

@@ -1,12 +1,12 @@
-use dioxus::prelude::*;
-use std::collections::{HashMap, HashSet};
+use crate::services::recorder;
+use crate::services::sb_amqp::PeekedMessage;
+use crate::services::scenario::Step;
 use crate::services::{
     azure_cli::{self, SbQueueStats},
     sb_check::SbQueueInfo,
 };
-use crate::services::sb_amqp::PeekedMessage;
-use crate::services::recorder;
-use crate::services::scenario::Step;
+use dioxus::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 /// One row in the inline peek list. Either a real peeked message (body + the
 /// AMQP `delivery-count` so the user can spot poison-loop messages without
@@ -19,41 +19,41 @@ enum PeekRow {
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SbTabProps {
-    pub sb_queues:      Vec<SbQueueInfo>,
-    pub sb_namespace:   String,
+    pub sb_queues: Vec<SbQueueInfo>,
+    pub sb_namespace: String,
     pub logic_apps_dir: String,
-    pub subscription:   Signal<Option<String>>,
-    pub is_open:        Signal<bool>,
-    pub active_tab:     Signal<&'static str>,
-    pub status:         Signal<Option<(String, bool)>>,
+    pub subscription: Signal<Option<String>>,
+    pub is_open: Signal<bool>,
+    pub active_tab: Signal<&'static str>,
+    pub status: Signal<Option<(String, bool)>>,
 }
 
 #[component]
 pub fn SbTab(props: SbTabProps) -> Element {
-    let mut sb_rg:          Signal<Option<String>>    = use_signal(|| None);
-    let mut sb_stats:       Signal<HashMap<String, SbQueueStats>> = use_signal(HashMap::new);
-    let mut sb_fetching:    Signal<HashSet<String>>   = use_signal(HashSet::new);
-    let mut sb_queue_err:   Signal<HashMap<String, String>> = use_signal(HashMap::new);
-    let mut sb_send_open:   Signal<HashSet<String>>   = use_signal(HashSet::new);
+    let mut sb_rg: Signal<Option<String>> = use_signal(|| None);
+    let mut sb_stats: Signal<HashMap<String, SbQueueStats>> = use_signal(HashMap::new);
+    let mut sb_fetching: Signal<HashSet<String>> = use_signal(HashSet::new);
+    let mut sb_queue_err: Signal<HashMap<String, String>> = use_signal(HashMap::new);
+    let mut sb_send_open: Signal<HashSet<String>> = use_signal(HashSet::new);
     let mut sb_send_bodies: Signal<HashMap<String, String>> = use_signal(HashMap::new);
-    let mut sb_peek_open:   Signal<HashSet<String>>   = use_signal(HashSet::new);
+    let mut sb_peek_open: Signal<HashSet<String>> = use_signal(HashSet::new);
     // Holds either `Ok(PeekedMessage)` rows or a single `Err(error_text)` slot
     // — modelled with `PeekRow` so we can render the body + delivery-count
     // chip per row while still surfacing peek-level errors.
-    let mut sb_peek_msgs:   Signal<HashMap<String, Vec<PeekRow>>> = use_signal(HashMap::new);
-    let mut sb_peeking:     Signal<HashSet<String>>   = use_signal(HashSet::new);
+    let mut sb_peek_msgs: Signal<HashMap<String, Vec<PeekRow>>> = use_signal(HashMap::new);
+    let mut sb_peeking: Signal<HashSet<String>> = use_signal(HashSet::new);
     // Flush (purge) is destructive, so it's two-step: the button arms a confirm,
     // a second click drains. `sb_flushing` marks the in-flight drain.
     let mut sb_flush_confirm: Signal<Option<String>> = use_signal(|| None);
-    let mut sb_flushing:      Signal<HashSet<String>> = use_signal(HashSet::new);
+    let mut sb_flushing: Signal<HashSet<String>> = use_signal(HashSet::new);
 
-    let mut new_queue_name:     Signal<String> = use_signal(String::new);
-    let mut new_queue_creating: Signal<bool>   = use_signal(|| false);
-    let mut queue_filter:       Signal<String> = use_signal(String::new);
+    let mut new_queue_name: Signal<String> = use_signal(String::new);
+    let mut new_queue_creating: Signal<bool> = use_signal(|| false);
+    let mut queue_filter: Signal<String> = use_signal(String::new);
     // Create and Trace are secondary actions collapsed behind icon buttons so
     // the filter (the primary control) owns the toolbar.
     let mut create_open: Signal<bool> = use_signal(|| false);
-    let mut trace_open:  Signal<bool> = use_signal(|| false);
+    let mut trace_open: Signal<bool> = use_signal(|| false);
 
     // Scenario recording — a no-op unless a recording is in progress.
     let recorder = use_context::<crate::screens::MainContext>().recorder;
@@ -63,20 +63,19 @@ pub fn SbTab(props: SbTabProps) -> Element {
     let mut sb_null_fields: Signal<HashMap<String, String>> = use_signal(HashMap::new);
 
     // Correlation trace across all queues.
-    let mut trace_input:   Signal<String> = use_signal(String::new);
-    let mut trace_running: Signal<bool>   = use_signal(|| false);
-    let mut trace_hits:    Signal<Option<Vec<crate::services::sb_testing::TraceHit>>> =
+    let mut trace_input: Signal<String> = use_signal(String::new);
+    let mut trace_running: Signal<bool> = use_signal(|| false);
+    let mut trace_hits: Signal<Option<Vec<crate::services::sb_testing::TraceHit>>> =
         use_signal(|| None);
 
     // Per-queue expectation inputs (path, value, min count) and last result.
-    let mut sb_assert_inputs:  Signal<HashMap<String, (String, String, String)>> =
+    let mut sb_assert_inputs: Signal<HashMap<String, (String, String, String)>> =
         use_signal(HashMap::new);
-    let mut sb_assert_results: Signal<HashMap<String, (bool, String)>> =
-        use_signal(HashMap::new);
+    let mut sb_assert_results: Signal<HashMap<String, (bool, String)>> = use_signal(HashMap::new);
 
-    let mut status     = props.status;
-    let subscription   = props.subscription;
-    let active_tab     = props.active_tab;
+    let mut status = props.status;
+    let subscription = props.subscription;
+    let active_tab = props.active_tab;
 
     // Signal so use_effect (FnMut) can clone it on each call without moving
     let sb_namespace_sig = use_signal(|| props.sb_namespace.clone());
@@ -93,18 +92,26 @@ pub fn SbTab(props: SbTabProps) -> Element {
                     continue;
                 }
                 let queues: Vec<String> = sb_stats.peek().keys().cloned().collect();
-                if queues.is_empty() { continue; }
+                if queues.is_empty() {
+                    continue;
+                }
 
-                let ns  = sb_namespace_sig.read().clone();
-                let rg  = sb_rg.peek().clone();
-                let Some(rg) = rg else { continue; };
-                if ns.is_empty() { continue; }
+                let ns = sb_namespace_sig.read().clone();
+                let rg = sb_rg.peek().clone();
+                let Some(rg) = rg else {
+                    continue;
+                };
+                if ns.is_empty() {
+                    continue;
+                }
 
                 for q in queues {
                     let (ns2, rg2, q2) = (ns.clone(), rg.clone(), q.clone());
                     if let Ok(Ok(stats)) = tokio::task::spawn_blocking(move || {
                         azure_cli::sb_queue_stats(&rg2, &ns2, &q2)
-                    }).await {
+                    })
+                    .await
+                    {
                         sb_stats.write().insert(q, stats);
                     }
                 }

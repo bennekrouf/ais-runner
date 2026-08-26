@@ -1,8 +1,8 @@
-use std::sync::Arc;
 use dioxus::prelude::*;
+use std::sync::Arc;
 
 use crate::components::log_panel::{LogLevel, LogLine};
-use crate::services::process::{ManagedProcess, ServiceState, rich_path};
+use crate::services::process::{rich_path, ManagedProcess, ServiceState};
 use crate::utils::make_push;
 
 pub fn handle_start(
@@ -18,8 +18,14 @@ pub fn handle_start(
     // Check the directory exists before doing anything
     if !std::path::Path::new(&dir).exists() {
         state.set(ServiceState::Stopped);
-        push(format!("⚠ function_apps directory not found: {}", dir), LogLevel::Error);
-        push("  hint: create a Maven Azure Functions project in that folder.".into(), LogLevel::Warn);
+        push(
+            format!("⚠ function_apps directory not found: {}", dir),
+            LogLevel::Error,
+        );
+        push(
+            "  hint: create a Maven Azure Functions project in that folder.".into(),
+            LogLevel::Warn,
+        );
         return;
     }
 
@@ -29,7 +35,10 @@ pub fn handle_start(
         let mut push = make_push(log_lines);
 
         // ── Port 7072 already in use? Reclaim only if it's OUR project. ───
-        if tokio::net::TcpStream::connect("127.0.0.1:7072").await.is_ok() {
+        if tokio::net::TcpStream::connect("127.0.0.1:7072")
+            .await
+            .is_ok()
+        {
             // Identify the owner so we don't silently kill a *different*
             // project's function host (the exact multi-clone footgun: one repo
             // holds :7072 while you're trying to run another).
@@ -39,36 +48,53 @@ pub fn handle_start(
                     let ours = crate::services::port_owner::belongs_to(&o, &owner_dir);
                     (ours, o.pid, o.detail)
                 })
-            }).await.ok().flatten();
+            })
+            .await
+            .ok()
+            .flatten();
 
             if let Some((false, pid, detail)) = &foreign {
                 // A different project owns 7072 — do NOT kill it.
-                push(format!(
+                push(
+                    format!(
                     "⛔ Port 7072 is held by a DIFFERENT project's function host (PID {pid}){}. \
                      Stop that one first (or run this project's functions there) — \
                      ais-runner won't kill another project's host for you.",
                     if detail.is_empty() { String::new() } else { format!(":\n     {}", detail) }
-                ), LogLevel::Error);
+                ),
+                    LogLevel::Error,
+                );
                 state.set(ServiceState::Stopped);
                 return;
             }
 
-            push("Port 7072 in use by a stale instance of this project — reclaiming…".into(), LogLevel::Warn);
+            push(
+                "Port 7072 in use by a stale instance of this project — reclaiming…".into(),
+                LogLevel::Warn,
+            );
             // Listener-only, never our own pid — the previous `lsof -ti :7072`
             // form also matched this app's client connections to the Java host
             // and could SIGKILL ais-runner itself.
-            tokio::task::spawn_blocking(|| {
-                crate::services::port_owner::kill_listener(7072)
-            }).await.ok();
+            tokio::task::spawn_blocking(|| crate::services::port_owner::kill_listener(7072))
+                .await
+                .ok();
             // Wait for the port to be released
             for _ in 0..10 {
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                if tokio::net::TcpStream::connect("127.0.0.1:7072").await.is_err() { break; }
+                if tokio::net::TcpStream::connect("127.0.0.1:7072")
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
             }
         }
 
         // ── Step 1: mvn package -DskipTests ──────────────────────────────
-        push(format!("$ cd {} && mvn package -DskipTests", dir), LogLevel::Info);
+        push(
+            format!("$ cd {} && mvn package -DskipTests", dir),
+            LogLevel::Info,
+        );
 
         let pkg_result = tokio::task::spawn_blocking({
             let d = dir.clone();
@@ -79,7 +105,8 @@ pub fn handle_start(
                     .env("PATH", rich_path())
                     .output()
             }
-        }).await;
+        })
+        .await;
 
         let pkg_ok = match pkg_result {
             Ok(Ok(out)) => {
@@ -91,27 +118,45 @@ pub fn handle_start(
                 );
                 for line in combined.lines() {
                     let l = line.trim();
-                    if l.is_empty() { continue; }
+                    if l.is_empty() {
+                        continue;
+                    }
                     // Show errors and build summary, suppress download noise
                     if l.starts_with("[ERROR]") {
                         push(l.to_string(), LogLevel::Error);
                     } else if l.starts_with("[WARNING]") && !l.contains("deprecated") {
                         push(l.to_string(), LogLevel::Warn);
                     } else if l.contains("BUILD SUCCESS") || l.contains("BUILD FAILURE") {
-                        push(l.to_string(), if l.contains("SUCCESS") { LogLevel::Ok } else { LogLevel::Error });
+                        push(
+                            l.to_string(),
+                            if l.contains("SUCCESS") {
+                                LogLevel::Ok
+                            } else {
+                                LogLevel::Error
+                            },
+                        );
                     }
                 }
                 if out.status.success() {
-                    push("✅ mvn package complete — starting Java Function App…".into(), LogLevel::Ok);
+                    push(
+                        "✅ mvn package complete — starting Java Function App…".into(),
+                        LogLevel::Ok,
+                    );
                     true
                 } else {
-                    push("❌ mvn package failed — fix the errors above before retrying.".into(), LogLevel::Error);
+                    push(
+                        "❌ mvn package failed — fix the errors above before retrying.".into(),
+                        LogLevel::Error,
+                    );
                     false
                 }
             }
             Ok(Err(e)) => {
                 push(format!("❌ Could not run mvn: {}", e), LogLevel::Error);
-                push("  hint: install Maven — brew install maven".into(), LogLevel::Warn);
+                push(
+                    "  hint: install Maven — brew install maven".into(),
+                    LogLevel::Warn,
+                );
                 false
             }
             Err(e) => {
@@ -128,8 +173,8 @@ pub fn handle_start(
         // ── Step 2: func host start --port 7072 ──────────────────────────
         // Run func directly in the staging dir to avoid the Maven plugin's
         // hardcoded port 7071 which conflicts with Logic Apps func start.
-        let staging  = format!("{}/target/azure-functions/ais-functions", dir);
-        let func     = crate::services::runtime_manager::resolve_tool("func");
+        let staging = format!("{}/target/azure-functions/ais-functions", dir);
+        let func = crate::services::runtime_manager::resolve_tool("func");
         let java_home = detect_java_home();
         if let Some(ref jh) = java_home {
             let msg = format!("JAVA_HOME={}", jh);
@@ -145,7 +190,12 @@ pub fn handle_start(
             cmd_env.push(("JAVA_HOME".into(), jh));
         }
 
-        match proc.read().start_with_env(&func, &["host", "start", "--port", "7072"], Some(&staging), &cmd_env) {
+        match proc.read().start_with_env(
+            &func,
+            &["host", "start", "--port", "7072"],
+            Some(&staging),
+            &cmd_env,
+        ) {
             Ok((stdout, stderr)) => {
                 state.set(ServiceState::Running);
                 let start_msg = "Java Function App starting on port 7072…".to_string();
@@ -161,7 +211,10 @@ pub fn handle_start(
                             let mut w = java_lines.write();
                             w.push(line);
                             let len = w.len();
-                            if len > 2000 { let d = len - 2000; w.drain(..d); }
+                            if len > 2000 {
+                                let d = len - 2000;
+                                w.drain(..d);
+                            }
                         }
                     }
                 });
@@ -224,7 +277,10 @@ pub fn handle_stop(
 ) {
     let mut push = make_push(log_lines);
     match proc.read().stop() {
-        Ok(_)  => { state.set(ServiceState::Stopped); push("Java Function App stopped.".into(), LogLevel::Warn); }
+        Ok(_) => {
+            state.set(ServiceState::Stopped);
+            push("Java Function App stopped.".into(), LogLevel::Warn);
+        }
         Err(e) => push(format!("Error: {}", e), LogLevel::Error),
     }
 }

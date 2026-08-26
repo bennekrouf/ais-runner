@@ -1,7 +1,7 @@
 use chrono::Local;
+use dioxus::prelude::{Readable, Writable};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use dioxus::prelude::{Readable, Writable};
 
 use crate::components::log_panel::{LogLevel, LogLine};
 use crate::services::workflows;
@@ -13,21 +13,35 @@ pub fn open_in_editor(path: &str) {
     #[cfg(target_os = "macos")]
     {
         // Prefer VS Code if installed, otherwise force text editor with -t
-        if std::process::Command::new("code").arg(path).spawn().is_err() {
-            let _ = std::process::Command::new("open").args(["-t", path]).spawn();
+        if std::process::Command::new("code")
+            .arg(path)
+            .spawn()
+            .is_err()
+        {
+            let _ = std::process::Command::new("open")
+                .args(["-t", path])
+                .spawn();
         }
     }
     #[cfg(target_os = "windows")]
     {
         // Prefer VS Code, fall back to notepad
-        if std::process::Command::new("code").arg(path).spawn().is_err() {
+        if std::process::Command::new("code")
+            .arg(path)
+            .spawn()
+            .is_err()
+        {
             let _ = std::process::Command::new("notepad.exe").arg(path).spawn();
         }
     }
     #[cfg(target_os = "linux")]
     {
         // Prefer VS Code, fall back to xdg-open
-        if std::process::Command::new("code").arg(path).spawn().is_err() {
+        if std::process::Command::new("code")
+            .arg(path)
+            .spawn()
+            .is_err()
+        {
             let _ = std::process::Command::new("xdg-open").arg(path).spawn();
         }
     }
@@ -61,8 +75,15 @@ pub fn now() -> String {
 /// rather than rendering an empty cell.
 pub fn fmt_utc_as_local(rfc3339: &str) -> String {
     match chrono::DateTime::parse_from_rfc3339(rfc3339) {
-        Ok(dt) => dt.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S").to_string(),
-        Err(_) => rfc3339.chars().take(19).collect::<String>().replace('T', " "),
+        Ok(dt) => dt
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+        Err(_) => rfc3339
+            .chars()
+            .take(19)
+            .collect::<String>()
+            .replace('T', " "),
     }
 }
 
@@ -77,9 +98,15 @@ pub fn make_push(
     const MAX_LOG_LINES: usize = 2000;
     move |msg: String, level: LogLevel| {
         let mut w = log_lines.write();
-        w.push(LogLine { time: now(), msg, level });
+        w.push(LogLine {
+            time: now(),
+            msg,
+            level,
+        });
         let len = w.len();
-        if len > MAX_LOG_LINES { w.drain(..len - MAX_LOG_LINES); }
+        if len > MAX_LOG_LINES {
+            w.drain(..len - MAX_LOG_LINES);
+        }
     }
 }
 
@@ -94,11 +121,15 @@ pub fn filter_cleared(
     cleared_at: Option<&str>,
 ) -> Vec<workflows::RunItem> {
     let Some(ts) = cleared_at else { return runs };
-    let Ok(cleared_dt) = chrono::DateTime::parse_from_rfc3339(ts) else { return runs };
+    let Ok(cleared_dt) = chrono::DateTime::parse_from_rfc3339(ts) else {
+        return runs;
+    };
     let threshold = cleared_dt - chrono::Duration::seconds(2);
     runs.into_iter()
         .filter(|r| {
-            r.properties.start_time.as_deref()
+            r.properties
+                .start_time
+                .as_deref()
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt > threshold)
                 .unwrap_or(false)

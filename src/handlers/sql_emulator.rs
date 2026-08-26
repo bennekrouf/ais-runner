@@ -1,14 +1,17 @@
-use std::sync::Arc;
 use dioxus::prelude::*;
+use std::sync::Arc;
 
 use crate::components::log_panel::{LogLevel, LogLine};
-use crate::services::{process::{ManagedProcess, ServiceState}, runtime_manager};
+use crate::services::{
+    process::{ManagedProcess, ServiceState},
+    runtime_manager,
+};
 use crate::utils::make_push;
 
-pub const SQL_IMAGE:      &str = "mcr.microsoft.com/azure-sql-edge:latest";
+pub const SQL_IMAGE: &str = "mcr.microsoft.com/azure-sql-edge:latest";
 pub const CONTAINER_NAME: &str = "ais-sql-dev";
-pub const SA_PASSWORD:    &str = "AisRunner_Emulator1!";
-pub const SQL_PORT:       u16  = 1433;
+pub const SA_PASSWORD: &str = "AisRunner_Emulator1!";
+pub const SQL_PORT: u16 = 1433;
 
 /// Generic connection string template logged on start so developers can
 /// copy it into their project's local.settings.json.
@@ -30,9 +33,18 @@ pub fn handle_start(
         let mut push = make_push(log_lines);
 
         // ── Already running? ─────────────────────────────────────────────
-        if tokio::net::TcpStream::connect(("127.0.0.1", SQL_PORT)).await.is_ok() {
-            push(format!("SQL Edge already reachable on port {SQL_PORT}."), LogLevel::Ok);
-            push(format!("  Connection string: {}", local_connection_string()), LogLevel::Info);
+        if tokio::net::TcpStream::connect(("127.0.0.1", SQL_PORT))
+            .await
+            .is_ok()
+        {
+            push(
+                format!("SQL Edge already reachable on port {SQL_PORT}."),
+                LogLevel::Ok,
+            );
+            push(
+                format!("  Connection string: {}", local_connection_string()),
+                LogLevel::Info,
+            );
             state.set(ServiceState::Running);
             return;
         }
@@ -40,39 +52,62 @@ pub fn handle_start(
         // ── Remove stale stopped container ───────────────────────────────
         let _ = tokio::task::spawn_blocking(|| {
             let _ = runtime_manager::docker_cmd(&["rm", "-f", CONTAINER_NAME]).output();
-        }).await;
+        })
+        .await;
 
         // ── docker run ───────────────────────────────────────────────────
-        push(format!(
-            "$ docker run -d --name {CONTAINER_NAME} -p {SQL_PORT}:{SQL_PORT} \
+        push(
+            format!(
+                "$ docker run -d --name {CONTAINER_NAME} -p {SQL_PORT}:{SQL_PORT} \
              -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD=*** {SQL_IMAGE}"
-        ), LogLevel::Info);
+            ),
+            LogLevel::Info,
+        );
 
         let port_arg = format!("{SQL_PORT}:{SQL_PORT}");
-        let pw_arg   = format!("MSSQL_SA_PASSWORD={SA_PASSWORD}");
+        let pw_arg = format!("MSSQL_SA_PASSWORD={SA_PASSWORD}");
         let run_result = tokio::task::spawn_blocking(move || {
             runtime_manager::docker_cmd(&[
-                "run", "-d",
-                "--name", CONTAINER_NAME,
-                "-p", &port_arg,
-                "-e", "ACCEPT_EULA=Y",
-                "-e", &pw_arg,
+                "run",
+                "-d",
+                "--name",
+                CONTAINER_NAME,
+                "-p",
+                &port_arg,
+                "-e",
+                "ACCEPT_EULA=Y",
+                "-e",
+                &pw_arg,
                 SQL_IMAGE,
-            ]).output()
-        }).await;
+            ])
+            .output()
+        })
+        .await;
 
         match run_result {
             Ok(Ok(out)) if out.status.success() => {
-                push("SQL Edge container started — waiting for SQL to be ready…".into(), LogLevel::Ok);
+                push(
+                    "SQL Edge container started — waiting for SQL to be ready…".into(),
+                    LogLevel::Ok,
+                );
             }
             Ok(Ok(out)) => {
-                push(format!("❌ docker run failed: {}", String::from_utf8_lossy(&out.stderr).trim()), LogLevel::Error);
+                push(
+                    format!(
+                        "❌ docker run failed: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ),
+                    LogLevel::Error,
+                );
                 state.set(ServiceState::Stopped);
                 return;
             }
             Ok(Err(e)) => {
                 push(format!("❌ Could not run docker: {e}"), LogLevel::Error);
-                push("  hint: make sure Docker Desktop is running.".into(), LogLevel::Warn);
+                push(
+                    "  hint: make sure Docker Desktop is running.".into(),
+                    LogLevel::Warn,
+                );
                 state.set(ServiceState::Stopped);
                 return;
             }
@@ -87,7 +122,10 @@ pub fn handle_start(
         let mut ready = false;
         for attempt in 1..=30 {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            if tokio::net::TcpStream::connect(("127.0.0.1", SQL_PORT)).await.is_ok() {
+            if tokio::net::TcpStream::connect(("127.0.0.1", SQL_PORT))
+                .await
+                .is_ok()
+            {
                 // SQL Edge accepts TCP before it's fully ready — give it a
                 // couple extra seconds before handing off to the user.
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -95,19 +133,31 @@ pub fn handle_start(
                 break;
             }
             if attempt % 5 == 0 {
-                push(format!("Still waiting for SQL Edge… ({attempt}/30)"), LogLevel::Info);
+                push(
+                    format!("Still waiting for SQL Edge… ({attempt}/30)"),
+                    LogLevel::Info,
+                );
             }
         }
 
         if !ready {
-            push("❌ SQL Edge did not become ready in time.".into(), LogLevel::Error);
+            push(
+                "❌ SQL Edge did not become ready in time.".into(),
+                LogLevel::Error,
+            );
             push(format!("  $ docker logs {CONTAINER_NAME}"), LogLevel::Warn);
             state.set(ServiceState::Stopped);
             return;
         }
 
-        push("✅ SQL Edge ready on port 1433 (sa / AisRunner_Emulator1!).".into(), LogLevel::Ok);
-        push(format!("  Connection string: {}", local_connection_string()), LogLevel::Info);
+        push(
+            "✅ SQL Edge ready on port 1433 (sa / AisRunner_Emulator1!).".into(),
+            LogLevel::Ok,
+        );
+        push(
+            format!("  Connection string: {}", local_connection_string()),
+            LogLevel::Info,
+        );
         state.set(ServiceState::Running);
     });
 }
@@ -118,13 +168,17 @@ pub fn handle_stop(
     log_lines: Signal<Vec<LogLine>>,
 ) {
     let mut push = make_push(log_lines);
-    push(format!("Stopping SQL Edge ({CONTAINER_NAME})…"), LogLevel::Warn);
+    push(
+        format!("Stopping SQL Edge ({CONTAINER_NAME})…"),
+        LogLevel::Warn,
+    );
 
     spawn(async move {
         let mut push = make_push(log_lines);
         let result = tokio::task::spawn_blocking(|| {
             runtime_manager::docker_cmd(&["rm", "-f", CONTAINER_NAME]).output()
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(Ok(out)) if out.status.success() => {
@@ -132,11 +186,14 @@ pub fn handle_stop(
                 state.set(ServiceState::Stopped);
             }
             Ok(Ok(out)) => {
-                push(format!("⚠ {}", String::from_utf8_lossy(&out.stderr).trim()), LogLevel::Warn);
+                push(
+                    format!("⚠ {}", String::from_utf8_lossy(&out.stderr).trim()),
+                    LogLevel::Warn,
+                );
                 state.set(ServiceState::Stopped);
             }
             Ok(Err(e)) => push(format!("❌ {e}"), LogLevel::Error),
-            Err(e)     => push(format!("❌ {e}"), LogLevel::Error),
+            Err(e) => push(format!("❌ {e}"), LogLevel::Error),
         }
     });
 }
