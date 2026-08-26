@@ -21,14 +21,12 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # ── Formatting: advisory ───────────────────────────────────────────────────
-  # No toolchain deps and no compile, so this reports in ~20s. Non-blocking on
-  # purpose: the tree is not currently rustfmt-clean, and a gate that is red
-  # from day one is a gate you learn to ignore. Do a one-time
-  # `cargo fmt --all` commit, then delete the continue-on-error line below.
+  # ── Formatting: blocking ───────────────────────────────────────────────────
+  # No toolchain deps and no compile, so this reports in ~20s. The tree is
+  # rustfmt-clean and .githooks/pre-commit keeps it that way, so this is a real
+  # gate rather than a check that is red forever and learned to be ignored.
   fmt:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
