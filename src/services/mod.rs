@@ -25,6 +25,7 @@ pub mod maps_check;
 pub mod missing_settings;
 pub mod mock;
 pub mod msg_template;
+pub mod notifications;
 pub mod payload;
 pub mod port_owner;
 pub mod preflight;
