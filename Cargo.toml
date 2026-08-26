@@ -34,6 +34,7 @@ tokio-util  = { version = "0.7", features = ["compat"] }
 ais-chain   = { git = "https://github.com/Bennekrouf/ais-chain" }
 axum        = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
 tower       = "0.5"
+notify-rust = "4"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }
