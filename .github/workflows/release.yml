@@ -570,17 +570,33 @@ jobs:
             exit 1
           fi
 
+      # ── Distribution manifest ──────────────────────────────────────────────
+      # latest.json stays PUBLIC and is the only file attached to the GitHub
+      # Release: it is the updater feed, and publishing the sha256 of each
+      # artifact lets a buyer verify what they downloaded against a source we
+      # do not control the delivery of. The URLs it carries point at the
+      # gated download endpoint, not at GitHub.
+      #
+      # Set the repository variable DOWNLOAD_BASE_URL to the store's download
+      # base (Settings → Secrets and variables → Actions → Variables).
       - name: Flatten artifacts + generate latest.json
         env:
-          REPO: ${{ github.repository }}
-          TAG:  ${{ needs.prepare.outputs.tag || github.ref_name }}
+          TAG:      ${{ needs.prepare.outputs.tag || github.ref_name }}
+          DL_BASE:  ${{ vars.DOWNLOAD_BASE_URL }}
         run: |
+          set -euo pipefail
           mkdir -p release
           find artifacts -type f -exec cp {} release/ \;
           ls -lh release/
 
           VER="${TAG#v}"
-          BASE="https://github.com/$REPO/releases/download/$TAG"
+
+          # Versioned, immutable URLs — the same paths the rsync step below
+          # publishes to. Override with the DOWNLOAD_BASE_URL repo variable if
+          # the download host ever moves.
+          BASE="${DL_BASE:-https://mayorana.ch/downloads/ais-runner}"
+          BASE="${BASE%/}/$TAG"
+
           MAC_DMG="ais-runner-macos-arm64.dmg"
           WIN_MSI="ais-runner-setup.exe"
           LINUX_TGZ="ais-runner-linux-x86_64.tar.gz"
@@ -600,37 +616,107 @@ jobs:
             }
           }
           EOF
-          cp release/latest.json artifacts/  # so gh release attaches it
           cat release/latest.json
+
+      # ── Publish the signed artifacts to mayorana.ch ────────────────────────
+      # The binaries are the product and no longer ride on the public GitHub
+      # Release. nginx on the VPS serves them straight off disk from
+      #   /var/www/mayorana-downloads/ais-runner/{<tag>,latest}/
+      # (the location block lives in scripts/setup-vps.sh in the mayorana repo).
+      #
+      # `latest/` is synced with --delete so it always matches exactly this
+      # release: when a platform fails to build, its download 404s instead of
+      # quietly serving the previous version under this version's checksum.
+      #
+      # Unset secrets = skip with a warning, so a fork or an unconfigured
+      # checkout still gets a green pipeline and downloadable Actions artifacts.
+      - name: Publish artifacts to mayorana.ch
+        env:
+          SSH_KEY:   ${{ secrets.DIST_SSH_KEY }}
+          SSH_HOST:  ${{ secrets.DIST_SSH_HOST }}
+          SSH_USER:  ${{ secrets.DIST_SSH_USER }}
+          SSH_KNOWN: ${{ secrets.DIST_SSH_KNOWN_HOSTS }}
+          DEST_ROOT: ${{ vars.DIST_DEST_ROOT }}
+          TAG:       ${{ needs.prepare.outputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SSH_KEY:-}" ] || [ -z "${SSH_HOST:-}" ] || [ -z "${SSH_USER:-}" ]; then
+            echo "::warning::DIST_SSH_KEY/HOST/USER not set — artifacts were NOT published."
+            echo "They remain downloadable as Actions artifacts on this run only."
+            exit 0
+          fi
+
+          # Empty default: the deploy key is confined with rrsync, so paths are
+          # already relative to /var/www/mayorana-downloads and must NOT repeat
+          # it. Set DIST_DEST_ROOT only if the key is an unrestricted shell key,
+          # which then needs the absolute path.
+          ROOT="${DEST_ROOT:-}/ais-runner"
+
+          install -m 700 -d ~/.ssh
+          trap 'rm -f ~/.ssh/dist_key' EXIT
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/dist_key
+          chmod 600 ~/.ssh/dist_key
+
+          if [ -n "${SSH_KNOWN:-}" ]; then
+            printf '%s\n' "$SSH_KNOWN" > ~/.ssh/known_hosts
+          else
+            echo "::warning::DIST_SSH_KNOWN_HOSTS unset — accepting the host key unverified."
+            echo "Pin it: ssh-keyscan $SSH_HOST, then store the output as that secret."
+            ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 600 ~/.ssh/known_hosts
+
+          SSH="ssh -i $HOME/.ssh/dist_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+
+          # No mkdir over ssh: the key is restricted to rrsync and gets no
+          # shell. rsync itself creates the final path component, and
+          # <root>/ais-runner already exists on the server, so <tag>/ and
+          # latest/ are created as needed without --mkpath (which rrsync's
+          # option allowlist may reject).
+          #
+          # Versioned copy first: if the latest/ sync then fails, the release
+          # is still fetchable at its immutable URL.
+          rsync -av --chmod=F644 -e "$SSH" release/ "$SSH_USER@$SSH_HOST:$ROOT/$TAG/"
+          rsync -av --delete --chmod=F644 -e "$SSH" release/ "$SSH_USER@$SSH_HOST:$ROOT/latest/"
+
+          echo "Published $TAG → $SSH_HOST:$ROOT/{$TAG,latest}/"
+
+      # ── Public release: notes + manifest only, no binaries ─────────────────
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG:      ${{ needs.prepare.outputs.tag || github.ref_name }}
+          BUY_URL:  ${{ vars.DOWNLOAD_PAGE_URL }}
         run: |
-          TAG="${{ needs.prepare.outputs.tag || github.ref_name }}"
+          set -euo pipefail
+          BUY="${BUY_URL:-https://mayorana.ch/en/apps}"
 
-          # Collect all release files
-          FILES=$(find artifacts -type f | tr '\n' ' ')
+          cat > notes.md <<EOF
+          ## Download
+
+          Free for individuals — grab a signed build at **[$BUY]($BUY)**:
+
+          | Platform | File |
+          |---|---|
+          | macOS (Apple Silicon) | \`ais-runner-macos-arm64.dmg\` |
+          | Windows | \`ais-runner-setup.exe\` |
+          | Linux (x86_64) | \`ais-runner-linux-x86_64.tar.gz\` |
+
+          Direct links for this exact version are in \`latest.json\`, attached below,
+          along with the \`sha256\` of every artifact so you can verify what you got.
+
+          Every build is signed — Apple Developer ID (notarized and stapled) on macOS,
+          Azure Trusted Signing on Windows — so it installs without a Gatekeeper or
+          SmartScreen warning.
+
+          ## Building from source
+
+          The source for this release is the \`$TAG\` tag. See \`LICENSE\` for the terms.
+          Builds you produce yourself are unsigned, so macOS and Windows will warn.
+          EOF
 
           gh release create "$TAG" \
             --title "ais-runner $TAG" \
-            --notes "$(cat <<'EOF'
-          ## Download
-
-          ### macOS (Apple Silicon)
-          Download `ais-runner-macos-arm64.dmg`, open it, and drag AIS Runner to /Applications.
-          Signed with Apple Developer ID and notarized — opens with a normal double-click.
-
-          ### Windows
-          Download `ais-runner-setup.exe` and run it — the installer handles everything.
-
-          ### Linux (x86_64)
-          ```bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.tag || github.ref_name }}/ais-runner-linux-x86_64.tar.gz | tar xz
-          cd ais-runner-linux-x86_64
-          sudo ./setup-linux.sh && ./ais-runner
-          ```
-
-          > **Linux runtime requirement**: `libwebkit2gtk-4.1` (installed automatically by `setup-linux.sh`).
-          EOF
-          )" \
-            $FILES
+            --notes-file notes.md \
+            release/latest.json

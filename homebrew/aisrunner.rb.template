@@ -8,7 +8,13 @@ class Aisrunner < Formula
   desc "AIS Local Runner — desktop runner for Azure-backed AI services"
   homepage "https://github.com/Bennekrouf/ais-runner"
   version "0.1.0"
-  url "https://github.com/Bennekrouf/ais-runner/releases/download/v#{version}/ais-runner-macos-arm64.tar.gz"
+  # Binaries are distributed from mayorana.ch, not GitHub Releases. The path is
+  # the immutable per-tag one, so an old formula revision keeps resolving.
+  #
+  # NOTE: release.yml does not currently build a macOS .tar.gz — the mac job
+  # produces a signed .dmg only. This formula cannot install until that
+  # artifact exists; the .dmg is the supported macOS path today.
+  url "https://mayorana.ch/downloads/ais-runner/v#{version}/ais-runner-macos-arm64.tar.gz"
   sha256 "REPLACE_WITH_SHA256"
 
   depends_on arch: :arm64

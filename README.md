@@ -10,20 +10,24 @@ Built with [Dioxus](https://dioxuslabs.com/) (Rust) · macOS · Windows · Linux
 
 ## Install
 
+Builds are **free for individuals** and download from [mayorana.ch](https://mayorana.ch/en/apps). Each release on GitHub carries a
+`latest.json` with the `sha256` of every artifact, so you can verify what you
+downloaded.
+
 ### macOS (Apple Silicon)
 
-Download [`ais-runner-macos-arm64.dmg`](https://github.com/Bennekrouf/ais-runner/releases/latest/download/ais-runner-macos-arm64.dmg), open it, and drag **AIS Runner** to Applications.
+Download [`ais-runner-macos-arm64.dmg`](https://mayorana.ch/downloads/ais-runner/latest/ais-runner-macos-arm64.dmg), open it, and drag **AIS Runner** to Applications.
 Signed with Apple Developer ID and notarized — opens with a normal double-click.
 
 ### Windows
 
-Download [`ais-runner-setup.exe`](https://github.com/Bennekrouf/ais-runner/releases/latest/download/ais-runner-setup.exe) and run it.  
+Download [`ais-runner-setup.exe`](https://mayorana.ch/downloads/ais-runner/latest/ais-runner-setup.exe) and run it.  
 The wizard installs the app and optionally installs all runtime dependencies in one step.
 
 ### Linux (x86\_64)
 
 ```bash
-curl -L https://github.com/Bennekrouf/ais-runner/releases/latest/download/ais-runner-linux-x86_64.tar.gz | tar xz
+curl -L https://mayorana.ch/downloads/ais-runner/latest/ais-runner-linux-x86_64.tar.gz | tar xz
 cd ais-runner-linux-x86_64
 sudo ./setup-linux.sh && ./ais-runner
 ```
