@@ -248,7 +248,7 @@ installer/
 ./scripts/release.sh --dry-run  # preview only
 ```
 
-Pushing a `v*` tag triggers CI which builds all platforms (macOS signed + notarized DMG, Windows installer, Linux tarball), then creates the GitHub Release.
+Pushing a `v*` tag triggers CI which builds all platforms (macOS signed + notarized DMG, Windows installer, Linux tarball), publishes them to mayorana.ch, and creates a GitHub Release carrying the release notes and `latest.json` (the update manifest and checksums). The binaries are not attached to the GitHub Release.
 
 ---
 
@@ -264,3 +264,24 @@ Pushing a `v*` tag triggers CI which builds all platforms (macOS signed + notari
 | AMQP | [fe2o3-amqp](https://github.com/minghuaw/fe2o3-amqp) |
 | File picker | [rfd](https://github.com/PolyMeilex/rfd) |
 | Clipboard | [arboard](https://github.com/1Password/arboard) |
+
+---
+
+## Licence
+
+Source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+- **Free** for personal use, learning, research and hobby projects, and for
+  charities, schools, universities and government institutions.
+- **Commercial use requires a licence** — including a solo consultant using it
+  on client work, and an employee using it at their job.
+  [Get in touch](https://mayorana.ch/en/contact).
+
+This is deliberately not an OSI-approved open source licence: the source is
+public and readable, but companies using it for work buy a licence.
+
+The name, logo and icons are trademarks and are not covered by that licence —
+fork it and rebrand it. See [TRADEMARK.md](TRADEMARK.md).
+
+All 712 third-party dependencies are permissively licensed (MIT, Apache-2.0,
+MPL-2.0, Zlib, Unicode-3.0); none are GPL/AGPL.
