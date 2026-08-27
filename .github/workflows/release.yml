@@ -383,7 +383,7 @@ jobs:
             "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
           ) | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $iscc) { Write-Error "ISCC.exe not found" }
-          $version = "${{ github.ref_name }}".TrimStart("v")
+          $version = "${{ needs.prepare.outputs.tag || github.ref_name }}".TrimStart("v")
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           & $iscc /DMyAppVersion=$version installer\installer.iss
 
@@ -542,7 +542,7 @@ jobs:
             ais-test-linux-x64.sha256
 
   release:
-    needs: [build-mac, build-windows, build-linux]
+    needs: [prepare, build-mac, build-windows, build-linux]
     # Publish whatever built: one platform failing must not withhold the
     # others. A run with no artifacts at all is caught below.
     if: always() && !cancelled()
@@ -573,7 +573,7 @@ jobs:
       - name: Flatten artifacts + generate latest.json
         env:
           REPO: ${{ github.repository }}
-          TAG:  ${{ github.ref_name }}
+          TAG:  ${{ needs.prepare.outputs.tag || github.ref_name }}
         run: |
           mkdir -p release
           find artifacts -type f -exec cp {} release/ \;
@@ -606,7 +606,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ needs.prepare.outputs.tag || github.ref_name }}"
 
           # Collect all release files
           FILES=$(find artifacts -type f | tr '\n' ' ')
@@ -625,7 +625,7 @@ jobs:
 
           ### Linux (x86_64)
           ```bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ais-runner-linux-x86_64.tar.gz | tar xz
+          curl -L https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.tag || github.ref_name }}/ais-runner-linux-x86_64.tar.gz | tar xz
           cd ais-runner-linux-x86_64
           sudo ./setup-linux.sh && ./ais-runner
           ```
