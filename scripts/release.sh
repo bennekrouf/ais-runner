@@ -90,8 +90,12 @@ echo ""
 
 $DRY_RUN && { echo "Dry run — nothing done."; exit 0; }
 
-read -r -p "Proceed? [y/N] " CONFIRM
-[[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
+if [[ -t 0 ]]; then
+    read -r -p "Proceed? [y/N] " CONFIRM
+    [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
+else
+    echo "No TTY on stdin — proceeding without confirmation."
+fi
 
 # ── Bump + commit + tag ───────────────────────────────────────────────────────
 # Match against CARGO_VERSION (what's literally in the file), not CURRENT
