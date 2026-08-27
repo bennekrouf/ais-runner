@@ -322,6 +322,56 @@ jobs:
           if ($dll) { Copy-Item $dll.FullName "target\release\WebView2Loader.dll" -Force }
           else { Write-Error "WebView2Loader.dll not found in build output" }
 
+      # ── Windows code signing ───────────────────────────────────────────────
+      # Both the application binary and the installer get signed, in that
+      # order: Inno Setup embeds whatever .exe it finds, so signing after
+      # packaging would leave an unsigned binary inside a signed installer —
+      # SmartScreen and enterprise policies both object to that.
+      #
+      # Unconfigured repos still build; the .exe just ships unsigned and
+      # SmartScreen warns on download. Set all six secrets to enable.
+      - name: Check Windows signing secrets
+        id: winsign
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          TS_ENDPOINT:         ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          TS_ACCOUNT:          ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          TS_CERT_PROFILE:     ${{ secrets.TRUSTED_SIGNING_CERT_PROFILE }}
+        run: |
+          $names = @('AZURE_TENANT_ID','AZURE_CLIENT_ID','AZURE_CLIENT_SECRET',
+                     'TS_ENDPOINT','TS_ACCOUNT','TS_CERT_PROFILE')
+          $missing = $names | Where-Object { -not [Environment]::GetEnvironmentVariable($_) }
+          if ($missing.Count -eq 0) {
+            "have=true" | Out-File -Append $env:GITHUB_OUTPUT
+            Write-Host "All Windows signing secrets present."
+          } elseif ($missing.Count -eq $names.Count) {
+            "have=false" | Out-File -Append $env:GITHUB_OUTPUT
+            Write-Host "::warning::No Windows signing secrets configured — the .exe will ship unsigned and SmartScreen will warn on download."
+          } else {
+            Write-Host "::error::Incomplete Windows signing configuration. Missing: $($missing -join ', ')"
+            Write-Host "Set all six, or none at all to skip signing."
+            exit 1
+          }
+
+      - name: Sign application binary
+        if: steps.winsign.outputs.have == 'true'
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id:     ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id:     ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint:                     ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name:     ${{ secrets.TRUSTED_SIGNING_CERT_PROFILE }}
+          files-folder: target\release
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
@@ -336,11 +386,33 @@ jobs:
           $version = "${{ github.ref_name }}".TrimStart("v")
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           & $iscc /DMyAppVersion=$version installer\installer.iss
-          $hash = (Get-FileHash dist\ais-runner-setup.exe -Algorithm SHA256).Hash.ToLower()
-          "$hash  ais-runner-setup.exe" | Out-File "dist\ais-runner-setup.exe.sha256" -Encoding ASCII
-          Write-Host "Installer: dist\ais-runner-setup.exe ($([math]::Round((Get-Item dist\ais-runner-setup.exe).Length/1MB,1)) MB)"
 
-      
+      - name: Sign installer
+        if: steps.winsign.outputs.have == 'true'
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id:     ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id:     ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint:                     ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name:     ${{ secrets.TRUSTED_SIGNING_CERT_PROFILE }}
+          files-folder: dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # Signing rewrites the file, so the checksum has to be taken afterwards —
+      # otherwise it describes a binary nobody downloads.
+      - name: Checksum installer
+        shell: pwsh
+        run: |
+          $exe = "ais-runner-setup.exe"
+          $hash = (Get-FileHash "dist\$exe" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $exe" | Out-File "dist\$exe.sha256" -Encoding ASCII
+          Write-Host "Installer: dist\$exe ($([math]::Round((Get-Item "dist\$exe").Length/1MB,1)) MB)"
+
       # ── SignPath Foundation: code-sign the .exe for free (OSS only) ────────
       # Uncomment this block after SignPath Foundation has approved the project.
       # Until then the .exe ships unsigned (SmartScreen will warn on download).
