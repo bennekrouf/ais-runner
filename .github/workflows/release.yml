@@ -637,14 +637,26 @@ jobs:
           SSH_USER:  ${{ secrets.DIST_SSH_USER }}
           SSH_KNOWN: ${{ secrets.DIST_SSH_KNOWN_HOSTS }}
           DEST_ROOT: ${{ vars.DIST_DEST_ROOT }}
+          OWNER:     ${{ github.repository_owner }}
           TAG:       ${{ needs.prepare.outputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
 
+          # A fork with no deploy secrets should still get a green pipeline.
+          # This repository must not: a release that publishes nothing while
+          # reporting success is how ais-monitor, ais-analytics and ais-tracing
+          # each shipped a version whose binaries existed nowhere a user could
+          # reach — off GitHub by then, and never rsynced here. The only signal
+          # was a warning, and the run was green.
           if [ -z "${SSH_KEY:-}" ] || [ -z "${SSH_HOST:-}" ] || [ -z "${SSH_USER:-}" ]; then
-            echo "::warning::DIST_SSH_KEY/HOST/USER not set — artifacts were NOT published."
-            echo "They remain downloadable as Actions artifacts on this run only."
-            exit 0
+            if [ "$(echo "${OWNER:-}" | tr 'A-Z' 'a-z')" != "bennekrouf" ]; then
+              echo "::warning::DIST_SSH_* not set — skipping publish on fork '${OWNER:-unknown}'."
+              echo "Artifacts remain downloadable from this run only."
+              exit 0
+            fi
+            echo "::error::DIST_SSH_KEY/HOST/USER are not set — refusing to finish a release that publishes nothing."
+            echo "Set them under Settings → Secrets and variables → Actions, then re-run."
+            exit 1
           fi
 
           # Empty default: the deploy key is confined with rrsync, so paths are
