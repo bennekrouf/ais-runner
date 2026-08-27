@@ -1,15 +1,16 @@
 //! Lightweight update check.
 //!
-//! Fetches the `latest.json` published with each GitHub release and compares
+//! Fetches the `latest.json` published with each release and compares
 //! the version field to this build's `CARGO_PKG_VERSION`. Designed to be
 //! cheap and side-effect-free so it can run in the background at startup.
 
 use serde::Deserialize;
 
-/// The manifest stays on the GitHub release — it is the one artifact still
-/// attached there, and it carries the sha256 of every build.
-const LATEST_URL: &str =
-    "https://github.com/bennekrouf/ais-runner/releases/latest/download/latest.json";
+/// Served from mayorana.ch alongside the builds it describes. It used to be
+/// fetched from the GitHub release, which meant update checks broke for every
+/// installed copy the moment that repo stopped being publicly readable — the
+/// app should not depend on the source host to tell users a build exists.
+const LATEST_URL: &str = "https://mayorana.ch/downloads/ais-runner/latest/latest.json";
 
 /// Where the user is sent to actually get the new version. The binaries are
 /// distributed from mayorana.ch, not from GitHub, so pointing at the releases
