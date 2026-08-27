@@ -6,9 +6,15 @@
 
 use serde::Deserialize;
 
+/// The manifest stays on the GitHub release — it is the one artifact still
+/// attached there, and it carries the sha256 of every build.
 const LATEST_URL: &str =
     "https://github.com/bennekrouf/ais-runner/releases/latest/download/latest.json";
-const RELEASES_URL: &str = "https://github.com/bennekrouf/ais-runner/releases/latest";
+
+/// Where the user is sent to actually get the new version. The binaries are
+/// distributed from mayorana.ch, not from GitHub, so pointing at the releases
+/// page would land them somewhere with nothing to download.
+const RELEASES_URL: &str = "https://mayorana.ch/en/apps";
 
 #[derive(Debug, Deserialize)]
 struct LatestJson {
