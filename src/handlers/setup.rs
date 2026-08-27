@@ -8,9 +8,11 @@ pub fn handle_initialize(
     dir: &str,
     mut setup_status: Signal<setup_manager::SetupStatus>,
     log_lines: Signal<Vec<LogLine>>,
+    workspace_link: Option<config::WorkspaceLink>,
 ) {
     let d = dir.to_string();
     let d2 = dir.to_string();
+    let d3 = dir.to_string();
     let mut push = make_push(log_lines);
     spawn(async move {
         match tokio::task::spawn_blocking(move || setup_manager::initialize_from_template(&d))
@@ -19,6 +21,29 @@ pub fn handle_initialize(
         {
             Ok(_) => {
                 push("Settings initialized from template.".into(), LogLevel::Ok);
+                // The user already told us which Azure subscription/resource group/site
+                // this project maps to when they linked it — fill those identity fields
+                // in now instead of leaving them blank for the user to Auto-Detect by hand.
+                if let Some(l) = workspace_link {
+                    push(
+                        format!("Auto-detecting resources in {}...", l.resource_group),
+                        LogLevel::Info,
+                    );
+                    match tokio::task::spawn_blocking(move || {
+                        setup_manager::auto_detect_resources(
+                            &d3,
+                            Some(&l.subscription_id),
+                            &l.resource_group,
+                            l.logic_app_name.as_deref(),
+                        )
+                    })
+                    .await
+                    .unwrap_or(Err("task panicked".into()))
+                    {
+                        Ok(msg) => push(msg, LogLevel::Ok),
+                        Err(e) => push(format!("Auto-detect failed: {}", e), LogLevel::Error),
+                    }
+                }
                 setup_status.set(setup_manager::check_setup(&d2));
             }
             Err(e) => push(format!("Failed to initialize: {}", e), LogLevel::Error),

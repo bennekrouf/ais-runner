@@ -1414,7 +1414,8 @@ fn setup_banner(
                     class: "setup-banner-btn",
                     onclick: {
                         let dir = dir.clone();
-                        move |_| setup::handle_initialize(&dir, setup_status, log_lines)
+                        let link = link.clone();
+                        move |_| setup::handle_initialize(&dir, setup_status, log_lines, link.clone())
                     },
                     "Bootstrap Settings"
                 }

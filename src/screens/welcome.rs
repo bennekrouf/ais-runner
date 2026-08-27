@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 
-use crate::services::{azure_cli, azure_sync, config};
+use crate::services::{azure_cli, azure_sync, config, setup_manager};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct WelcomeScreenProps {
@@ -229,7 +229,7 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
                                                 let on_open     = on_open.clone();
                                                 move |_| {
                                                     let mut cfg = app_cfg.read().clone();
-                                                    cfg.workspace_links.insert(dir.clone(), config::WorkspaceLink {
+                                                    let link = config::WorkspaceLink {
                                                         subscription_id: site.subscription.clone(),
                                                         resource_group:  site.resource_group.clone(),
                                                         tenant_id:       None,
@@ -237,10 +237,32 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
                                                         sb_namespace:    None,
                                                         devops_org:      None,
                                                         devops_project:  None,
-                                                    });
+                                                    };
+                                                    cfg.workspace_links.insert(dir.clone(), link.clone());
                                                     config::save(&cfg);
                                                     app_cfg.set(cfg);
-                                                    on_open.call(dir.clone());
+
+                                                    // The subscription/resource group/site name are known
+                                                    // right now — if local.settings.json already exists for
+                                                    // this project, fill them in before opening it so the
+                                                    // "needs a value" banner doesn't show for fields the user
+                                                    // just told us. No-op if the settings file doesn't exist
+                                                    // yet (nothing to patch until it's bootstrapped).
+                                                    let d = dir.clone();
+                                                    let d2 = dir.clone();
+                                                    let on_open = on_open.clone();
+                                                    spawn(async move {
+                                                        let _ = tokio::task::spawn_blocking(move || {
+                                                            setup_manager::auto_detect_resources(
+                                                                &d,
+                                                                Some(&link.subscription_id),
+                                                                &link.resource_group,
+                                                                link.logic_app_name.as_deref(),
+                                                            )
+                                                        })
+                                                        .await;
+                                                        on_open.call(d2);
+                                                    });
                                                 }
                                             },
                                             span { class: "onboarding-item-name", "{site.name}" }
