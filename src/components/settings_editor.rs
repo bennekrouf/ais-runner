@@ -80,6 +80,11 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
     let mut filter = use_signal(|| String::new());
     let mut fetching = use_signal(|| String::new());
     let mut show_keys = use_signal(|| std::collections::HashSet::<String>::new());
+    // Note: the writes below use `entry(..).or_default()`, not `get_mut`. They
+    // used to skip silently when the workspace had no link yet — so on an
+    // unlinked workspace (the common case when a project is reopened from the
+    // recents list) typing a Tenant ID here did nothing at all, and the value
+    // vanished on the next render.
     let link = app_cfg.get_link(&props.logic_apps_dir);
     let mut tenant_id = use_signal(|| link.and_then(|l| l.tenant_id.clone()).unwrap_or_default());
     let mut tenant_detecting = use_signal(|| false);
@@ -279,10 +284,11 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                 let v = e.value();
                                 tenant_id.set(v.clone());
                                 let mut cfg = config::load();
-                                if let Some(l) = cfg.workspace_links.get_mut(&dir) {
+                                {
+                                    let l = cfg.workspace_links.entry(dir.clone()).or_default();
                                     l.tenant_id = if v.is_empty() { None } else { Some(v) };
-                                    config::save(&cfg);
                                 }
+                                config::save(&cfg);
                             }
                         },
                     }
@@ -302,10 +308,11 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                     if let Some(t) = result {
                                         tenant_id.set(t.clone());
                                         let mut cfg = config::load();
-                                        if let Some(l) = cfg.workspace_links.get_mut(&dir2) {
+                                        {
+                                            let l = cfg.workspace_links.entry(dir2.clone()).or_default();
                                             l.tenant_id = Some(t);
-                                            config::save(&cfg);
                                         }
+                                        config::save(&cfg);
                                     }
                                     tenant_detecting.set(false);
                                 });
@@ -328,9 +335,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                 subscription.set(v.clone());
                                 sub_options.set(vec![]);
                                 let mut cfg = config::load();
-                                if let Some(l) = cfg.workspace_links.get_mut(&dir) {
-                                    l.subscription_id = v;
-                                }
+                                cfg.workspace_links.entry(dir.clone()).or_default().subscription_id = v;
                                 config::save(&cfg);
                             }
                         },
@@ -376,9 +381,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                                     status.set(format!("✅ Found subscription"));
                                                     is_err.set(false);
                                                     let mut cfg = config::load();
-                                                    if let Some(l) = cfg.workspace_links.get_mut(&dir) {
-                                                        l.subscription_id = id.clone();
-                                                    }
+                                                    cfg.workspace_links.entry(dir.clone()).or_default().subscription_id = id.clone();
                                                     config::save(&cfg);
                                                 }
                                                 Err(azure_cli::AzError::NotLoggedIn) => {
@@ -468,9 +471,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                                 subscription.set(id2.clone());
                                                 sub_options.set(vec![]);
                                                 let mut cfg = config::load();
-                                                if let Some(l) = cfg.workspace_links.get_mut(&dir) {
-                                                    l.subscription_id = id2.clone();
-                                                }
+                                                cfg.workspace_links.entry(dir.clone()).or_default().subscription_id = id2.clone();
                                                 config::save(&cfg);
                                             }
                                         },
@@ -495,9 +496,8 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                 sb_namespace.set(v.clone());
                                 ns_options.set(vec![]);
                                 let mut cfg = config::load();
-                                if let Some(l) = cfg.workspace_links.get_mut(&dir) {
-                                    l.sb_namespace = if v.is_empty() { None } else { Some(v) };
-                                }
+                                cfg.workspace_links.entry(dir.clone()).or_default().sb_namespace =
+                                    if v.is_empty() { None } else { Some(v) };
                                 config::save(&cfg);
                             }
                         },
@@ -558,9 +558,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                                 sb_namespace.set(ns2.clone());
                                                 ns_options.set(vec![]);
                                                 let mut cfg = config::load();
-                                                if let Some(l) = cfg.workspace_links.get_mut(&dir) {
-                                                    l.sb_namespace = Some(ns2.clone());
-                                                }
+                                                cfg.workspace_links.entry(dir.clone()).or_default().sb_namespace = Some(ns2.clone());
                                                 config::save(&cfg);
                                             }
                                         },
