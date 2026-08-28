@@ -1416,17 +1416,26 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                     // workflow has never run at all, the usual cause is that
                     // func attached no Service Bus listeners — it started before
                     // the emulator — and no amount of waiting fixes that.
-                    None => Ok((
-                        false,
-                        match workflows::list_runs(workflow).await {
-                            Ok(runs) if runs.is_empty() => format!(
+                    None => match workflows::list_runs(workflow).await {
+                        // The runtime cannot see this workflow at all, and
+                        // list_runs has already worked out which of the two
+                        // causes it is. Waiting changes neither, so abort with
+                        // that reason the way a non-matching terminal status
+                        // does above. This arm used to fall through to "no
+                        // terminal run yet", which discarded the explanation
+                        // and then burned the full timeout before reporting a
+                        // timing problem that was never the issue.
+                        Err(e) => Err(e),
+                        Ok(runs) if runs.is_empty() => Ok((
+                            false,
+                            format!(
                                 "'{workflow}' has no runs at all — if it is queue-triggered, \
                                  func likely started before the Service Bus emulator and \
                                  attached no listeners; restart func"
                             ),
-                            _ => "no terminal run yet".to_string(),
-                        },
-                    )),
+                        )),
+                        Ok(_) => Ok((false, "no terminal run yet".to_string())),
+                    },
                 }
             })
             .await?;
@@ -2323,6 +2332,41 @@ mod tests {
         assert!(args.is_empty());
         assert!(wait_for_port.is_none());
         assert!(workdir.is_none());
+    }
+
+    #[tokio::test]
+    async fn poll_until_aborts_on_a_hard_error_rather_than_waiting_out_the_timeout() {
+        // The guarantee wait_for_run leans on when list_runs reports
+        // WorkflowNotFound: an unrecoverable check has to surface its own
+        // message straight away, not a timeout message ten seconds later that
+        // blames a timing problem which was never the cause.
+        let started = std::time::Instant::now();
+        let err = poll_until(10_000, || async {
+            Err("Workflow not in runtime registry".to_string())
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, "Workflow not in runtime registry");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "aborted only after {:?} — it waited out the timeout",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_until_keeps_waiting_on_a_merely_unsatisfied_check() {
+        // The other half of the distinction: "not yet" is a timing problem and
+        // does get the full timeout, carrying the last detail into the message.
+        let err = poll_until(120, || async {
+            Ok((false, "no terminal run yet".to_string()))
+        })
+        .await
+        .unwrap_err();
+
+        assert!(err.contains("timed out"), "{err}");
+        assert!(err.contains("no terminal run yet"), "{err}");
     }
 
     #[tokio::test]
