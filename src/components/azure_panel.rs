@@ -461,14 +461,6 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                 div { class: "az-panel-status", "{msg}" }
             }
 
-            // ── tenant notice ─────────────────────────────────────────────
-            if props.tenant_id.as_ref().map(|t| t.is_empty()).unwrap_or(true) {
-                div { class: "az-tenant-notice",
-                    "ℹ No tenant pinned — using your active az session. \
-                     Set a Tenant ID in Settings to lock this workspace to a specific Azure AD tenant."
-                }
-            }
-
             // ── body ──────────────────────────────────────────────────────
             div { class: "az-panel-body",
                 if is_loading {

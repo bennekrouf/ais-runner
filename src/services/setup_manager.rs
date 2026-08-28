@@ -25,6 +25,16 @@ pub enum SetupStatus {
     Ready,
 }
 
+/// Settings the Logic Apps runtime reads directly, whether or not
+/// connections.json mentions them. WEBSITE_SITE_NAME in particular gates the
+/// FLOWLOOKUP entries written into Azurite table storage on startup — leave it
+/// blank and every trigger answers "WorkflowNotFound".
+const RUNTIME_REQUIRED_KEYS: &[&str] = &[
+    "WEBSITE_SITE_NAME",
+    "WORKFLOWS_SUBSCRIPTION_ID",
+    "WORKFLOWS_RESOURCE_GROUP_NAME",
+];
+
 pub fn check_setup(dir: &str) -> SetupStatus {
     let p = crate::services::workflows::resolve_logic_apps_dir(dir);
     let settings_path = p.join("local.settings.json");
@@ -57,22 +67,46 @@ pub fn check_setup(dir: &str) -> SetupStatus {
         }
     }
 
+    // Which settings actually matter is a question with an answer: a key is
+    // needed when connections.json interpolates it, or when the Logic Apps
+    // runtime reads it directly. The rule here used to be a case-sensitive
+    // substring guess ("KEY", "CONNECTION", "SUBSCRIPTION", "siteName"), which
+    // reported WORKFLOWS_SUBSCRIPTION_ID while staying silent about a blank
+    // keyVault_VaultUri that connections.json genuinely depends on — so the
+    // banner's count bore no relation to what would actually break at runtime.
+    let conn_path = p.join("connections.json");
+    let referenced: Vec<String> = if conn_path.exists() {
+        let conn_text = fs::read_to_string(&conn_path).unwrap_or_default();
+        let conn_json: serde_json::Value = serde_json::from_str(&conn_text).unwrap_or_default();
+        // Scan for both @appsetting('key') and @{appsetting('key')} forms.
+        let conn_str = conn_json.to_string();
+        let mut refs: Vec<String> = Vec::new();
+        for cap in regex::Regex::new(r"@\{?appsetting\('([^']+)'\)\}?")
+            .unwrap()
+            .captures_iter(&conn_str)
+        {
+            let key = cap[1].to_string();
+            if !refs.contains(&key) {
+                refs.push(key);
+            }
+        }
+        refs
+    } else {
+        Vec::new()
+    };
+
     // Named, not counted: a bare count sends the user hunting through the whole
     // file for which settings the banner means.
     let mut blank: Vec<String> = Vec::new();
     if let Some(v) = vals {
         for (key, val) in v {
             if let Some(s) = val.as_str() {
+                // A TODO placeholder is the user's own note-to-self, so it
+                // counts whether or not anything references it yet.
                 let is_missing = s.contains("TODO")
                     || (s.is_empty()
-                        && (key.contains("KEY") ||
-                    key.contains("CONNECTION") ||
-                    key.contains("SUBSCRIPTION") ||
-                    key.contains("RESOURCE_GROUP") ||
-                    key.contains("siteName") ||
-                    // WEBSITE_SITE_NAME must be non-empty: the Logic Apps runtime derives the
-                    // Azurite table hash from it and only writes FLOWLOOKUP entries when set.
-                    key == "WEBSITE_SITE_NAME"));
+                        && (referenced.contains(key)
+                            || RUNTIME_REQUIRED_KEYS.contains(&key.as_str())));
                 if is_missing {
                     blank.push(key.clone());
                 }
@@ -81,41 +115,16 @@ pub fn check_setup(dir: &str) -> SetupStatus {
     }
     blank.sort();
 
-    // Check for missing keys required by connections.json
-    let conn_path = p.join("connections.json");
-    if conn_path.exists() {
-        let conn_text = fs::read_to_string(conn_path).unwrap_or_default();
-        let conn_json: serde_json::Value = serde_json::from_str(&conn_text).unwrap_or_default();
-        let mut missing_keys = Vec::new();
+    // Referenced by connections.json with no local.settings.json entry at all.
+    let mut absent: Vec<String> = referenced
+        .iter()
+        .filter(|k| vals.is_none_or(|v| !v.contains_key(k.as_str())))
+        .cloned()
+        .collect();
+    absent.sort();
 
-        // Scan for both @appsetting('key') and @{appsetting('key')} forms
-        let conn_str = conn_json.to_string();
-        for cap in regex::Regex::new(r"@\{?appsetting\('([^']+)'\)\}?")
-            .unwrap()
-            .captures_iter(&conn_str)
-        {
-            let key = &cap[1];
-            if let Some(v) = vals {
-                if !v.contains_key(key) && !missing_keys.contains(&key.to_string()) {
-                    missing_keys.push(key.to_string());
-                }
-            } else if !missing_keys.contains(&key.to_string()) {
-                missing_keys.push(key.to_string());
-            }
-        }
-
-        if !missing_keys.is_empty() || !blank.is_empty() {
-            missing_keys.sort();
-            return SetupStatus::NeedsConfiguration {
-                blank,
-                absent: missing_keys,
-            };
-        }
-    } else if !blank.is_empty() {
-        return SetupStatus::NeedsConfiguration {
-            blank,
-            absent: Vec::new(),
-        };
+    if !blank.is_empty() || !absent.is_empty() {
+        return SetupStatus::NeedsConfiguration { blank, absent };
     }
 
     SetupStatus::Ready
@@ -779,6 +788,60 @@ mod tests {
             }
             other => panic!("expected both categories, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn a_blank_key_that_connections_json_needs_is_reported_whatever_its_name() {
+        // The old rule matched key names against uppercase substrings, so
+        // keyVault_VaultUri and serviceBus_fullyQualifiedNamespace slipped
+        // through while WORKFLOWS_SUBSCRIPTION_ID was flagged — the banner
+        // undercounted exactly the settings that break connections at runtime.
+        let conns = r#"{
+            "managedApiConnections": {
+                "kv":  { "connectionRuntimeUrl": "@appsetting('keyVault_VaultUri')" },
+                "sb":  { "connectionRuntimeUrl": "@{appsetting('serviceBus_fullyQualifiedNamespace')}" }
+            }
+        }"#;
+        let tmp = project(
+            &[
+                ("keyVault_VaultUri", ""),
+                ("serviceBus_fullyQualifiedNamespace", ""),
+                ("WEBSITE_SITE_NAME", "ais-tom"),
+                ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
+            ],
+            Some(conns),
+        );
+
+        match check_setup(tmp.path().to_str().unwrap()) {
+            SetupStatus::NeedsConfiguration { blank, absent } => {
+                assert_eq!(
+                    blank,
+                    vec!["keyVault_VaultUri", "serviceBus_fullyQualifiedNamespace"]
+                );
+                assert!(absent.is_empty());
+            }
+            other => panic!("expected NeedsConfiguration, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn a_blank_key_nothing_references_is_left_alone() {
+        // The flip side: an unused blank entry is not a problem to nag about.
+        let conns = r#"{ "managedApiConnections": {} }"#;
+        let tmp = project(
+            &[
+                ("someUnusedThing", ""),
+                ("WEBSITE_SITE_NAME", "ais-tom"),
+                ("WORKFLOWS_SUBSCRIPTION_ID", "sub-1"),
+                ("WORKFLOWS_RESOURCE_GROUP_NAME", "rg-1"),
+                ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
+            ],
+            Some(conns),
+        );
+        assert!(matches!(
+            check_setup(tmp.path().to_str().unwrap()),
+            SetupStatus::Ready
+        ));
     }
 
     #[test]

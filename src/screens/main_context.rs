@@ -78,6 +78,8 @@ pub struct MainContext {
     pub visited_views: Signal<HashSet<String>>,
     pub db_panel_open: Signal<bool>,
     pub azure_panel_open: Signal<bool>,
+    /// Some(()) while the "link this workspace to Azure" chooser is up.
+    pub azure_link_open: Signal<bool>,
     pub auto_watch: Signal<bool>,
 
     // Scenario recording. Lives here rather than in the Tests view because the
@@ -170,6 +172,7 @@ impl MainContext {
             }),
             db_panel_open: Signal::new(false),
             azure_panel_open: Signal::new(false),
+            azure_link_open: Signal::new(false),
             auto_watch: Signal::new(true),
 
             recorder: Signal::new(Default::default()),

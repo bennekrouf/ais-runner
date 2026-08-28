@@ -3,6 +3,7 @@ use dioxus::prelude::*;
 use std::collections::HashSet;
 
 use crate::components::{
+    azure_link_dialog::AzureLinkDialog,
     azure_panel::AzurePanel,
     db_panel::DbPanel,
     devops_panel::DevOpsPanel,
@@ -353,6 +354,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut sproc_status = ctx.sproc_status;
     let mut db_panel_open = ctx.db_panel_open;
     let mut azure_panel_open = ctx.azure_panel_open;
+    let azure_link_open = ctx.azure_link_open;
     let az_diff_cache = ctx.az_diff_cache;
     let mut sftp_conns = ctx.sftp_conns;
     let mut blob_conns = ctx.blob_conns;
@@ -370,6 +372,15 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let active_tenant = ctx.active_tenant;
 
     // ══ Effects ════════════════════════════════════════════════════════════
+
+    // A session can expire while the panel sits open. Only an outright Err closes
+    // it — a re-check briefly parks az_status at None, and slamming the panel shut
+    // every time the user clicks ⟳ would be its own bug.
+    use_effect(move || {
+        if matches!(*az_status.read(), Some(Err(_))) && *azure_panel_open.read() {
+            azure_panel_open.set(false);
+        }
+    });
 
     use_effect(move || {
         spawn(async move {
@@ -628,7 +639,26 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
         div { id: "app",
 
             // ── Setup banner ──────────────────────────────────────────────
-            {setup_banner(setup_status, &workspace_link, current_view, visited_views, &dir, log_lines)}
+            {setup_banner(setup_status, &workspace_link, current_view, visited_views, &dir, log_lines, azure_link_open)}
+
+            // ── Link-to-Azure chooser ─────────────────────────────────────
+            if *azure_link_open.read() {
+                {
+                    let mut push_link = make_push(log_lines);
+                    let dir_link = dir.clone();
+                    rsx! {
+                        AzureLinkDialog {
+                            logic_apps_dir: dir.clone(),
+                            is_open: azure_link_open,
+                            on_linked: move |report: String| {
+                                push_link(report, LogLevel::Ok);
+                                let mut ss = setup_status;
+                                ss.set(setup_manager::check_setup(&dir_link));
+                            },
+                        }
+                    }
+                }
+            }
 
             // ── Toolbar ───────────────────────────────────────────────────
             div { id: "toolbar",
@@ -882,15 +912,36 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     {connections_button(&dir, sql_wfs, msi_wfs, sql_conns, sb_namespace, sb_queues,
                         sb_namespace_key, sb_conn_str, sftp_conns, blob_conns, cosmos_conns,
                         webjobs_storage, db_panel_open, azure_panel_open)}
-                    button {
-                        class: if *azure_panel_open.read() { "btn btn-small btn-panel active" } else { "btn btn-small btn-panel" },
-                        title: "Compare local workflows with Azure",
-                        onclick: move |_| {
-                            let next = !*azure_panel_open.read();
-                            azure_panel_open.set(next);
-                            if next { db_panel_open.set(false); }
-                        },
-                        "☁ Azure"
+                    {
+                        // Everything in the Azure panel goes through `az`, so opening
+                        // it while signed out produced a panel whose every row was the
+                        // same auth error. Gate the entrance rather than explain the
+                        // failure ten times over.
+                        let az = az_status.read().clone();
+                        let signed_in = matches!(az, Some(Ok(_)));
+                        let cls = if signed_in && *azure_panel_open.read() {
+                            "btn btn-small btn-panel active"
+                        } else {
+                            "btn btn-small btn-panel"
+                        };
+                        let tip = match &az {
+                            Some(Ok(_))  => "Compare local workflows with Azure",
+                            None         => "Checking your Azure sign-in…",
+                            Some(Err(_)) => "Sign in to Azure to compare workflows — use Sign in above",
+                        };
+                        rsx! {
+                            button {
+                                class: cls,
+                                disabled: !signed_in,
+                                title: tip,
+                                onclick: move |_| {
+                                    let next = !*azure_panel_open.read();
+                                    azure_panel_open.set(next);
+                                    if next { db_panel_open.set(false); }
+                                },
+                                "☁ Azure"
+                            }
+                        }
                     }
                 }
 
@@ -1366,6 +1417,7 @@ fn setup_banner(
     mut visited_views: Signal<HashSet<String>>,
     dir: &str,
     log_lines: Signal<Vec<LogLine>>,
+    mut azure_link_open: Signal<bool>,
 ) -> Element {
     let dir = dir.to_string();
     let link = workspace_link.clone();
@@ -1430,6 +1482,9 @@ fn setup_banner(
                 if !blank.is_empty() {
                     div { class: "setup-banner-row",
                         span { "⚠ {blank.len()} setting(s) need a value: {setup_manager::summarize_keys(&blank)}" }
+                        // Auto-detect needs a subscription and resource group to search,
+                        // which is exactly what the workspace link holds — so an unlinked
+                        // workspace used to get this banner with no Azure route out of it.
                         if link.is_some() {
                             button {
                                 class: "setup-banner-btn",
@@ -1439,6 +1494,14 @@ fn setup_banner(
                                     move |_| setup::handle_auto_detect(&dir, setup_status, log_lines, link.clone())
                                 },
                                 "Auto-Detect from Azure"
+                            }
+                        } else {
+                            button {
+                                class: "setup-banner-btn",
+                                style: "background: var(--blue); margin-right: 8px;",
+                                title: "Pick this project's Logic App and fill these in from Azure",
+                                onclick: move |_| azure_link_open.set(true),
+                                "🔗 Link to Azure"
                             }
                         }
                         button {
