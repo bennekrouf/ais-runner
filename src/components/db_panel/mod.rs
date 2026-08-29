@@ -11,9 +11,9 @@ pub use sftp_tab::SftpTab;
 pub use sql_tab::SqlTab;
 
 use crate::services::{
-    azure::cli as azure_cli, azure::sync as azure_sync, blob_check::BlobConnection,
-    cosmos_check::CosmosConnection, env_mode::EnvMode, maps_check, sb_check::SbQueueInfo,
-    settings_file, sftp_check::SftpConnection, sql_check::SqlConnection,
+    azure::cli as azure_cli, blob_check::BlobConnection, config, cosmos_check::CosmosConnection,
+    env_mode::EnvMode, maps_check, sb_check::SbQueueInfo, settings_file,
+    sftp_check::SftpConnection, sql_check::SqlConnection,
 };
 use dioxus::prelude::*;
 use std::collections::HashMap;
@@ -89,7 +89,7 @@ pub fn DbPanel(props: DbPanelProps) -> Element {
 
     // ── Subscription (for scoped az calls) ──────────────────────────────────
     let subscription: Signal<Option<String>> =
-        use_signal(|| azure_sync::detect_subscription(&props.logic_apps_dir));
+        use_signal(|| config::subscription_for(&props.logic_apps_dir));
 
     // ── Active tab ───────────────────────────────────────────────────────────
     let mut active_tab: Signal<&'static str> = use_signal(|| "blob");

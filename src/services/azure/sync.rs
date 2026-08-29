@@ -1,5 +1,6 @@
 use crate::services::azure::cli::{az_command, AzError};
 use serde_json::Value;
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AzureWorkflow {
@@ -247,7 +248,7 @@ pub fn download_workflow(
 
 // ── diff helpers ──────────────────────────────────────────────────────────────
 
-/// Compare the local `{local_dir}/logic_apps/{workflow}/workflow.json` with the live Azure version.
+/// Compare the local `{logic_apps_dir}/{workflow}/workflow.json` with the live Azure version.
 /// Returns `Ok(0)` when identical, `Ok(n)` with the number of changed lines when different,
 /// `Err` when the local file is missing or the Azure fetch fails.
 pub fn diff_workflow_vs_local(
@@ -255,10 +256,9 @@ pub fn diff_workflow_vs_local(
     rg: &str,
     site: &str,
     workflow: &str,
-    local_dir: &str,
+    logic_apps_dir: &Path,
 ) -> Result<usize, AzError> {
-    let resolved = crate::services::workflows::resolve_logic_apps_dir(local_dir);
-    let local_path = resolved.join(workflow).join("workflow.json");
+    let local_path = logic_apps_dir.join(workflow).join("workflow.json");
     let local_str = std::fs::read_to_string(&local_path)
         .map_err(|e| AzError::Other(format!("read local: {}", e)))?;
 
@@ -363,10 +363,9 @@ pub fn diff_parameters_vs_local(
     subscription: &str,
     rg: &str,
     site: &str,
-    local_dir: &str,
+    logic_apps_dir: &Path,
 ) -> Result<usize, AzError> {
-    let resolved = crate::services::workflows::resolve_logic_apps_dir(local_dir);
-    let local_path = resolved.join("parameters.json");
+    let local_path = logic_apps_dir.join("parameters.json");
     if !local_path.exists() {
         return Err(AzError::Other("No local parameters.json".into()));
     }
@@ -392,10 +391,9 @@ pub fn diff_connections_vs_local(
     subscription: &str,
     rg: &str,
     site: &str,
-    local_dir: &str,
+    logic_apps_dir: &Path,
 ) -> Result<usize, AzError> {
-    let resolved = crate::services::workflows::resolve_logic_apps_dir(local_dir);
-    let local_path = resolved.join("connections.json");
+    let local_path = logic_apps_dir.join("connections.json");
     if !local_path.exists() {
         return Err(AzError::Other("No local connections.json".into()));
     }
@@ -420,7 +418,13 @@ pub fn diff_connections_vs_local(
     Ok(total)
 }
 
-/// Read the subscription ID from local.settings.json (WORKFLOWS_SUBSCRIPTION_ID).
+/// Read the subscription ID the project declares in `local.settings.json`
+/// (`WORKFLOWS_SUBSCRIPTION_ID`).
+///
+/// Deliberately consults nothing but the workspace on disk. The runner also has
+/// a `WorkspaceLink` fallback for when the project declares nothing, but that
+/// lives in `services::config` — reaching into the GUI's own config file from
+/// here would tie this module to a process that has one.
 pub fn detect_subscription(logic_apps_dir: &str) -> Option<String> {
     let sub = if let Ok(text) =
         std::fs::read_to_string(std::path::Path::new(logic_apps_dir).join("local.settings.json"))
@@ -436,14 +440,5 @@ pub fn detect_subscription(logic_apps_dir: &str) -> Option<String> {
         None
     };
 
-    if let Some(s) = sub {
-        if !s.is_empty() {
-            return Some(s);
-        }
-    }
-
-    // Fallback to WorkspaceLink
-    crate::services::config::load()
-        .get_link(logic_apps_dir)
-        .map(|l| l.subscription_id.clone())
+    sub.filter(|s| !s.is_empty())
 }
