@@ -1,8 +1,8 @@
 use dioxus::prelude::*;
 use std::collections::HashMap;
 
-use crate::services::env_compare::VarGroup;
-use crate::services::security_compare::{
+use crate::services::azure::env_compare::VarGroup;
+use crate::services::azure::security_compare::{
     self, AccessPolicy, CosmosSecurity, EnvTarget, KeyVaultSecurity, RoleAssignment,
     SecuritySnapshot,
 };

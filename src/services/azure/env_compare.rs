@@ -1,4 +1,4 @@
-use crate::services::azure_cli::{az_command, AzError};
+use crate::services::azure::cli::{az_command, AzError};
 use indexmap::IndexMap;
 
 pub type EnvValues = IndexMap<String, String>;

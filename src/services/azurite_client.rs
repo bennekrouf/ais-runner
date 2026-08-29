@@ -29,7 +29,14 @@ use reqwest::blocking::Client;
 use sha2::Sha256;
 use std::sync::OnceLock;
 
-use crate::services::azure_cli::BlobInfo;
+/// One blob as listed from a container: just the name and the size the
+/// browser shows. Lives here rather than in the `az` wrapper because
+/// Azurite is local — nothing in `services::azure` produces one.
+#[derive(Debug, Clone)]
+pub struct BlobInfo {
+    pub name: String,
+    pub size: u64,
+}
 
 type HmacSha256 = Hmac<Sha256>;
 

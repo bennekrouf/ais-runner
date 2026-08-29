@@ -2,7 +2,7 @@ use crate::components::log_panel::LogLine;
 use crate::services::process::ManagedProcess;
 use crate::services::process::ServiceState;
 use crate::services::workflows::{self, RunItem, WorkflowItem};
-use crate::services::{azure_cli, config, env_mode, setup_manager, system_check};
+use crate::services::{azure::cli as azure_cli, config, env_mode, setup_manager, system_check};
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

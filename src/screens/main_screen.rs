@@ -24,7 +24,9 @@ use crate::handlers::{
 };
 use crate::screens::MainContext;
 use crate::services::{
-    azure_cli, azure_sync, blob_check, config, connection_diag, cosmos_check,
+    azure::cli as azure_cli,
+    azure::sync as azure_sync,
+    blob_check, config, connection_diag, cosmos_check,
     env_mode::{self, EnvMode},
     process::ServiceState,
     sb_check, setup_manager, sftp_check, sql_check, system_check, workflow_analysis, workflows,

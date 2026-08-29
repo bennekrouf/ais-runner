@@ -1,6 +1,7 @@
 use crate::services::{
-    azure_cli, config,
-    eventgrid_check::{self, EgData, EgSubscription, EgTopic},
+    azure::cli as azure_cli,
+    azure::eventgrid_check::{self, EgData, EgSubscription, EgTopic},
+    config,
 };
 use dioxus::prelude::*;
 

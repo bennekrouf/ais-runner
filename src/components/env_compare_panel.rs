@@ -1,8 +1,9 @@
 use crate::components::app_config_panel::AppConfigPanel;
 use crate::components::security_compare_panel::SecurityComparePanel;
 use crate::services::{
-    azure_cli, config,
-    env_compare::{self, EnvValues, VarGroup},
+    azure::cli as azure_cli,
+    azure::env_compare::{self, EnvValues, VarGroup},
+    config,
 };
 use dioxus::prelude::*;
 use indexmap::IndexMap;

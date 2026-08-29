@@ -1,6 +1,6 @@
 [package]
 name = "ais-runner"
-version = "0.5.27"
+version = "0.5.28"
 edition = "2021"
 # Source-available, not OSI open source. Free for noncommercial use;
 # commercial use needs a licence. See LICENSE and TRADEMARK.md.

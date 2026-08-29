@@ -11,9 +11,9 @@ pub use sftp_tab::SftpTab;
 pub use sql_tab::SqlTab;
 
 use crate::services::{
-    azure_cli, azure_sync, blob_check::BlobConnection, cosmos_check::CosmosConnection,
-    env_mode::EnvMode, maps_check, sb_check::SbQueueInfo, settings_file,
-    sftp_check::SftpConnection, sql_check::SqlConnection,
+    azure::cli as azure_cli, azure::sync as azure_sync, blob_check::BlobConnection,
+    cosmos_check::CosmosConnection, env_mode::EnvMode, maps_check, sb_check::SbQueueInfo,
+    settings_file, sftp_check::SftpConnection, sql_check::SqlConnection,
 };
 use dioxus::prelude::*;
 use std::collections::HashMap;

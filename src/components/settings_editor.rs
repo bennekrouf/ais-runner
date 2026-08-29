@@ -1,7 +1,9 @@
 use crate::components::env_compare_panel::EnvComparePanel;
 use crate::components::eventgrid_panel::EventGridPanel;
 use crate::components::sb_compare_panel::SbComparePanel;
-use crate::services::{azure_cli, config, missing_settings, settings_file, setup_manager};
+use crate::services::{
+    azure::cli as azure_cli, config, missing_settings, settings_file, setup_manager,
+};
 use dioxus::prelude::*;
 use indexmap::IndexMap;
 

@@ -1,7 +1,7 @@
 use super::*;
 
 // Open test/logic-apps/ in AIS Runner to manually exercise all sample workflows.
-const FIXTURE:        &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test/logic-apps");
+const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test/logic-apps");
 const FIXTURE_NESTED: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test/fixtures/nested");
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -17,7 +17,10 @@ fn payload_json(workflow: &str) -> serde_json::Value {
 fn load_all_workflows_from_fixture() {
     let items = scan_local_workflows(FIXTURE);
     // Count dynamically — optional workflows (write-to-cosmos etc.) may come and go.
-    assert!(items.len() >= 3, "expected at least hello-world, write-to-storage, send-to-bus");
+    assert!(
+        items.len() >= 3,
+        "expected at least hello-world, write-to-storage, send-to-bus"
+    );
 
     let names: Vec<&str> = items.iter().map(|w| w.name.as_str()).collect();
     assert!(names.contains(&"hello-world"));
@@ -43,7 +46,10 @@ fn resolve_logic_apps_dir_flat() {
 #[test]
 fn resolve_logic_apps_dir_nested() {
     let resolved = resolve_logic_apps_dir(FIXTURE_NESTED);
-    assert_eq!(resolved, std::path::Path::new(FIXTURE_NESTED).join("logic_apps"));
+    assert_eq!(
+        resolved,
+        std::path::Path::new(FIXTURE_NESTED).join("logic_apps")
+    );
 
     let items = scan_local_workflows(FIXTURE_NESTED);
     assert_eq!(items.len(), 1);
@@ -98,7 +104,9 @@ fn missing_endpoint_flagged_for_send_to_bus() {
     let wf_dir = dir.join("send-to-bus");
     fs::create_dir_all(&wf_dir).unwrap();
 
-    fs::write(wf_dir.join("workflow.json"), br#"{
+    fs::write(
+        wf_dir.join("workflow.json"),
+        br#"{
         "definition": {
             "triggers": { "manual": { "type": "Request", "kind": "Http" } },
             "actions": {
@@ -115,9 +123,13 @@ fn missing_endpoint_flagged_for_send_to_bus() {
                 }
             }
         }
-    }"#).unwrap();
+    }"#,
+    )
+    .unwrap();
 
-    fs::write(dir.join("connections.json"), br#"{
+    fs::write(
+        dir.join("connections.json"),
+        br#"{
         "serviceProviderConnections": {
             "sb": {
                 "parameterValues": {
@@ -126,17 +138,29 @@ fn missing_endpoint_flagged_for_send_to_bus() {
                 "serviceProvider": { "id": "/serviceProviders/serviceBus" }
             }
         }
-    }"#).unwrap();
+    }"#,
+    )
+    .unwrap();
 
-    fs::write(dir.join("local.settings.json"), br#"{
+    fs::write(
+        dir.join("local.settings.json"),
+        br#"{
         "IsEncrypted": false,
         "Values": { "MY_SB_CONN_STR": "" }
-    }"#).unwrap();
+    }"#,
+    )
+    .unwrap();
 
     let missing = crate::services::connection_diag::missing_endpoints_for_workflow(
-        &dir.to_string_lossy(), "send-to-bus",
+        &dir.to_string_lossy(),
+        "send-to-bus",
     );
-    assert_eq!(missing.len(), 1, "expected one missing endpoint, got: {:?}", missing);
+    assert_eq!(
+        missing.len(),
+        1,
+        "expected one missing endpoint, got: {:?}",
+        missing
+    );
     assert_eq!(missing[0].0, "sb");
     assert_eq!(missing[0].1, "MY_SB_CONN_STR");
 }
@@ -144,7 +168,8 @@ fn missing_endpoint_flagged_for_send_to_bus() {
 #[test]
 fn no_missing_endpoint_for_write_to_storage() {
     let missing = crate::services::connection_diag::missing_endpoints_for_workflow(
-        FIXTURE, "write-to-storage",
+        FIXTURE,
+        "write-to-storage",
     );
     assert!(missing.is_empty(), "unexpected missing: {:?}", missing);
 }
@@ -154,14 +179,17 @@ fn no_missing_endpoint_for_write_to_storage() {
 #[test]
 fn duration_ms_calculates_correctly() {
     let start = Some("2026-01-01T10:00:00Z".to_string());
-    let end   = Some("2026-01-01T10:00:01.5Z".to_string());
+    let end = Some("2026-01-01T10:00:01.5Z".to_string());
     assert_eq!(duration_ms(&start, &end), Some(1500));
 }
 
 #[test]
 fn duration_ms_returns_none_for_missing_timestamps() {
     assert_eq!(duration_ms(&None, &None), None);
-    assert_eq!(duration_ms(&Some("2026-01-01T10:00:00Z".to_string()), &None), None);
+    assert_eq!(
+        duration_ms(&Some("2026-01-01T10:00:00Z".to_string()), &None),
+        None
+    );
 }
 
 // ── az trigger commands ───────────────────────────────────────────────────
@@ -169,18 +197,30 @@ fn duration_ms_returns_none_for_missing_timestamps() {
 #[test]
 fn az_trigger_command_args() {
     for (workflow, body) in [
-        ("hello-world",      r#"{"message":"hi","id":"T-1"}"#),
-        ("write-to-storage", r#"{"content":"hello","blobName":"test.txt"}"#),
-        ("send-to-bus",      r#"{"body":"hello","messageType":"Test","queueName":"q"}"#),
+        ("hello-world", r#"{"message":"hi","id":"T-1"}"#),
+        (
+            "write-to-storage",
+            r#"{"content":"hello","blobName":"test.txt"}"#,
+        ),
+        (
+            "send-to-bus",
+            r#"{"body":"hello","messageType":"Test","queueName":"q"}"#,
+        ),
     ] {
         let url = format!(
             "http://localhost:7071/runtime/webhooks/workflow/api/management\
              /workflows/{workflow}/triggers/manual/run\
              ?api-version=2019-10-01-preview",
         );
-        let cmd = crate::services::azure_cli::az_command(&[
-            "rest", "--method", "post", "--url", &url,
-            "--body", body, "--skip-authorization-header",
+        let cmd = crate::services::azure::cli::az_command(&[
+            "rest",
+            "--method",
+            "post",
+            "--url",
+            &url,
+            "--body",
+            body,
+            "--skip-authorization-header",
         ]);
 
         #[cfg(not(target_os = "windows"))]
@@ -250,8 +290,14 @@ fn blob_rename_rewrite_containers_extracted() {
     );
     let json = std::fs::read_to_string(wf_path).expect("workflow.json not found");
     let containers = extract_all_blob_containers(&json);
-    assert!(containers.contains(&"rename-input".to_string()),  "missing rename-input");
-    assert!(containers.contains(&"rename-output".to_string()), "missing rename-output");
+    assert!(
+        containers.contains(&"rename-input".to_string()),
+        "missing rename-input"
+    );
+    assert!(
+        containers.contains(&"rename-output".to_string()),
+        "missing rename-output"
+    );
 }
 
 // Integration: blob-rename-rewrite against local Azurite + func start
@@ -277,7 +323,8 @@ async fn blob_rename_rewrite_emulator() {
         "rename-input",
         original_name,
         original_content.as_bytes().to_vec(),
-    ).expect("upload to rename-input failed — is Azurite running?");
+    )
+    .expect("upload to rename-input failed — is Azurite running?");
 
     // Poll run history for up to 60 s
     let workflow = "blob-rename-rewrite";
@@ -309,16 +356,22 @@ async fn blob_rename_rewrite_emulator() {
 
                     // Verify content was rewritten
                     let tmp = std::env::temp_dir().join("ais_rename_test_out.txt");
-                    azurite_client::download_blob("rename-output", &expected_name, &tmp.to_string_lossy())
-                        .expect("download failed");
+                    azurite_client::download_blob(
+                        "rename-output",
+                        &expected_name,
+                        &tmp.to_string_lossy(),
+                    )
+                    .expect("download failed");
                     let written = std::fs::read_to_string(&tmp).expect("read failed");
                     assert!(
                         written.contains("[rewritten]"),
-                        "content should start with '[rewritten]', got: {:?}", written
+                        "content should start with '[rewritten]', got: {:?}",
+                        written
                     );
                     assert!(
                         written.contains(original_content),
-                        "content should include original text, got: {:?}", written
+                        "content should include original text, got: {:?}",
+                        written
                     );
                     break;
                 }
@@ -334,9 +387,11 @@ async fn blob_rename_rewrite_emulator() {
                 }
             }
         }
-        assert!(tokio::time::Instant::now() < deadline,
+        assert!(
+            tokio::time::Instant::now() < deadline,
             "timed out after 60 s — blob trigger did not fire. \
-             Try: ⟳ Reset Azurite → restart func, then re-run.");
+             Try: ⟳ Reset Azurite → restart func, then re-run."
+        );
     }
 }
 
@@ -371,10 +426,10 @@ fn read_blob_trigger_info_when_blob_is_added_or_modified() {
 
 #[test]
 fn extract_all_blob_containers_kyriba_send() {
-    let json = std::fs::read_to_string(
-        concat!(env!("CARGO_MANIFEST_DIR"),
-                "/../../oryx/ais_tom_platform/logic_apps/Send-Kyriba-files-broadcast/workflow.json")
-    );
+    let json = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../oryx/ais_tom_platform/logic_apps/Send-Kyriba-files-broadcast/workflow.json"
+    ));
     // Skip gracefully if the oryx repo is not alongside ais-runner
     let Ok(json) = json else { return };
 
@@ -382,7 +437,9 @@ fn extract_all_blob_containers_kyriba_send() {
     for expected in &["kyriba-input", "input", "kyriba-archive"] {
         assert!(
             containers.contains(&expected.to_string()),
-            "expected container '{}' in {:?}", expected, containers
+            "expected container '{}' in {:?}",
+            expected,
+            containers
         );
     }
 }
@@ -414,7 +471,9 @@ async fn blob_trigger_emulator() {
         if let Ok(runs) = list_runs(workflow).await {
             if let Some(latest) = runs.first() {
                 let status = latest.properties.status.to_lowercase();
-                if status == "succeeded" { break; }
+                if status == "succeeded" {
+                    break;
+                }
                 if status == "failed" {
                     if let Ok(actions) = list_actions(workflow, &latest.name).await {
                         for act in &actions {
@@ -427,9 +486,11 @@ async fn blob_trigger_emulator() {
                 }
             }
         }
-        assert!(tokio::time::Instant::now() < deadline,
-                "timed out after 60 s — blob trigger did not fire. \
-                 Try: ⟳ Reset Azurite → restart func, then re-run.");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out after 60 s — blob trigger did not fire. \
+                 Try: ⟳ Reset Azurite → restart func, then re-run."
+        );
     }
 }
 
@@ -447,21 +508,31 @@ async fn blob_trigger_emulator() {
 async fn write_to_cosmos_against_emulator() {
     // Verify emulator is reachable
     let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)  // emulator uses self-signed cert
+        .danger_accept_invalid_certs(true) // emulator uses self-signed cert
         .timeout(std::time::Duration::from_secs(5))
-        .build().unwrap();
+        .build()
+        .unwrap();
     let ping = client.get("https://localhost:8081/").send().await;
-    assert!(ping.is_ok(), "Cosmos emulator not reachable on :8081 — start it first");
+    assert!(
+        ping.is_ok(),
+        "Cosmos emulator not reachable on :8081 — start it first"
+    );
 
     // Get callback URL from the running func host
-    let callback_url = get_callback_url("write-to-cosmos", "manual").await
+    let callback_url = get_callback_url("write-to-cosmos", "manual")
+        .await
         .expect("func start must be running in test/logic-apps/");
 
     // Trigger the workflow
-    let payload = r#"{"id":"test-001","partitionKey":"unit-test","data":"hello from ais-runner test"}"#;
-    let run_id = trigger_workflow(&callback_url, payload).await
+    let payload =
+        r#"{"id":"test-001","partitionKey":"unit-test","data":"hello from ais-runner test"}"#;
+    let run_id = trigger_workflow(&callback_url, payload)
+        .await
         .expect("trigger failed");
-    assert_ne!(run_id, "unknown", "run ID should be returned for a stateful workflow");
+    assert_ne!(
+        run_id, "unknown",
+        "run ID should be returned for a stateful workflow"
+    );
 
     // Poll until terminal (max 30 s)
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -470,7 +541,9 @@ async fn write_to_cosmos_against_emulator() {
         if let Ok(runs) = list_runs("write-to-cosmos").await {
             if let Some(latest) = runs.first() {
                 let status = latest.properties.status.to_lowercase();
-                if status == "succeeded" { break; }
+                if status == "succeeded" {
+                    break;
+                }
                 if status == "failed" {
                     if let Ok(actions) = list_actions("write-to-cosmos", &latest.name).await {
                         for act in &actions {
@@ -483,6 +556,9 @@ async fn write_to_cosmos_against_emulator() {
                 }
             }
         }
-        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for run to complete");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for run to complete"
+        );
     }
 }

@@ -1,4 +1,4 @@
-use crate::services::{azure_cli, settings_file};
+use crate::services::{azure::cli as azure_cli, settings_file};
 use std::collections::HashMap;
 use std::fs;
 

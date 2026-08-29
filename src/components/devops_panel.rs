@@ -1,7 +1,7 @@
 use crate::services::{
-    azure_cli::AzError,
+    azure::cli::AzError,
+    azure::devops_cli::{self, EnvInfo, Pipeline, PipelineRun, ReleaseArtifact},
     config,
-    devops_cli::{self, EnvInfo, Pipeline, PipelineRun, ReleaseArtifact},
 };
 use dioxus::prelude::*;
 use std::collections::HashMap;
