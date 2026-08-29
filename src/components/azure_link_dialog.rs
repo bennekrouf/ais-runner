@@ -11,6 +11,7 @@
 //! screen runs, reachable from the banner that complains about the problem.
 
 use crate::services::{
+    azure::auth as azure_auth,
     azure::cli as azure_cli,
     azure::sync::{self as azure_sync, LogicAppSite},
     config, setup_manager,
@@ -27,7 +28,7 @@ fn link_and_fill(dir: &str, site: &LogicAppSite) -> Result<String, String> {
     let link = config::WorkspaceLink {
         subscription_id: site.subscription.clone(),
         resource_group: site.resource_group.clone(),
-        tenant_id: azure_cli::get_active_tenant()
+        tenant_id: azure_auth::get_active_tenant()
             .ok()
             .filter(|t| !t.is_empty()),
         logic_app_name: Some(site.name.clone()),
