@@ -137,3 +137,28 @@ pub fn pick_folder(current: Option<&str>) -> Option<String> {
         .pick_folder()
         .map(|p| p.to_string_lossy().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_config_written_before_the_flag_existed_keeps_notifications_on() {
+        // `bool`'s own Default is false, so without the explicit
+        // `default = "default_true"` every existing install would silently go
+        // mute the first time it read its config back. This is what guards it.
+        let older = r#"{ "recent_dirs": [], "workspace_links": {} }"#;
+        let cfg: AppConfig = serde_json::from_str(older).unwrap();
+        assert!(cfg.notifications_enabled);
+    }
+
+    #[test]
+    fn an_explicit_opt_out_survives_a_round_trip() {
+        let mut cfg = AppConfig::default();
+        assert!(cfg.notifications_enabled, "fresh installs start enabled");
+
+        cfg.notifications_enabled = false;
+        let back: AppConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert!(!back.notifications_enabled);
+    }
+}
