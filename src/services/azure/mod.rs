@@ -11,9 +11,11 @@
 //! become its own crate.
 
 pub mod app_config;
+pub mod auth;
 pub mod cli;
 pub mod devops_cli;
 pub mod env_compare;
 pub mod eventgrid_check;
 pub mod security_compare;
+pub mod servicebus;
 pub mod sync;
