@@ -2530,6 +2530,30 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
 }
 .settings-cfg-val:focus { outline: none; border-color: var(--blue); }
 
+/* App-wide preferences row. Same two-column geometry as .settings-azure-cfg
+   so the labels line up down the panel, but a separate block because the
+   values it holds are global rather than per-workspace. */
+.settings-prefs {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    gap: 5px 10px;
+    align-items: center;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    background: var(--bg1);
+}
+.settings-cfg-check {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--text2);
+    cursor: pointer;
+    user-select: none;
+}
+.settings-cfg-check input { cursor: pointer; }
+
 .settings-cfg-ns-wrap {
     display: flex;
     gap: 6px;

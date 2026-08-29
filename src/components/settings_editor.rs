@@ -80,6 +80,11 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
     let mut filter = use_signal(|| String::new());
     let mut fetching = use_signal(|| String::new());
     let mut show_keys = use_signal(|| std::collections::HashSet::<String>::new());
+    // App-wide preference, not a workspace one: read the value out before
+    // `link` borrows app_cfg, so the checkbox has an initial state.
+    let notifications_default = app_cfg.notifications_enabled;
+    let mut notifications_enabled = use_signal(|| notifications_default);
+
     // Note: the writes below use `entry(..).or_default()`, not `get_mut`. They
     // used to skip silently when the workspace had no link yet — so on an
     // unlinked workspace (the common case when a project is reopened from the
@@ -568,6 +573,31 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                             }
                         }
                     }
+                }
+            }
+
+            // ── Preferences ─────────────────────────────────────────────
+            // Kept out of the Azure config grid above: that block holds
+            // per-workspace values from `workspace_links`, whereas this one is
+            // a single app-wide flag and would be misleading filed under a
+            // heading about this project's Azure resources.
+            div { class: "settings-prefs",
+                label { class: "settings-cfg-label", "Notifications" }
+                label { class: "settings-cfg-check",
+                    input {
+                        r#type: "checkbox",
+                        checked: *notifications_enabled.read(),
+                        onchange: move |_| {
+                            let on = !*notifications_enabled.read();
+                            notifications_enabled.set(on);
+                            // Re-load rather than reusing the render-time copy:
+                            // another panel may have written the config since.
+                            let mut cfg = config::load();
+                            cfg.notifications_enabled = on;
+                            config::save(&cfg);
+                        },
+                    }
+                    " Desktop notification when a run finishes, fails, or times out"
                 }
             }
 
