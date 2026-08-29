@@ -31,7 +31,7 @@ use std::sync::OnceLock;
 
 /// One blob as listed from a container: just the name and the size the
 /// browser shows. Lives here rather than in the `az` wrapper because
-/// Azurite is local — nothing in `services::azure` produces one.
+/// Azurite is local — nothing in `ais-core` produces one.
 #[derive(Debug, Clone)]
 pub struct BlobInfo {
     pub name: String,

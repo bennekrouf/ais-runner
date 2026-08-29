@@ -1,4 +1,5 @@
-use crate::services::{azure::cli as azure_cli, config, sb_check};
+use crate::services::{config, sb_check};
+use ais_core::servicebus as azure_sb;
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -8,12 +9,12 @@ use std::collections::{HashMap, HashSet};
 enum FetchState {
     Idle,
     Loading,
-    Done(Vec<azure_cli::SbQueueDetail>),
+    Done(Vec<azure_sb::SbQueueDetail>),
     Err(String),
 }
 
 impl FetchState {
-    fn queues(&self) -> Option<&[azure_cli::SbQueueDetail]> {
+    fn queues(&self) -> Option<&[azure_sb::SbQueueDetail]> {
         if let FetchState::Done(v) = self {
             Some(v)
         } else {
@@ -81,7 +82,7 @@ pub fn SbComparePanel(props: SbComparePanelProps) -> Element {
                 left_state.set(FetchState::Loading);
                 spawn(async move {
                     let res = tokio::task::spawn_blocking(move || {
-                        azure_cli::sb_list_queues(
+                        azure_sb::sb_list_queues(
                             &env.subscription,
                             &env.resource_group,
                             &env.namespace,
@@ -107,7 +108,7 @@ pub fn SbComparePanel(props: SbComparePanelProps) -> Element {
                 right_state.set(FetchState::Loading);
                 spawn(async move {
                     let res = tokio::task::spawn_blocking(move || {
-                        azure_cli::sb_list_queues(
+                        azure_sb::sb_list_queues(
                             &env.subscription,
                             &env.resource_group,
                             &env.namespace,
@@ -155,11 +156,11 @@ pub fn SbComparePanel(props: SbComparePanelProps) -> Element {
     all_names.sort();
 
     // Index by name for quick lookup
-    let left_map: HashMap<&str, &azure_cli::SbQueueDetail> = left_qs
+    let left_map: HashMap<&str, &azure_sb::SbQueueDetail> = left_qs
         .as_ref()
         .map(|qs| qs.iter().map(|q| (q.name.as_str(), q)).collect())
         .unwrap_or_default();
-    let right_map: HashMap<&str, &azure_cli::SbQueueDetail> = right_qs
+    let right_map: HashMap<&str, &azure_sb::SbQueueDetail> = right_qs
         .as_ref()
         .map(|qs| qs.iter().map(|q| (q.name.as_str(), q)).collect())
         .unwrap_or_default();
@@ -367,7 +368,7 @@ fn discover_envs() -> Vec<SbEnv> {
     envs
 }
 
-fn queues_differ(a: &azure_cli::SbQueueDetail, b: &azure_cli::SbQueueDetail) -> bool {
+fn queues_differ(a: &azure_sb::SbQueueDetail, b: &azure_sb::SbQueueDetail) -> bool {
     a.requires_session != b.requires_session
         || a.max_delivery != b.max_delivery
         || a.max_size_mb != b.max_size_mb
@@ -377,7 +378,7 @@ fn queues_differ(a: &azure_cli::SbQueueDetail, b: &azure_cli::SbQueueDetail) -> 
         || a.status != b.status
 }
 
-fn render_queue_cell(q: Option<&azure_cli::SbQueueDetail>) -> Element {
+fn render_queue_cell(q: Option<&azure_sb::SbQueueDetail>) -> Element {
     match q {
         None => rsx! { span { class: "env-val-missing", "—" } },
         Some(q) => {
@@ -407,8 +408,8 @@ fn render_queue_cell(q: Option<&azure_cli::SbQueueDetail>) -> Element {
 }
 
 fn render_prop_diff_rows(
-    left: &azure_cli::SbQueueDetail,
-    right: &azure_cli::SbQueueDetail,
+    left: &azure_sb::SbQueueDetail,
+    right: &azure_sb::SbQueueDetail,
     show_left: bool,
     show_right: bool,
 ) -> Element {

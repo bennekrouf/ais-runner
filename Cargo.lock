@@ -40,10 +40,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ais-core"
+version = "0.5.30"
+dependencies = [
+ "indexmap 2.14.0",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ais-runner"
-version = "0.5.28"
+version = "0.5.30"
 dependencies = [
  "ais-chain",
+ "ais-core",
  "arboard",
  "axum",
  "base64 0.22.1",

@@ -1,6 +1,9 @@
 use dioxus::prelude::*;
 
-use crate::services::{azure::cli as azure_cli, azure::sync as azure_sync, config, setup_manager};
+use crate::services::{config, setup_manager};
+use ais_core::auth as azure_auth;
+use ais_core::cli as azure_cli;
+use ais_core::sync as azure_sync;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct WelcomeScreenProps {
@@ -107,7 +110,7 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
                                     button {
                                         class: "btn btn-run",
                                         onclick: move |_| {
-                                            spawn(async move { azure_cli::launch_az_login(None, None); });
+                                            spawn(async move { azure_auth::launch_az_login(None, None); });
                                             // poll until logged in
                                             fetching.set(true);
                                             spawn(async move {
@@ -165,7 +168,7 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
                                             class: "btn btn-small",
                                             onclick: move |_| {
                                                 az_account.set(None);
-                                                spawn(async move { azure_cli::launch_az_login(None, None); });
+                                                spawn(async move { azure_auth::launch_az_login(None, None); });
                                             },
                                             "Switch account"
                                         }
@@ -179,7 +182,7 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
                                         style: "margin-left:10px",
                                         onclick: move |_| {
                                             error.set(None);
-                                            spawn(async move { azure_cli::launch_az_login(None, None); });
+                                            spawn(async move { azure_auth::launch_az_login(None, None); });
                                         },
                                         "🔐 az login"
                                     }
@@ -212,7 +215,7 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
                                         class: "btn btn-small",
                                         style: "margin-left:6px",
                                         onclick: move |_| {
-                                            spawn(async move { azure_cli::launch_az_login(None, None); });
+                                            spawn(async move { azure_auth::launch_az_login(None, None); });
                                         },
                                         "🔐 az login"
                                     }

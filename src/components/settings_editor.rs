@@ -1,9 +1,10 @@
 use crate::components::env_compare_panel::EnvComparePanel;
 use crate::components::eventgrid_panel::EventGridPanel;
 use crate::components::sb_compare_panel::SbComparePanel;
-use crate::services::{
-    azure::cli as azure_cli, config, missing_settings, settings_file, setup_manager,
-};
+use crate::services::{config, missing_settings, settings_file, setup_manager};
+use ais_core::auth as azure_auth;
+use ais_core::cli as azure_cli;
+use ais_core::servicebus as azure_sb;
 use dioxus::prelude::*;
 use indexmap::IndexMap;
 
@@ -224,7 +225,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                             class: "btn btn-warn btn-small",
                             onclick: move |_| {
                                 let t = tenant_id.read().clone();
-                                match azure_cli::open_login(if t.is_empty() { None } else { Some(t.as_str()) }) {
+                                match azure_auth::open_login(if t.is_empty() { None } else { Some(t.as_str()) }) {
                                     Ok(()) => {
                                         az_expired.set(false);
                                         status.set("az login opened — complete the browser flow then click 🔄 Fetch.".to_string());
@@ -310,7 +311,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                 tenant_detecting.set(true);
                                 spawn(async move {
                                     let result = tokio::task::spawn_blocking(
-                                        azure_cli::get_active_tenant
+                                        azure_auth::get_active_tenant
                                     ).await.ok().and_then(|r| r.ok());
                                     if let Some(t) = result {
                                         tenant_id.set(t.clone());
@@ -367,7 +368,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                             // Try primary RG name
                                             let mut res = tokio::task::spawn_blocking({
                                                 let rg = rg.clone();
-                                                move || azure_cli::get_subscription_id_by_group(&rg)
+                                                move || azure_auth::get_subscription_id_by_group(&rg)
                                             }).await.unwrap_or(Err(azure_cli::AzError::Other("Task failed".to_string())));
 
                                             // Fallback: if it's 'rg-' but project uses 'logic-', try that
@@ -375,7 +376,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                                 let fallback = rg.replace("rg-", "logic-");
                                                 let res2 = tokio::task::spawn_blocking({
                                                     let f = fallback.clone();
-                                                    move || azure_cli::get_subscription_id_by_group(&f)
+                                                    move || azure_auth::get_subscription_id_by_group(&f)
                                                 }).await.unwrap_or(Err(azure_cli::AzError::Other("Task failed".to_string())));
                                                 if res2.is_ok() {
                                                     res = res2;
@@ -418,7 +419,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                         sub_options.set(vec![]);
                                         spawn(async move {
                                             let result = tokio::task::spawn_blocking(|| {
-                                                azure_cli::list_subscriptions()
+                                                azure_auth::list_subscriptions()
                                             }).await.unwrap_or(Err(azure_cli::AzError::Other("Task failed".to_string())));
                                             sub_loading.set(false);
                                             match result {
@@ -519,7 +520,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                             ns_options.set(vec![]);
                             spawn(async move {
                                 let result = tokio::task::spawn_blocking(move || {
-                                    azure_cli::list_all_servicebus_namespaces(&sub)
+                                    azure_sb::list_all_servicebus_namespaces(&sub)
                                 }).await.unwrap_or(Err(azure_cli::AzError::Other("Task failed".to_string())));
                                 ns_loading.set(false);
                                 match result {
@@ -672,8 +673,8 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                                                                                 "Service Bus namespace is not set — fill in the Namespace field above".to_string()
                                                                             ));
                                                                         }
-                                                                        let rg = azure_cli::find_servicebus_rg(&sub_val, &ns_val)?;
-                                                                        azure_cli::fetch_servicebus_connection_string(&sub_val, &rg, &ns_val)
+                                                                        let rg = azure_sb::find_servicebus_rg(&sub_val, &ns_val)?;
+                                                                        azure_sb::fetch_servicebus_connection_string(&sub_val, &rg, &ns_val)
                                                                     }).await.unwrap_or_else(|_| Err(azure_cli::AzError::Other("Task failed".to_string())));
 
                                                                 fetching.set(String::new());

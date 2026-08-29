@@ -118,6 +118,23 @@ pub fn load() -> AppConfig {
     }
 }
 
+/// The subscription to use for a workspace.
+///
+/// What the project declares in its own `local.settings.json` wins — that is
+/// the value committed alongside the workflows, so it is right for anyone who
+/// checks the repo out. Only when the project declares nothing do we fall back
+/// to the subscription pinned locally when this workspace was linked.
+///
+/// The two halves live apart on purpose: the first reads the workspace and is
+/// usable without a runner install, the second is this app's own state.
+pub fn subscription_for(logic_apps_dir: &str) -> Option<String> {
+    ais_core::sync::detect_subscription(logic_apps_dir).or_else(|| {
+        load()
+            .get_link(logic_apps_dir)
+            .map(|l| l.subscription_id.clone())
+    })
+}
+
 pub fn save(cfg: &AppConfig) {
     let path = config_path();
     if let Some(parent) = path.parent() {

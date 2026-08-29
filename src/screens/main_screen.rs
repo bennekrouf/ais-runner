@@ -24,14 +24,14 @@ use crate::handlers::{
 };
 use crate::screens::MainContext;
 use crate::services::{
-    azure::cli as azure_cli,
-    azure::sync as azure_sync,
     blob_check, config, connection_diag, cosmos_check,
     env_mode::{self, EnvMode},
     process::ServiceState,
     sb_check, setup_manager, sftp_check, sql_check, system_check, workflow_analysis, workflows,
 };
 use crate::utils::make_push;
+use ais_core::auth as azure_auth;
+use ais_core::cli as azure_cli;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct MainScreenProps {
@@ -1605,8 +1605,8 @@ fn az_login_widget(
                                 az_status.set(None);
                                 spawn(async move {
                                     let (result, tenant) = tokio::task::spawn_blocking(|| {
-                                        let r = azure_cli::check_login();
-                                        let t = if r.is_ok() { azure_cli::get_active_tenant().ok() } else { None };
+                                        let r = azure_auth::check_login();
+                                        let t = if r.is_ok() { azure_auth::get_active_tenant().ok() } else { None };
                                         (r, t)
                                     }).await.unwrap_or((Err(azure_cli::AzError::Other("check failed".into())), None));
                                     az_status.set(Some(result));
@@ -1618,7 +1618,7 @@ fn az_login_widget(
                         button {
                             class: "az-action-btn az-logout-btn", title: "Sign out",
                             onclick: move |_| {
-                                azure_cli::logout();
+                                azure_auth::logout();
                                 az_status.set(None);
                                 active_tenant.set(None);
                                 spawn(async move {
@@ -1637,7 +1637,7 @@ fn az_login_widget(
                         button {
                             class: "az-login-btn", title: "Sign in with az login",
                             onclick: move |_| {
-                                match azure_cli::open_login(configured_tenant.as_deref()) {
+                                match azure_auth::open_login(configured_tenant.as_deref()) {
                                     Ok(()) => {
                                         az_status.set(None);
                                     }
@@ -1653,8 +1653,8 @@ fn az_login_widget(
                                     for _ in 0..24 {
                                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                                         let (result, tenant) = tokio::task::spawn_blocking(|| {
-                                            let r = azure_cli::check_login();
-                                            let t = if r.is_ok() { azure_cli::get_active_tenant().ok() } else { None };
+                                            let r = azure_auth::check_login();
+                                            let t = if r.is_ok() { azure_auth::get_active_tenant().ok() } else { None };
                                             (r, t)
                                         }).await.unwrap_or((Err(azure_cli::AzError::Other("check failed".into())), None));
                                         let done = result.is_ok();
@@ -1663,8 +1663,8 @@ fn az_login_widget(
                                         if done {
                                             let d = login_dir.clone();
                                             let _ = tokio::task::spawn_blocking(move || {
-                                                if let Some(sub) = azure_sync::detect_subscription(&d) {
-                                                    let _ = azure_cli::set_subscription(&sub);
+                                                if let Some(sub) = config::subscription_for(&d) {
+                                                    let _ = azure_auth::set_subscription(&sub);
                                                 }
                                             }).await;
                                             break;

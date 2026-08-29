@@ -1,8 +1,7 @@
-use crate::services::{
-    azure::cli::{self as azure_cli, AzError},
-    azure::sync::{self as azure_sync, AzureWorkflow, LogicAppSite},
-    config,
-};
+use crate::services::{config, workflows};
+use ais_core::auth as azure_auth;
+use ais_core::cli::{self as azure_cli, AzError};
+use ais_core::sync::{self as azure_sync, AzureWorkflow, LogicAppSite};
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -148,6 +147,11 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                             diff_map.write().insert(CONN_KEY.to_string(), c);
                         }
 
+                        // Resolve the logic_apps dir once; the diff helpers take it
+                        // already resolved so nothing in `ais-core` has to reach
+                        // into the runner's local workflow scanner.
+                        let resolved_dir = workflows::resolve_logic_apps_dir(&dir);
+
                         // Workflow counter (unchanged from original — config files are separate).
                         computing.set(to_compute.len());
                         // Config file counter: 0, 1, or 2 tasks.
@@ -156,7 +160,7 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
 
                         for (i, wf_nm) in to_compute {
                             let (sc, rc, nc, dc) =
-                                (sub.clone(), rg.clone(), name.clone(), dir.clone());
+                                (sub.clone(), rg.clone(), name.clone(), resolved_dir.clone());
                             let key = wf_nm.clone();
                             spawn(async move {
                                 if i > 0 {
@@ -183,7 +187,7 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
 
                         if needs_params {
                             let (sc, rc, nc, dc) =
-                                (sub.clone(), rg.clone(), name.clone(), dir.clone());
+                                (sub.clone(), rg.clone(), name.clone(), resolved_dir.clone());
                             spawn(async move {
                                 let ds = match tokio::task::spawn_blocking(move || {
                                     azure_sync::diff_parameters_vs_local(&sc, &rc, &nc, &dc)
@@ -204,7 +208,7 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
 
                         if needs_conns {
                             let (sc, rc, nc, dc) =
-                                (sub.clone(), rg.clone(), name.clone(), dir.clone());
+                                (sub.clone(), rg.clone(), name.clone(), resolved_dir.clone());
                             spawn(async move {
                                 let ds = match tokio::task::spawn_blocking(move || {
                                     azure_sync::diff_connections_vs_local(&sc, &rc, &nc, &dc)
@@ -439,7 +443,7 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                         onclick: {
                             let sub    = selected_sub.read().clone();
                             let tenant = props.tenant_id.clone();
-                            move |_| azure_cli::launch_az_login(sub.clone(), tenant.clone())
+                            move |_| azure_auth::launch_az_login(sub.clone(), tenant.clone())
                         },
                         "🔐 Re-login"
                     }

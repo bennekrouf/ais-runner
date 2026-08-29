@@ -1,5 +1,4 @@
 pub mod action_io;
-pub mod azure;
 pub mod azurite_client;
 pub mod azurite_health;
 pub mod blob_check;

@@ -1,4 +1,4 @@
-use crate::services::azure::cli::{az_command, AzError};
+use crate::cli::{az_command, AzError};
 use serde::Deserialize;
 
 // ── data types ────────────────────────────────────────────────────────────────

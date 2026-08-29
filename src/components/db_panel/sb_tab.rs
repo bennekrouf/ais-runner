@@ -1,10 +1,8 @@
 use crate::services::recorder;
 use crate::services::sb_amqp::PeekedMessage;
+use crate::services::sb_check::SbQueueInfo;
 use crate::services::scenario::Step;
-use crate::services::{
-    azure::cli::{self as azure_cli, SbQueueStats},
-    sb_check::SbQueueInfo,
-};
+use ais_core::servicebus::{self as azure_sb, SbQueueStats};
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -108,7 +106,7 @@ pub fn SbTab(props: SbTabProps) -> Element {
                 for q in queues {
                     let (ns2, rg2, q2) = (ns.clone(), rg.clone(), q.clone());
                     if let Ok(Ok(stats)) = tokio::task::spawn_blocking(move || {
-                        azure_cli::sb_queue_stats(&rg2, &ns2, &q2)
+                        azure_sb::sb_queue_stats(&rg2, &ns2, &q2)
                     })
                     .await
                     {
@@ -352,7 +350,7 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                             } else {
                                                 let ns4 = ns3.clone();
                                                 match tokio::task::spawn_blocking(move || {
-                                                    azure_cli::sb_find_rg(&ns4, sub3.as_deref())
+                                                    azure_sb::sb_find_rg(&ns4, sub3.as_deref())
                                                 }).await {
                                                     Ok(Ok(r)) => {
                                                         sb_rg.set(Some(r.clone()));
@@ -369,7 +367,7 @@ pub fn SbTab(props: SbTabProps) -> Element {
                                                 }
                                             };
                                             match tokio::task::spawn_blocking(move || {
-                                                azure_cli::sb_queue_stats(&rg, &ns3, &qn)
+                                                azure_sb::sb_queue_stats(&rg, &ns3, &qn)
                                             }).await {
                                                 Ok(Ok(s)) => {
                                                     sb_stats.write().insert(qn2.clone(), s);

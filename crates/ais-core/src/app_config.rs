@@ -21,7 +21,7 @@
 //!    (e.g. `AzureAppConfigurationEndpoint`) that the host SDK reads at
 //!    startup to bulk-import keys. We surface that as a detected store too.
 
-use crate::services::azure::cli::{az_command, AzError};
+use crate::cli::{az_command, AzError};
 use indexmap::IndexMap;
 
 /// A key→value map keyed by App Configuration key — same shape as

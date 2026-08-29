@@ -1,4 +1,5 @@
-use crate::services::{azure::cli as azure_cli, settings_file};
+use crate::services::settings_file;
+use ais_core::servicebus as azure_sb;
 use std::collections::HashMap;
 use std::fs;
 
@@ -432,7 +433,7 @@ pub fn auto_detect_resources(
     }
 
     // 1. Service Bus
-    match azure_cli::sb_list_namespaces() {
+    match azure_sb::sb_list_namespaces() {
         Ok(list) => {
             let matches: Vec<_> = list
                 .iter()
