@@ -10,12 +10,10 @@
 //! This is the same link-then-`auto_detect_resources` sequence the welcome
 //! screen runs, reachable from the banner that complains about the problem.
 
-use crate::services::{
-    azure::auth as azure_auth,
-    azure::cli as azure_cli,
-    azure::sync::{self as azure_sync, LogicAppSite},
-    config, setup_manager,
-};
+use crate::services::{config, setup_manager};
+use ais_core::auth as azure_auth;
+use ais_core::cli as azure_cli;
+use ais_core::sync::{self as azure_sync, LogicAppSite};
 use dioxus::prelude::*;
 
 /// Writes the workspace link, then fills in the identity fields it just learned.

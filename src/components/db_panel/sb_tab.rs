@@ -1,10 +1,8 @@
 use crate::services::recorder;
 use crate::services::sb_amqp::PeekedMessage;
+use crate::services::sb_check::SbQueueInfo;
 use crate::services::scenario::Step;
-use crate::services::{
-    azure::servicebus::{self as azure_sb, SbQueueStats},
-    sb_check::SbQueueInfo,
-};
+use ais_core::servicebus::{self as azure_sb, SbQueueStats};
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
 

@@ -1,3 +1,9 @@
+# The runner stays the root package; ais-core is a member alongside it, so the
+# release pipeline, installer and Homebrew formula all still build from here.
+[workspace]
+members = ["crates/ais-core"]
+resolver = "2"
+
 [package]
 name = "ais-runner"
 version = "0.5.30"
@@ -38,6 +44,7 @@ ais-chain   = { git = "https://github.com/Bennekrouf/ais-chain" }
 axum        = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
 tower       = "0.5"
 notify-rust = "4"
+ais-core    = { path = "crates/ais-core" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }

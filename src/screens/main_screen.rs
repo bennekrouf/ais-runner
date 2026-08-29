@@ -24,14 +24,14 @@ use crate::handlers::{
 };
 use crate::screens::MainContext;
 use crate::services::{
-    azure::auth as azure_auth,
-    azure::cli as azure_cli,
     blob_check, config, connection_diag, cosmos_check,
     env_mode::{self, EnvMode},
     process::ServiceState,
     sb_check, setup_manager, sftp_check, sql_check, system_check, workflow_analysis, workflows,
 };
 use crate::utils::make_push;
+use ais_core::auth as azure_auth;
+use ais_core::cli as azure_cli;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct MainScreenProps {

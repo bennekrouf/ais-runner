@@ -11,10 +11,11 @@ pub use sftp_tab::SftpTab;
 pub use sql_tab::SqlTab;
 
 use crate::services::{
-    azure::cli as azure_cli, blob_check::BlobConnection, config, cosmos_check::CosmosConnection,
-    env_mode::EnvMode, maps_check, sb_check::SbQueueInfo, settings_file,
-    sftp_check::SftpConnection, sql_check::SqlConnection,
+    blob_check::BlobConnection, config, cosmos_check::CosmosConnection, env_mode::EnvMode,
+    maps_check, sb_check::SbQueueInfo, settings_file, sftp_check::SftpConnection,
+    sql_check::SqlConnection,
 };
+use ais_core::cli as azure_cli;
 use dioxus::prelude::*;
 use std::collections::HashMap;
 

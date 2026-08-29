@@ -1,10 +1,10 @@
 use crate::components::env_compare_panel::EnvComparePanel;
 use crate::components::eventgrid_panel::EventGridPanel;
 use crate::components::sb_compare_panel::SbComparePanel;
-use crate::services::{
-    azure::auth as azure_auth, azure::cli as azure_cli, azure::servicebus as azure_sb, config,
-    missing_settings, settings_file, setup_manager,
-};
+use crate::services::{config, missing_settings, settings_file, setup_manager};
+use ais_core::auth as azure_auth;
+use ais_core::cli as azure_cli;
+use ais_core::servicebus as azure_sb;
 use dioxus::prelude::*;
 use indexmap::IndexMap;
 

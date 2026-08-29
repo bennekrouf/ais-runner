@@ -1,7 +1,7 @@
 use serde_json::Value;
 
-use crate::services::azure::cli::{az_command, AzError};
-use crate::services::azure::env_compare::VarGroup;
+use crate::cli::{az_command, AzError};
+use crate::env_compare::VarGroup;
 
 // ── Models ────────────────────────────────────────────────────────────────────
 

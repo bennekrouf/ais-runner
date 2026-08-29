@@ -1,10 +1,8 @@
 use crate::components::app_config_panel::AppConfigPanel;
 use crate::components::security_compare_panel::SecurityComparePanel;
-use crate::services::{
-    azure::cli as azure_cli,
-    azure::env_compare::{self, EnvValues, VarGroup},
-    config,
-};
+use crate::services::config;
+use ais_core::cli as azure_cli;
+use ais_core::env_compare::{self, EnvValues, VarGroup};
 use dioxus::prelude::*;
 use indexmap::IndexMap;
 use std::collections::HashSet;

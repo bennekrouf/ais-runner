@@ -1,4 +1,5 @@
-use crate::services::{azure::servicebus as azure_sb, settings_file};
+use crate::services::settings_file;
+use ais_core::servicebus as azure_sb;
 use std::collections::HashMap;
 use std::fs;
 

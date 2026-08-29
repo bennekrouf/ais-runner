@@ -1,0 +1,16 @@
+[package]
+name = "ais-core"
+version = "0.5.30"
+edition = "2021"
+# Same terms as the runner it was extracted from.
+license-file = "../../LICENSE"
+
+# Deliberately thin. This crate shells out to `az` and parses what comes back —
+# it has no UI, no async runtime, and no knowledge of the local emulators, which
+# is what makes it usable from a headless context.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# preserve_order matches the runner: app settings and parameters are diffed and
+# rewritten, and reordering keys would show up as spurious changes.
+serde_json = { version = "1", features = ["preserve_order"] }
+indexmap = "2"

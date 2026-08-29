@@ -1,4 +1,5 @@
-use crate::services::{azure::servicebus as azure_sb, config, sb_check};
+use crate::services::{config, sb_check};
+use ais_core::servicebus as azure_sb;
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
 

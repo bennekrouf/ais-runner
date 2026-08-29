@@ -212,7 +212,7 @@ fn az_trigger_command_args() {
              /workflows/{workflow}/triggers/manual/run\
              ?api-version=2019-10-01-preview",
         );
-        let cmd = crate::services::azure::cli::az_command(&[
+        let cmd = ais_core::cli::az_command(&[
             "rest",
             "--method",
             "post",

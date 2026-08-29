@@ -1,4 +1,4 @@
-//! Everything that talks to Azure over the network.
+//! Everything in AIS Runner that talks to Azure over the network.
 //!
 //! The boundary this module draws is **remote vs. local**, not "Azure-related":
 //! Azurite, the Service Bus emulator, and the SQL emulator are all Azure
@@ -7,8 +7,8 @@
 //! account to return anything.
 //!
 //! Dependencies point one way — inward to [`cli`], never back out to the
-//! runner's local services. Keeping that true is what would let this subtree
-//! become its own crate.
+//! runner's local services. That is what lets this live as its own crate: it
+//! knows nothing about the GUI, its config file, or the local emulators.
 
 pub mod app_config;
 pub mod auth;

@@ -9,8 +9,8 @@
 use std::process::Command;
 
 #[cfg(target_os = "windows")]
-use super::cli::resolve_az_windows;
-use super::cli::{az_command, run, AzError};
+use crate::cli::resolve_az_windows;
+use crate::cli::{az_command, run, AzError};
 
 /// Checks whether az is logged in. Returns the signed-in account name on success.
 pub fn check_login() -> Result<String, AzError> {

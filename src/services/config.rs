@@ -128,7 +128,7 @@ pub fn load() -> AppConfig {
 /// The two halves live apart on purpose: the first reads the workspace and is
 /// usable without a runner install, the second is this app's own state.
 pub fn subscription_for(logic_apps_dir: &str) -> Option<String> {
-    crate::services::azure::sync::detect_subscription(logic_apps_dir).or_else(|| {
+    ais_core::sync::detect_subscription(logic_apps_dir).or_else(|| {
         load()
             .get_link(logic_apps_dir)
             .map(|l| l.subscription_id.clone())

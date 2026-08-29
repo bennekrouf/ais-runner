@@ -19,8 +19,8 @@ use dioxus::prelude::*;
 use indexmap::IndexMap;
 use std::collections::HashSet;
 
-use crate::services::azure::app_config::{self, AppConfigRef, AppConfigValues};
-use crate::services::azure::cli::AzError;
+use ais_core::app_config::{self, AppConfigRef, AppConfigValues};
+use ais_core::cli::AzError;
 
 #[derive(Clone, PartialEq, Debug)]
 enum FetchState {

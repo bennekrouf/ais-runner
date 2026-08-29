@@ -1,9 +1,9 @@
 //! The `az` CLI wrapper — process plumbing and nothing else.
 //!
-//! Everything in `services::azure` reaches Azure through [`az_command`] or the
+//! Everything in this crate reaches Azure through [`az_command`] or the
 //! `run` helper here. Keeping this module free of any one Azure service is what
 //! lets a consumer link the query modules without also linking the interactive
-//! login flow in [`super::auth`].
+//! login flow in [`crate::auth`].
 
 use std::process::Command;
 
@@ -25,7 +25,7 @@ pub enum AzError {
 ///   %ProgramFiles%\Microsoft SDKs\Azure\CLI2\wbin         ← 64-bit MSI
 ///   %LOCALAPPDATA%\Programs\Azure CLI\wbin                 ← per-user install
 #[cfg(target_os = "windows")]
-pub(super) fn resolve_az_windows() -> String {
+pub(crate) fn resolve_az_windows() -> String {
     let candidates: &[(&str, &str)] = &[
         (
             "ProgramFiles(x86)",
@@ -75,7 +75,7 @@ pub fn az_command(args: &[&str]) -> Command {
     }
 }
 
-pub(super) fn run(args: &[&str]) -> Result<String, AzError> {
+pub(crate) fn run(args: &[&str]) -> Result<String, AzError> {
     let out = az_command(args)
         .output()
         .map_err(|e| AzError::Other(format!("az not found: {}", e)))?;

@@ -1,9 +1,7 @@
-use crate::services::{
-    azure::auth as azure_auth,
-    azure::cli::{self as azure_cli, AzError},
-    azure::sync::{self as azure_sync, AzureWorkflow, LogicAppSite},
-    config, workflows,
-};
+use crate::services::{config, workflows};
+use ais_core::auth as azure_auth;
+use ais_core::cli::{self as azure_cli, AzError};
+use ais_core::sync::{self as azure_sync, AzureWorkflow, LogicAppSite};
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -150,8 +148,8 @@ pub fn AzurePanel(props: AzurePanelProps) -> Element {
                         }
 
                         // Resolve the logic_apps dir once; the diff helpers take it
-                        // already resolved so nothing in `services::azure` has to
-                        // reach into the local workflow scanner.
+                        // already resolved so nothing in `ais-core` has to reach
+                        // into the runner's local workflow scanner.
                         let resolved_dir = workflows::resolve_logic_apps_dir(&dir);
 
                         // Workflow counter (unchanged from original — config files are separate).

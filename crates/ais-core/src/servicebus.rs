@@ -2,9 +2,9 @@
 //! metadata and message counts.
 //!
 //! Read-only and non-interactive — safe to call headlessly, given a session
-//! already established via [`super::auth`].
+//! already established via [`crate::auth`].
 
-use super::cli::{run, AzError};
+use crate::cli::{run, AzError};
 
 /// Finds the resource group of a Service Bus namespace by name (searches across the subscription).
 pub fn find_servicebus_rg(subscription: &str, namespace: &str) -> Result<String, AzError> {
