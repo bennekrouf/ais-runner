@@ -1,6 +1,5 @@
 use crate::services::{
-    azure_cli::BlobInfo,
-    azurite_client,
+    azurite_client::{self, BlobInfo},
     recorder::{self, RecorderState},
     scenario::Step,
 };
@@ -896,7 +895,7 @@ mod import_path_tests {
 #[cfg(test)]
 mod folder_rows_tests {
     use super::rows_with_folders;
-    use crate::services::azure_cli::BlobInfo;
+    use crate::services::azurite_client::BlobInfo;
 
     fn b(name: &str) -> BlobInfo {
         BlobInfo {

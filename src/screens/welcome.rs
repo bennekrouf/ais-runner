@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 
-use crate::services::{azure_cli, azure_sync, config, setup_manager};
+use crate::services::{azure::cli as azure_cli, azure::sync as azure_sync, config, setup_manager};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct WelcomeScreenProps {

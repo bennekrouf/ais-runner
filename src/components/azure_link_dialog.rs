@@ -11,8 +11,8 @@
 //! screen runs, reachable from the banner that complains about the problem.
 
 use crate::services::{
-    azure_cli,
-    azure_sync::{self, LogicAppSite},
+    azure::cli as azure_cli,
+    azure::sync::{self as azure_sync, LogicAppSite},
     config, setup_manager,
 };
 use dioxus::prelude::*;

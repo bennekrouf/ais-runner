@@ -1,4 +1,4 @@
-use crate::services::{azure_cli, config, sb_check};
+use crate::services::{azure::cli as azure_cli, config, sb_check};
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
 

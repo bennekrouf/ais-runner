@@ -1,4 +1,4 @@
-use crate::services::azure_cli::{az_command, AzError};
+use crate::services::azure::cli::{az_command, AzError};
 
 /// One Event Grid subscription (from a system topic or resource-scoped).
 #[derive(Clone, Debug, PartialEq)]

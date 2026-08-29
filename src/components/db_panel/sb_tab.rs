@@ -2,7 +2,7 @@ use crate::services::recorder;
 use crate::services::sb_amqp::PeekedMessage;
 use crate::services::scenario::Step;
 use crate::services::{
-    azure_cli::{self, SbQueueStats},
+    azure::cli::{self as azure_cli, SbQueueStats},
     sb_check::SbQueueInfo,
 };
 use dioxus::prelude::*;

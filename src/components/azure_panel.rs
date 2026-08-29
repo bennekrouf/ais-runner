@@ -1,6 +1,6 @@
 use crate::services::{
-    azure_cli::{self, AzError},
-    azure_sync::{self, AzureWorkflow, LogicAppSite},
+    azure::cli::{self as azure_cli, AzError},
+    azure::sync::{self as azure_sync, AzureWorkflow, LogicAppSite},
     config,
 };
 use dioxus::prelude::*;
