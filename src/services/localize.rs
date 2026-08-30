@@ -137,9 +137,16 @@ pub fn localize(logic_apps_dir: &str) -> LocalizeReport {
         // Stub any connection-string key the patched file now references but
         // that is empty/absent in local.settings.json, using local defaults.
         let settings_dir = logic_apps_dir.to_string();
+        // `*_databaseName` has no standalone default — its value comes from the
+        // scenarios — so it would never pass a smart_default check.
+        let local_db =
+            crate::services::scenario::local_database_name(std::path::Path::new(&settings_dir));
         let empty_keys: Vec<String> = referenced_keys(&after)
             .into_iter()
-            .filter(|k| !setup_manager::smart_default(k).is_empty())
+            .filter(|k| {
+                !setup_manager::smart_default(k).is_empty()
+                    || (local_db.is_some() && k.ends_with("_databaseName"))
+            })
             .filter(|k| setting_is_empty(&dir, k))
             .collect();
         if !empty_keys.is_empty() {

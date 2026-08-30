@@ -101,12 +101,26 @@ pub fn is_cloud_value(v: &str) -> bool {
 /// which opens fine and then fails every lookup — a workflow calling a stored
 /// procedure gets "the stored procedure 'X' doesn't exist" even though X was
 /// created correctly in the project's own database.
+/// The two halves are not always spelled alike: a connection named after a
+/// service provider (`sql-server-ais_connectionString`) pairs with an app
+/// setting in the project's own casing (`sqlServerAIS_databaseName`), so the
+/// prefixes are compared with separators and case folded away.
 pub fn sibling_database(key: &str, settings: &serde_json::Value) -> Option<String> {
     let prefix = key.strip_suffix("_connectionString")?;
-    let name = settings["Values"][format!("{prefix}_databaseName")]
-        .as_str()?
-        .trim();
-    (!name.is_empty()).then(|| name.to_string())
+    let wanted = normalized(prefix);
+    let values = settings["Values"].as_object()?;
+    values
+        .iter()
+        .filter_map(|(k, v)| Some((k.strip_suffix("_databaseName")?, v.as_str()?.trim())))
+        .find(|(other, name)| !name.is_empty() && normalized(other) == wanted)
+        .map(|(_, name)| name.to_string())
+}
+
+fn normalized(key: &str) -> String {
+    key.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
 }
 
 /// The local target a cloud value should be rewritten to.
@@ -444,5 +458,51 @@ mod tests {
         )
         .contains("Database=master;"));
         assert_eq!(sibling_database("someOther_key", &settings), None);
+    }
+
+    /// A connection named after its service provider still finds the setting,
+    /// which the project spells in its own casing. Before this, the pair went
+    /// unmatched and every lookup silently ran against `master`.
+    #[test]
+    fn sibling_matches_across_naming_conventions() {
+        let settings = serde_json::json!({
+            "Values": {
+                "sql-server-ais_connectionString": "Server=tcp:corp.database.windows.net,1433;",
+                "sqlServerAIS_databaseName": "aisdev",
+            }
+        });
+        assert_eq!(
+            sibling_database("sql-server-ais_connectionString", &settings).as_deref(),
+            Some("aisdev")
+        );
+    }
+
+    /// The deadlock this closes: the `master` fallback is meant to be avoided by
+    /// reading `*_databaseName`, but nothing seeded that key, so it always won.
+    #[test]
+    fn the_scenario_database_seeds_the_sibling_and_the_connection() {
+        use crate::services::setup_manager::smart_default_in;
+        let empty = serde_json::json!({ "Values": {} });
+
+        assert_eq!(
+            smart_default_in("sqlServerAIS_databaseName", &empty, Some("aisdev")),
+            "aisdev"
+        );
+        assert!(
+            smart_default_in("sql-server-ais_connectionString", &empty, Some("aisdev"))
+                .contains("Database=aisdev;")
+        );
+
+        // Nothing to learn from: still master, which at least opens.
+        assert!(smart_default_in("sql_connectionString", &empty, None).contains("Database=master;"));
+
+        // An explicit sibling still wins over the scenario-derived guess.
+        let named = serde_json::json!({
+            "Values": { "sqlServerAIS_databaseName": "explicit" }
+        });
+        assert!(
+            smart_default_in("sqlServerAIS_connectionString", &named, Some("aisdev"))
+                .contains("Database=explicit;")
+        );
     }
 }

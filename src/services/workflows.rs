@@ -416,6 +416,38 @@ fn collect_action_names(block: &serde_json::Value, out: &mut std::collections::H
     }
 }
 
+/// True when the workflow invokes an Azure Function, which needs the Java
+/// function host on :7072. None when the file is absent or unreadable — the
+/// caller must not then demand a host the scenario may not need.
+///
+/// Only the named workflow is inspected, not workflows it triggers downstream:
+/// a scenario that waits on a chain normally names every link in it.
+pub fn calls_azure_function(logic_apps_dir: &str, workflow: &str) -> Option<bool> {
+    let path = resolve_logic_apps_dir(logic_apps_dir)
+        .join(workflow)
+        .join("workflow.json");
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let root = value.get("definition").unwrap_or(&value).get("actions")?;
+    Some(any_function_action(root))
+}
+
+fn any_function_action(block: &serde_json::Value) -> bool {
+    let Some(map) = block.as_object() else {
+        return false;
+    };
+    map.values().any(|action| {
+        action["type"] == "Function"
+            || any_function_action(&action["actions"])
+            || any_function_action(&action["else"]["actions"])
+            || action["cases"].as_object().is_some_and(|cases| {
+                cases
+                    .values()
+                    .any(|case| any_function_action(&case["actions"]))
+            })
+    })
+}
+
 /// Workflows whose definition contains `action`. Used to point at the right one
 /// when an assertion names an action that has moved.
 pub fn workflows_containing_action(logic_apps_dir: &str, action: &str) -> Vec<String> {

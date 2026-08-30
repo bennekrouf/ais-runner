@@ -509,9 +509,15 @@ pub fn stub_missing_keys(dir: &str, missing_keys: &[String]) -> Result<(), Strin
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or(serde_json::Value::Null);
+    let local_db = crate::services::scenario::local_database_name(std::path::Path::new(dir));
     let stubs: HashMap<String, String> = missing_keys
         .iter()
-        .map(|k| (k.clone(), smart_default_for(k, &settings)))
+        .map(|k| {
+            (
+                k.clone(),
+                smart_default_in(k, &settings, local_db.as_deref()),
+            )
+        })
         .collect();
     apply_settings(dir, stubs)
 }
@@ -522,11 +528,27 @@ pub fn stub_missing_keys(dir: &str, missing_keys: &[String]) -> Result<(), Strin
 /// connection that then fails every table and stored-procedure lookup, and the
 /// project almost always names the real database in a sibling setting.
 pub fn smart_default_for(key: &str, settings: &serde_json::Value) -> String {
+    smart_default_in(key, settings, None)
+}
+
+/// [`smart_default_for`], plus the database the project's scenarios create
+/// locally (see `scenario::local_database_name`).
+///
+/// That name is what breaks the deadlock behind the `master` fallback: the
+/// fallback exists to be avoided by reading the sibling `*_databaseName`, but
+/// nothing ever seeded that key, so the fallback always won.
+pub fn smart_default_in(key: &str, settings: &serde_json::Value, local_db: Option<&str>) -> String {
+    if key.ends_with("_databaseName") {
+        return local_db.unwrap_or_default().to_string();
+    }
     let is_sql_conn =
         key.to_uppercase().contains("SQL") && key.to_uppercase().contains("CONNECTION");
     if is_sql_conn {
         if let Some(db) = crate::services::run_readiness::sibling_database(key, settings) {
             return local_sql_connection(&db);
+        }
+        if let Some(db) = local_db {
+            return local_sql_connection(db);
         }
     }
     smart_default(key)

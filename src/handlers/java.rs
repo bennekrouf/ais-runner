@@ -90,6 +90,28 @@ pub fn handle_start(
             }
         }
 
+        // ── Step 0: seed local.settings.json ─────────────────────────────
+        // Before packaging: the Maven plugin stages this file into target/, and
+        // without it the host dies on "Missing value for AzureWebJobsStorage".
+        {
+            let d = dir.clone();
+            match tokio::task::spawn_blocking(move || {
+                crate::services::function_app_settings::ensure_settings(&d)
+            })
+            .await
+            {
+                Ok(Ok(added)) if !added.is_empty() => push(
+                    format!("🔧 Seeded local.settings.json: {}", added.join(", ")),
+                    LogLevel::Ok,
+                ),
+                Ok(Err(e)) => push(
+                    format!("⚠ Could not write function_apps/local.settings.json: {e}"),
+                    LogLevel::Warn,
+                ),
+                _ => {}
+            }
+        }
+
         // ── Step 1: mvn package -DskipTests ──────────────────────────────
         push(
             format!("$ cd {} && mvn package -DskipTests", dir),

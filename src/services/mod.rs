@@ -11,6 +11,7 @@ pub mod connections_snapshot;
 pub mod cosmos_check;
 pub mod cosmos_query;
 pub mod env_mode;
+pub mod function_app_settings;
 pub mod inline_js;
 pub mod junit;
 pub mod localize;
