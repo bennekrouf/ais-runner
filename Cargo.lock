@@ -50,7 +50,7 @@ dependencies = [
 
 [[package]]
 name = "ais-runner"
-version = "0.5.32"
+version = "0.5.33"
 dependencies = [
  "ais-chain",
  "ais-core",
