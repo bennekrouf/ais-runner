@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use ais_runner::services::ci_export;
 use ais_runner::services::cosmos_check;
 use ais_runner::services::junit::{self, SuiteReport};
-use ais_runner::services::scenario::{self, RunContext, StepStatus};
+use ais_runner::services::scenario::{self, CancelFlag, RunContext, StepStatus};
 
 const USAGE: &str = "\
 ais-test — run ais-runner scenarios headlessly
@@ -177,6 +177,7 @@ async fn main() -> ExitCode {
         // managed by the pipeline. A `restart_func` step reports this rather
         // than silently doing nothing.
         restart_func: None,
+        cancel: CancelFlag::default(),
     };
 
     let mut suites: Vec<SuiteReport> = Vec::new();
