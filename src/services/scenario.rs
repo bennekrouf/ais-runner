@@ -467,6 +467,41 @@ pub fn discover(project_root: &Path) -> (Vec<Scenario>, Vec<String>) {
     (scenarios, errors)
 }
 
+/// The database this project's scenarios create locally, e.g. `aisdev`.
+///
+/// The only place that name is written down. `local.settings.json` and the
+/// App Configuration export both name the *cloud* database, so without this a
+/// SQL connection string falls back to `master` — which opens fine and then
+/// fails every table and stored-procedure lookup, silently, because the
+/// workflow's objects live somewhere else.
+///
+/// The most-created name wins; ties break on the name so the answer is stable.
+pub fn local_database_name(project_root: &Path) -> Option<String> {
+    // Callers hold either the project root or the logic_apps dir inside it;
+    // the scenarios live at the root.
+    let root = if project_root.join(SCENARIO_DIR).is_dir() {
+        project_root.to_path_buf()
+    } else {
+        project_root.parent()?.to_path_buf()
+    };
+    let (scenarios, _) = discover(&root);
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for scenario in &scenarios {
+        for step in &scenario.steps {
+            if let Step::CreateSqlDatabase { name } = step {
+                let name = expand(name, &scenario.vars);
+                if !name.trim().is_empty() {
+                    *counts.entry(name).or_default() += 1;
+                }
+            }
+        }
+    }
+    counts
+        .into_iter()
+        .max_by(|(a_name, a_n), (b_name, b_n)| a_n.cmp(b_n).then_with(|| b_name.cmp(a_name)))
+        .map(|(name, _)| name)
+}
+
 fn walk(dir: &Path, scenarios: &mut Vec<Scenario>, errors: &mut Vec<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -629,7 +664,25 @@ pub fn queues_to_create(scenario: &Scenario) -> Vec<String> {
 /// first step that needs it failing with a raw transport error.
 fn required_services(scenario: &Scenario, ctx: &RunContext) -> Vec<(&'static str, String, String)> {
     let (mut blob, mut queue, mut sql, mut func, mut cosmos) = (false, false, false, false, false);
+    // A workflow with a `Function` action is dead in the water without the Java
+    // host, but fails as a wait_for_run timeout that blames the workflow.
+    let mut java_func = false;
+    // Ports a run_process step brings up itself. Probing these would fail the
+    // scenario before the very step that starts them.
+    let mut self_started: Vec<u16> = Vec::new();
+    let root = ctx.project_root.to_string_lossy();
+    let needs_java = |workflow: &str| {
+        let workflow = expand(workflow, &scenario.vars);
+        workflows::calls_azure_function(&root, &workflow).unwrap_or(false)
+    };
     for step in &scenario.steps {
+        if let Step::RunProcess {
+            wait_for_port: Some(port),
+            ..
+        } = step
+        {
+            self_started.push(*port);
+        }
         match step {
             Step::CreateContainer { .. }
             | Step::ClearContainer { .. }
@@ -649,8 +702,11 @@ fn required_services(scenario: &Scenario, ctx: &RunContext) -> Vec<(&'static str
             | Step::WaitForSql { .. }
             | Step::DropTable { .. }
             | Step::TruncateTable { .. } => sql = true,
-            Step::RunWorkflow { .. } | Step::WaitForRun { .. } | Step::ExpectAction { .. } => {
-                func = true
+            Step::RunWorkflow { workflow, .. }
+            | Step::WaitForRun { workflow, .. }
+            | Step::ExpectAction { workflow, .. } => {
+                func = true;
+                java_func |= needs_java(workflow);
             }
             Step::CreateCosmosDatabase { .. }
             | Step::CreateCosmosContainer { .. }
@@ -690,6 +746,15 @@ fn required_services(scenario: &Scenario, ctx: &RunContext) -> Vec<(&'static str
             "Start func from the toolbar — no workflow can run without it.".to_string(),
         ));
     }
+    if java_func {
+        needed.push((
+            "Java Function App",
+            "127.0.0.1:7072".to_string(),
+            "Start the Java Function App from the Functions view — this scenario \
+             runs a workflow that calls an Azure Function."
+                .to_string(),
+        ));
+    }
     if sql {
         needed.push((
             "SQL Server",
@@ -704,6 +769,10 @@ fn required_services(scenario: &Scenario, ctx: &RunContext) -> Vec<(&'static str
             "Start the Cosmos emulator.".to_string(),
         ));
     }
+    needed.retain(|(_, addr, _)| {
+        let port = addr.rsplit(':').next().and_then(|p| p.parse::<u16>().ok());
+        !port.is_some_and(|p| self_started.contains(&p))
+    });
     needed
 }
 
@@ -2930,6 +2999,35 @@ mod service_probe_tests {
             .collect()
     }
 
+    /// The local database name lives only in the scenarios; every settings file
+    /// in the project names the cloud one instead.
+    #[test]
+    fn local_database_name_comes_from_create_sql_database_steps() {
+        let tmp = std::env::temp_dir().join(format!("ais-runner-localdb-{}", std::process::id()));
+        let dir = tmp.join(SCENARIO_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(local_database_name(&tmp), None);
+
+        // Two scenarios name aisdev, one names a one-off — the common one wins.
+        for (file, db) in [
+            ("a.json", "aisdev"),
+            ("b.json", "aisdev"),
+            ("c.json", "scratch"),
+        ] {
+            std::fs::write(
+                dir.join(file),
+                format!(
+                    r#"{{"name":"{file}","steps":[
+                        {{"action":"create_sql_database","name":"{db}"}}]}}"#
+                ),
+            )
+            .unwrap();
+        }
+        assert_eq!(local_database_name(&tmp).as_deref(), Some("aisdev"));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     /// Pure: what a scenario declares it needs, with no probing, so the result
     /// does not change when a developer starts or stops an emulator.
     #[test]
@@ -2954,6 +3052,91 @@ mod service_probe_tests {
             "{with_func:?}"
         );
         assert!(with_func.contains(&"Azurite (table)"), "{with_func:?}");
+
+        // No project on disk: cannot tell whether a workflow calls a function,
+        // so do not demand a host the scenario may not need.
+        assert!(!with_func.contains(&"Java Function App"), "{with_func:?}");
+    }
+
+    /// The Java host is required only for a workflow that actually calls a
+    /// function — otherwise the miss surfaces as a wait_for_run timeout that
+    /// blames the workflow instead of the stopped host.
+    #[test]
+    fn java_function_app_is_required_only_when_a_workflow_calls_one() {
+        let tmp = std::env::temp_dir().join(format!("ais-runner-javafn-{}", std::process::id()));
+        let la = tmp.join("logic_apps");
+        for (wf, body) in [
+            // nested inside a scope, the way Send-Kyriba-files calls it
+            (
+                "Calls-Function",
+                r#"{"definition":{"actions":{
+                "Scope":{"type":"Scope","actions":{
+                    "Call_ConvertXlsxToTxt":{"type":"Function"}}}}}}"#,
+            ),
+            (
+                "No-Function",
+                r#"{"definition":{"actions":{
+                "Send":{"type":"ServiceProvider"}}}}"#,
+            ),
+        ] {
+            std::fs::create_dir_all(la.join(wf)).unwrap();
+            std::fs::write(la.join(wf).join("workflow.json"), body).unwrap();
+        }
+
+        let ctx = RunContext {
+            project_root: tmp.clone(),
+            ..ctx()
+        };
+        let labels_for = |workflow: &str| {
+            required_services(
+                &scenario_of(vec![Step::WaitForRun {
+                    workflow: workflow.into(),
+                    timeout_ms: 1,
+                    expect_status: "Succeeded".into(),
+                }]),
+                &ctx,
+            )
+            .into_iter()
+            .map(|(l, _, _)| l)
+            .collect::<Vec<_>>()
+        };
+
+        let calls = labels_for("Calls-Function");
+        assert!(calls.contains(&"Java Function App"), "{calls:?}");
+
+        let plain = labels_for("No-Function");
+        assert!(!plain.contains(&"Java Function App"), "{plain:?}");
+
+        // A scenario that starts the host itself must not be gated on it being
+        // up already — the probe would fail before the step that starts it.
+        let self_started = required_services(
+            &scenario_of(vec![
+                Step::RunProcess {
+                    command: "bash".into(),
+                    args: vec![],
+                    workdir: None,
+                    env: Vars::new(),
+                    wait_for_port: Some(7072),
+                    wait_timeout_ms: 1,
+                    stop_at_end: false,
+                },
+                Step::WaitForRun {
+                    workflow: "Calls-Function".into(),
+                    timeout_ms: 1,
+                    expect_status: "Succeeded".into(),
+                },
+            ]),
+            &ctx,
+        )
+        .into_iter()
+        .map(|(l, _, _)| l)
+        .collect::<Vec<_>>();
+        assert!(
+            !self_started.contains(&"Java Function App"),
+            "{self_started:?}"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
