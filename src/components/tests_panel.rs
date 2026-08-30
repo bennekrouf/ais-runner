@@ -58,6 +58,9 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
     // Per-scenario step results, keyed by scenario name.
     let mut results: Signal<HashMap<String, Vec<StepResult>>> = use_signal(HashMap::new);
     let mut running: Signal<Option<String>> = use_signal(|| None);
+    // One flag for the whole view, shared with every run it starts, so Stop
+    // reaches a sweep already in flight.
+    let cancel: scenario::CancelFlag = use_hook(scenario::CancelFlag::default);
     // Group names the user has collapsed. Not persisted — a fresh open of the
     // Tests view always starts with every group expanded.
     let mut collapsed_groups: Signal<std::collections::HashSet<String>> =
@@ -154,6 +157,7 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
             cosmos_key: cosmos_key_of(&conns),
             project_root: project_root.clone(),
             restart_func: Some(restart_func.clone()),
+            cancel: cancel.clone(),
         }
     };
 
@@ -219,6 +223,19 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
                                 }
                             },
                             "▶▶ Run all"
+                        }
+                    }
+                    // Only while something is running — a Stop with nothing to
+                    // stop is a button that can only confuse.
+                    if busy.is_some() {
+                        button {
+                            class: "btn btn-small btn-stop",
+                            title: "Stop after the current step — the running scenario's remaining steps are marked stopped, and any scenarios queued behind it are not started",
+                            onclick: {
+                                let cancel = cancel.clone();
+                                move |_| cancel.cancel()
+                            },
+                            "⏹ Stop all"
                         }
                     }
                     button {
@@ -726,6 +743,11 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
                                                 let key = key.clone();
                                                 let dir = dir.clone();
                                                 running.set(Some(key.clone()));
+                                                // Reset here rather than inside
+                                                // run_one, which a sweep calls
+                                                // per scenario — that would
+                                                // clear a Stop mid-sweep.
+                                                run_ctx.cancel.reset();
                                                 spawn(async move {
                                                     if let Some(all) = run_one(
                                                         to_run, run_ctx, dir,
@@ -850,8 +872,15 @@ async fn run_many(
     let total = scenarios.len();
     let mut passed = 0usize;
     let mut failed_names: Vec<String> = Vec::new();
+    // A flag left set by a previous Stop would abort this sweep instantly.
+    run_ctx.cancel.reset();
+    let mut stopped_after = None;
 
     for (i, s) in scenarios.into_iter().enumerate() {
+        if run_ctx.cancel.is_cancelled() {
+            stopped_after = Some(i);
+            break;
+        }
         let key = s.name.clone();
         running.set(Some(key.clone()));
         status.set(Some((format!("{label} — {}/{total}: {key}", i + 1), false)));
@@ -880,7 +909,12 @@ async fn run_many(
     }
 
     running.set(None);
-    status.set(Some(if failed_names.is_empty() {
+    status.set(Some(if let Some(done) = stopped_after {
+        (
+            format!("⏹ {label}: stopped after {done}/{total} — {passed} passed"),
+            true,
+        )
+    } else if failed_names.is_empty() {
         (
             format!("✅ {label}: {passed}/{total} scenario(s) passed"),
             false,

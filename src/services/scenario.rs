@@ -39,6 +39,10 @@ pub type Vars = BTreeMap<String, String>;
 /// How often a `WaitFor*` step re-checks its condition.
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
+/// Shown on every step a stop abandoned, and as the error a cancelled poll
+/// returns, so "stopped" never reads as "failed".
+pub const CANCELLED: &str = "stopped";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Model
 // ─────────────────────────────────────────────────────────────────────────────
@@ -405,6 +409,29 @@ pub type BoxFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<S
 /// otherwise. The Tests view, which does have them, supplies the closure.
 pub type RestartFn = std::sync::Arc<dyn Fn() -> BoxFuture>;
 
+/// Cooperative cancellation for a run or a sweep.
+///
+/// Checked between scenarios, between steps, and inside every poll, so "Stop"
+/// lands during a long `wait_for_run` rather than after its full timeout —
+/// which is the case that matters, since that is where a sweep spends its time.
+#[derive(Clone, Debug, Default)]
+pub struct CancelFlag(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl CancelFlag {
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Clear before starting a run — a flag left set would abort it instantly.
+    pub fn reset(&self) {
+        self.0.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// Everything a run needs that the scenario file deliberately doesn't hardcode,
 /// so the same scenario works against whatever emulators are currently up.
 #[derive(Clone)]
@@ -419,6 +446,8 @@ pub struct RunContext {
     /// a `restart_func` step then fails with a clear message instead of
     /// panicking on a missing callback.
     pub restart_func: Option<RestartFn>,
+    /// Flipped by "Stop"; default never cancels.
+    pub cancel: CancelFlag,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -881,6 +910,7 @@ pub async fn run(
     };
     let mut results = Vec::new();
     let mut aborted = false;
+    let mut stopped = false;
 
     // Fail before any container, queue or database is touched.
     let down = unavailable_services(scenario, ctx);
@@ -918,12 +948,23 @@ pub async fn run(
     }
 
     for (index, step) in scenario.steps.iter().enumerate() {
+        // Stopping is not a failure: the rest are reported as stopped rather
+        // than as fallout from a step that went wrong.
+        if !aborted && ctx.cancel.is_cancelled() {
+            aborted = true;
+            stopped = true;
+        }
+
         if aborted {
             let result = StepResult {
                 index,
                 label: label_of(step),
                 status: StepStatus::Skipped,
-                detail: "skipped after an earlier failure".to_string(),
+                detail: if stopped {
+                    CANCELLED.to_string()
+                } else {
+                    "skipped after an earlier failure".to_string()
+                },
                 elapsed_ms: 0,
             };
             on_step(result.clone());
@@ -1447,7 +1488,7 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
             min_count,
             timeout_ms,
         } => {
-            poll_until(*timeout_ms, || async {
+            poll_until(*timeout_ms, &ctx.cancel, || async {
                 let r =
                     sb_testing::check_expectation(&ctx.sb_host, queue, path, expected, *min_count)
                         .await?;
@@ -1468,7 +1509,7 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
             // the await.
             let winner: std::cell::RefCell<Option<String>> = Default::default();
 
-            let detail = poll_until(*timeout_ms, || async {
+            let detail = poll_until(*timeout_ms, &ctx.cancel, || async {
                 match latest_terminal_run(workflow, floor, &claimed).await {
                     Some((run_name, status)) if status == *expect_status => {
                         *winner.borrow_mut() = Some(run_name.clone());
@@ -1523,7 +1564,7 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
             min_rows,
             timeout_ms,
         } => {
-            poll_until(*timeout_ms, || async {
+            poll_until(*timeout_ms, &ctx.cancel, || async {
                 let out = sql_runner::run_sql(database, sql).await?;
                 let rows = sql_runner::count_rows(&out);
                 Ok((
@@ -1585,7 +1626,7 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
             // Poll: the action may not have executed yet while the run is still
             // in flight.
             let found: std::cell::RefCell<Option<workflows::ActionPayload>> = Default::default();
-            poll_until(*timeout_ms, || async {
+            poll_until(*timeout_ms, &ctx.cancel, || async {
                 match workflows::action_payload(workflow, &run_id, action).await {
                     Ok(p) if p.status == "Unknown" => {
                         // "not yet" is only true while the run is in flight. Once
@@ -1845,7 +1886,11 @@ where
 ///
 /// The most recent detail becomes the timeout message, so a failure explains
 /// what the condition actually saw rather than just "timed out".
-async fn poll_until<F, Fut>(timeout_ms: u64, mut check: F) -> Result<String, String>
+async fn poll_until<F, Fut>(
+    timeout_ms: u64,
+    cancel: &CancelFlag,
+    mut check: F,
+) -> Result<String, String>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<(bool, String), String>>,
@@ -1853,6 +1898,9 @@ where
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
 
     loop {
+        if cancel.is_cancelled() {
+            return Err(CANCELLED.to_string());
+        }
         // `?` rather than a retry: a hard error inside the check is terminal.
         // A malformed query or a dead emulator won't fix itself, and burning
         // the whole timeout on it would bury the real message.
@@ -2410,7 +2458,7 @@ mod tests {
         // message straight away, not a timeout message ten seconds later that
         // blames a timing problem which was never the cause.
         let started = std::time::Instant::now();
-        let err = poll_until(10_000, || async {
+        let err = poll_until(10_000, &CancelFlag::default(), || async {
             Err("Workflow not in runtime registry".to_string())
         })
         .await
@@ -2428,7 +2476,7 @@ mod tests {
     async fn poll_until_keeps_waiting_on_a_merely_unsatisfied_check() {
         // The other half of the distinction: "not yet" is a timing problem and
         // does get the full timeout, carrying the last detail into the message.
-        let err = poll_until(120, || async {
+        let err = poll_until(120, &CancelFlag::default(), || async {
             Ok((false, "no terminal run yet".to_string()))
         })
         .await
@@ -2436,6 +2484,29 @@ mod tests {
 
         assert!(err.contains("timed out"), "{err}");
         assert!(err.contains("no terminal run yet"), "{err}");
+    }
+
+    /// Stop has to land inside a long wait, not after it: a sweep spends
+    /// essentially all its time parked in one of these polls, so a flag only
+    /// read between steps would leave Stop looking dead for minutes.
+    #[tokio::test]
+    async fn poll_until_gives_up_promptly_once_cancelled() {
+        let cancel = CancelFlag::default();
+        cancel.cancel();
+
+        let started = std::time::Instant::now();
+        let err = poll_until(600_000, &cancel, || async {
+            Ok((false, "still waiting".to_string()))
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, CANCELLED);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "took {:?} — a stop that waits out the timeout is not a stop",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]
@@ -2582,6 +2653,7 @@ mod tests {
             cosmos_key: String::new(),
             project_root: project_root.to_path_buf(),
             restart_func: None,
+            cancel: CancelFlag::default(),
         }
     }
 
@@ -2979,6 +3051,7 @@ mod service_probe_tests {
             cosmos_key: String::new(),
             project_root: PathBuf::from("/nonexistent"),
             restart_func: None,
+            cancel: CancelFlag::default(),
         }
     }
 
@@ -3187,6 +3260,7 @@ mod service_gate_tests {
             cosmos_key: String::new(),
             project_root: dir.clone(),
             restart_func: None,
+            cancel: CancelFlag::default(),
         };
         let results = run(&scenario, &ctx, |_| {}).await;
         assert_eq!(results.len(), 1, "must not run any step: {results:?}");
