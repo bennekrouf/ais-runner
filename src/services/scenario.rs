@@ -43,6 +43,10 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// returns, so "stopped" never reads as "failed".
 pub const CANCELLED: &str = "stopped";
 
+/// Grace given to a just-spawned process to report its exit before an open
+/// port is credited to it.
+const EXIT_SETTLE: Duration = Duration::from_millis(250);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Model
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1136,26 +1140,52 @@ fn stop_processes(state: &mut RunState) -> Vec<String> {
 }
 
 /// Poll until something accepts a TCP connection on `port`.
+/// Who ended up owning the port.
+enum PortBind {
+    ByChild,
+    /// The port was already served and the spawned process exited — it lost the
+    /// bind. Reported rather than failed, because starting a service only when
+    /// it is not already up is a normal, idempotent way to write a scenario.
+    Preexisting(std::process::ExitStatus),
+}
+
 async fn wait_for_port(
     port: u16,
     timeout_ms: u64,
     child: &mut std::process::Child,
-) -> Result<(), String> {
+) -> Result<PortBind, String> {
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
-        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+        let open = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
-            .is_ok()
-        {
-            return Ok(());
+            .is_ok();
+        // Read together: an open port alone cannot tell "our process bound it"
+        // from "something else already held it", and reporting the second as
+        // the first hides a process that died on startup behind a green step.
+        let exited = child.try_wait().ok().flatten();
+
+        match (open, exited) {
+            (true, Some(status)) => return Ok(PortBind::Preexisting(status)),
+            (true, None) => {
+                // Not yet reaped is not the same as still running: a process
+                // that dies instantly can still report None on the first pass.
+                // Settle before crediting it with a bind it may never have made.
+                tokio::time::sleep(EXIT_SETTLE).await;
+                return Ok(match child.try_wait().ok().flatten() {
+                    Some(status) => PortBind::Preexisting(status),
+                    None => PortBind::ByChild,
+                });
+            }
+            // A process that died is never going to bind — fail now with its
+            // exit status rather than burning the whole timeout on a corpse.
+            (false, Some(status)) => {
+                return Err(format!(
+                    "process exited before binding port {port} ({status})"
+                ))
+            }
+            (false, None) => {}
         }
-        // A process that died is never going to bind — fail now with its exit
-        // status rather than burning the whole timeout on a corpse.
-        if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!(
-                "process exited before binding port {port} ({status})"
-            ));
-        }
+
         if std::time::Instant::now() >= deadline {
             return Err(format!(
                 "nothing listening on port {port} after {timeout_ms}ms"
@@ -1456,8 +1486,13 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                         child,
                         stop_at_end: *stop_at_end,
                     });
-                    outcome?;
-                    format!("started '{label}' — listening on {p}")
+                    match outcome? {
+                        PortBind::ByChild => format!("started '{label}' — listening on {p}"),
+                        PortBind::Preexisting(status) => format!(
+                            "port {p} was already served by another process — \
+                             '{label}' exited ({status}) without binding it"
+                        ),
+                    }
                 }
                 None => {
                     state.processes.push(SpawnedProcess {
@@ -2602,6 +2637,43 @@ mod tests {
         );
         // Still tracked, so teardown reaps it even though the step failed.
         assert_eq!(state.processes.len(), 1);
+        stop_processes(&mut state);
+    }
+
+    /// A dead process behind an open port must not read as "started".
+    ///
+    /// Twice this hid a real failure: a stub whose file was missing, and a
+    /// function host that had died — both reported "listening on <port>"
+    /// because something stale still held the socket, so the step went green
+    /// and the scenario failed later somewhere unrelated. The step still
+    /// passes (starting a service only when it is not already up is a normal
+    /// pattern), but it now says what actually happened.
+    #[tokio::test]
+    async fn an_already_served_port_does_not_claim_the_step_started_it() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let ctx = test_ctx(Path::new("/tmp"));
+        let mut state = test_state();
+        let step = Step::RunProcess {
+            command: "false".to_string(), // exits at once, binding nothing
+            args: vec![],
+            workdir: None,
+            env: Vars::new(),
+            wait_for_port: Some(port),
+            wait_timeout_ms: 30_000,
+            stop_at_end: true,
+        };
+
+        let detail = exec(&step, &ctx, &mut state).await.unwrap();
+        assert!(
+            detail.contains("already served") && detail.contains("without binding"),
+            "unexpected detail: {detail}"
+        );
+        assert!(
+            !detail.contains("listening on"),
+            "still claims it started the service: {detail}"
+        );
         stop_processes(&mut state);
     }
 
