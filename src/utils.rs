@@ -12,16 +12,30 @@ use crate::services::workflows;
 pub fn open_in_editor(path: &str) {
     #[cfg(target_os = "macos")]
     {
-        // Prefer VS Code if installed, otherwise force text editor with -t
-        if std::process::Command::new("code")
-            .arg(path)
-            .spawn()
-            .is_err()
-        {
-            let _ = std::process::Command::new("open")
-                .args(["-t", path])
-                .spawn();
+        // A bare `code` is resolved against the PATH of *this* process, and an
+        // .app launched from Finder gets a minimal one — so the lookup that
+        // works from a shell fails in the packaged build. Search the same
+        // well-known locations the rest of the app uses, then the VS Code
+        // bundle itself, whose CLI is not on any PATH by default.
+        const VSCODE_CLI: &str =
+            "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code";
+        let editor = crate::services::runtime_manager::find_on_path("code").or_else(|| {
+            std::path::Path::new(VSCODE_CLI)
+                .exists()
+                .then(|| VSCODE_CLI.to_string())
+        });
+
+        if let Some(bin) = editor {
+            if std::process::Command::new(bin).arg(path).spawn().is_ok() {
+                return;
+            }
         }
+        // `-e` (TextEdit) rather than `-t` (whatever is registered for text):
+        // with no default text editor registered, `-t` puts up the "Choose
+        // application" panel on every single open.
+        let _ = std::process::Command::new("open")
+            .args(["-e", path])
+            .spawn();
     }
     #[cfg(target_os = "windows")]
     {

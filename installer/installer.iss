@@ -31,7 +31,12 @@ OutputBaseFilename=ais-runner-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=admin
+; Per-user by default, so a developer on a locked-down machine installs with
+; no UAC prompt at all. IT keeps the machine-wide path via the command line:
+;   installer.exe /ALLUSERS /VERYSILENT
+; One artifact serves both audiences instead of forcing everyone to elevate.
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
@@ -67,20 +72,21 @@ Source: "..\assets\icon.ico";                    DestDir: "{app}"; Flags: ignore
 #if FileExists(AddBackslash(SourcePath) + "..\assets\icon.ico")
 Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{commondesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
 #else
 Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{commondesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 #endif
 
 [Run]
-; Installer already runs elevated — the script runs as admin directly,
-; no self-elevation needed.  Skips already-installed tools in seconds.
+; Only on a machine-wide install (`/ALLUSERS`), which is the only
+; mode with the rights to install these. A per-user install skips it
+; and the app prompts for whatever is missing.
 Filename: "powershell.exe"; \
   Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\setup-windows.ps1"" -NoPrompt"; \
   StatusMsg: "Installing runtime dependencies (Node, Azure CLI, func, azurite)..."; \
-  Flags: waituntilterminated runhidden
+  Flags: waituntilterminated runhidden; Check: IsAdminInstallMode
 
 ; Launch as the original (non-elevated) user — WebView2 refuses to render
 ; when the host process has admin privileges (shows black screen).
