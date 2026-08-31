@@ -6,7 +6,7 @@ resolver = "2"
 
 [package]
 name = "ais-runner"
-version = "0.5.33"
+version = "0.5.34"
 edition = "2021"
 # Source-available, not OSI open source. Free for noncommercial use;
 # commercial use needs a licence. See LICENSE and TRADEMARK.md.
