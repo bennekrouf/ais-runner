@@ -201,6 +201,14 @@ fn main() {
 
     let cfg = window_config(webview_data_dir);
     LaunchBuilder::desktop().with_cfg(cfg).launch(App);
+
+    // `launch` returns once the window is closed. Nothing else stops the
+    // children we spawned — closing the app used to leave func hosts, stubs,
+    // emulators and Docker containers running, reparented to init.
+    let stopped = ais_runner::services::process::stop_all();
+    if stopped > 0 {
+        eprintln!("ais-runner: stopped {stopped} background process(es) on exit");
+    }
 }
 
 fn window_config(webview_data_dir: std::path::PathBuf) -> dioxus::desktop::Config {

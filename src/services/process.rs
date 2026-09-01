@@ -1,6 +1,99 @@
 use std::io::BufRead;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+
+/// Every child this process has spawned, weakly held so one dropped normally
+/// leaves nothing behind here.
+///
+/// Exists because closing the window stops nothing on its own: `Child` has no
+/// `Drop` that kills, so emulators, func hosts and stubs were reparented to
+/// init and kept running — orphans with `ppid=1` surviving for days, `<defunct>`
+/// children never reaped, Docker containers still up long after the app quit.
+type ChildHandle = Arc<Mutex<Option<Child>>>;
+
+fn registry() -> &'static Mutex<Vec<Weak<Mutex<Option<Child>>>>> {
+    static REGISTRY: OnceLock<Mutex<Vec<Weak<Mutex<Option<Child>>>>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn register(handle: &ChildHandle) {
+    if let Ok(mut reg) = registry().lock() {
+        reg.retain(|w| w.strong_count() > 0);
+        reg.push(Arc::downgrade(handle));
+    }
+}
+
+/// Ask a child to exit, escalating to SIGKILL only if it ignores the request.
+///
+/// `Child::kill` is SIGKILL, which `docker compose up` cannot act on — its
+/// containers would keep running. SIGTERM lets it tear them down first.
+fn terminate(child: &mut Child) {
+    let pid = child.id();
+
+    // Signal the whole tree, not just the child we hold: `func host start`
+    // spawns a language worker (a Java process for this project), and killing
+    // only the parent leaves that worker orphaned. Children are spawned into
+    // their own process group so a negative pid reaches the group on Unix;
+    // Windows gets the same reach via `taskkill /T`.
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .args(["-TERM", &format!("-{pid}")])
+            .status();
+        // Not a group leader after all — fall back to the process itself.
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/T", "/PID", &pid.to_string()])
+            .output();
+    }
+
+    for _ in 0..40 {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(_) => break,
+        }
+    }
+
+    // Ignored the polite request — force it, tree included.
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .args(["-KILL", &format!("-{pid}")])
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output();
+    }
+    let _ = child.kill();
+    let _ = child.wait(); // reap, or the kernel keeps a <defunct> entry
+}
+
+/// Stop every child still running. Call on shutdown, once the UI has exited.
+pub fn stop_all() -> usize {
+    let handles: Vec<ChildHandle> = match registry().lock() {
+        Ok(reg) => reg.iter().filter_map(|w| w.upgrade()).collect(),
+        Err(_) => return 0,
+    };
+    let mut stopped = 0;
+    for handle in handles {
+        if let Ok(mut guard) = handle.lock() {
+            if let Some(mut child) = guard.take() {
+                terminate(&mut child);
+                stopped += 1;
+            }
+        }
+    }
+    stopped
+}
 
 /// Resolve `program` to an absolute path by searching `rich_path()`.
 /// `Command::new(program)` searches the *parent* process PATH, not the env we
@@ -164,12 +257,20 @@ impl ManagedProcess {
         if let Some(dir) = workdir {
             cmd.current_dir(dir);
         }
+        // Own process group, so terminate() can signal the whole tree.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn '{}': {}", resolved, e))?;
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
         *guard = Some(child);
+        drop(guard);
+        register(&self.child);
         Ok((stdout, stderr))
     }
 
@@ -202,22 +303,42 @@ impl ManagedProcess {
         if let Some(dir) = workdir {
             cmd.current_dir(dir);
         }
+        // Own process group, so terminate() can signal the whole tree.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn '{}': {}", resolved, e))?;
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
         *guard = Some(child);
+        drop(guard);
+        register(&self.child);
         Ok((stdout, stderr))
     }
 
     pub fn stop(&self) -> Result<(), String> {
         let mut guard = self.child.lock().map_err(|e| e.to_string())?;
         if let Some(mut child) = guard.take() {
-            let _ = child.kill();
-            let _ = child.wait(); // reap exit status so the kernel doesn't zombie the process
+            terminate(&mut child);
         }
         Ok(())
+    }
+}
+
+/// Last line of defence: a handle going out of scope must not leave the child
+/// running. `stop_all` covers the normal shutdown path; this covers everything
+/// else (a panic, a signal handled elsewhere, a screen dropping its state).
+impl Drop for ManagedProcess {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.child.lock() {
+            if let Some(mut child) = guard.take() {
+                terminate(&mut child);
+            }
+        }
     }
 }
 
@@ -271,4 +392,96 @@ fn line_is_notable(line: &str) -> bool {
         || l.contains("listening")
         || l.contains("started")
         || l.contains("starting")
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+
+    /// `stop_all` acts on a process-wide registry, so these tests cannot run
+    /// concurrently — one would stop another's child mid-assertion.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Spawn something long-running the same way the app does.
+    fn long_running() -> ManagedProcess {
+        let p = ManagedProcess::new();
+        p.start("sh", &["-c", "sleep 300"], None).expect("spawn");
+        p
+    }
+
+    fn alive(pid: u32) -> bool {
+        // signal 0 only checks for existence; a zombie is NOT alive for our
+        // purposes, so exclude anything the parent has already reaped.
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// The whole point: closing the app must not leave the child running.
+    /// Before this, `Child` had no killing `Drop`, so it was reparented to init.
+    #[test]
+    fn dropping_the_handle_kills_the_child() {
+        let _guard = serial();
+        let proc = long_running();
+        let pid = proc.child.lock().unwrap().as_ref().unwrap().id();
+        assert!(alive(pid), "child should be running before drop");
+
+        drop(proc);
+        assert!(!alive(pid), "child {pid} survived the drop");
+    }
+
+    /// The case that was actually broken in the field: `func host start` spawns
+    /// a language worker, so killing only the handle we hold left that worker
+    /// running. The child is its own process group, so the signal reaches it.
+    #[cfg(unix)]
+    #[test]
+    fn killing_the_child_also_kills_its_grandchild() {
+        let _guard = serial();
+        let pidfile = std::env::temp_dir()
+            .join(format!("ais_gc_{}", std::process::id()))
+            .to_string_lossy()
+            .to_string();
+        let proc = ManagedProcess::new();
+        // Parent sleeps; the grandchild is a separate long-lived process.
+        proc.start(
+            "sh",
+            &["-c", &format!("sleep 300 & echo $! > {pidfile}; sleep 300")],
+            None,
+        )
+        .expect("spawn");
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let gc: u32 = std::fs::read_to_string(&pidfile)
+            .expect("grandchild pid file")
+            .trim()
+            .parse()
+            .expect("pid");
+        assert!(alive(gc), "grandchild should be running");
+
+        drop(proc);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            !alive(gc),
+            "grandchild {gc} survived — the tree was not signalled"
+        );
+        let _ = std::fs::remove_file(&pidfile);
+    }
+
+    /// `stop_all` is what the shutdown path calls, and it must reap too —
+    /// a killed-but-unreaped child shows up as <defunct>.
+    #[test]
+    fn stop_all_stops_and_reaps() {
+        let _guard = serial();
+        let proc = long_running();
+        let pid = proc.child.lock().unwrap().as_ref().unwrap().id();
+
+        assert!(stop_all() >= 1, "stop_all should report stopping it");
+        assert!(!alive(pid), "child {pid} survived stop_all");
+        // Taken from the handle, so a later drop cannot double-kill.
+        assert!(proc.child.lock().unwrap().is_none());
+    }
 }
