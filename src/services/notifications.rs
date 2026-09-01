@@ -11,7 +11,35 @@ fn enabled() -> bool {
     config::load().notifications_enabled
 }
 
+/// Pin the app notifications are delivered as, once per process.
+///
+/// Left unset, mac-notification-sys resolves a host lazily by running
+/// `get id of application "use_default"` through AppleScript — there is no
+/// such app, so macOS puts up its "Where is use_default?" application chooser
+/// on the first notification. Setting it up front skips that lookup entirely.
+#[cfg(target_os = "macos")]
+fn init_application() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // Our own bundle only exists in the packaged .app; a `cargo run` /
+        // `dx serve` binary has to borrow one that is always installed.
+        let bundled = std::env::current_exe()
+            .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))
+            .unwrap_or(false);
+        let ident = if bundled {
+            "com.ais-runner.app"
+        } else {
+            "com.apple.Terminal"
+        };
+        if let Err(e) = notify_rust::set_application(ident) {
+            tracing::warn!("could not set notification application to {ident}: {e}");
+        }
+    });
+}
+
 fn show(summary: &str, body: &str) {
+    #[cfg(target_os = "macos")]
+    init_application();
     if let Err(e) = Notification::new().summary(summary).body(body).show() {
         tracing::warn!("desktop notification failed: {e}");
     }
