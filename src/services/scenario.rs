@@ -1149,13 +1149,25 @@ enum PortBind {
     Preexisting(std::process::ExitStatus),
 }
 
-/// Who is listening on `port`, as "pid 1234 (python3)".
+/// Who is listening on `port`.
 ///
 /// A scenario that lost the bind is otherwise a dead end for anyone who does
 /// not already know `lsof`: the step says the port was taken but not by whom,
 /// and the run silently talks to a stranger. Best-effort — an unidentified
 /// holder still gets a message, just a vaguer one.
-fn port_holder(port: u16) -> Option<String> {
+pub struct PortHolder {
+    pid: String,
+    /// Full command line where `ps` can supply it, else lsof's short name.
+    command: String,
+}
+
+impl std::fmt::Display for PortHolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "pid {} ({})", self.pid, self.command)
+    }
+}
+
+fn port_holder(port: u16) -> Option<PortHolder> {
     let out = std::process::Command::new("lsof")
         .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpc"])
         .env("PATH", crate::services::process::rich_path())
@@ -1175,11 +1187,66 @@ fn port_holder(port: u16) -> Option<String> {
             break;
         }
     }
-    match (pid, cmd) {
-        (Some(p), Some(c)) => Some(format!("pid {p} ({c})")),
-        (Some(p), None) => Some(format!("pid {p}")),
-        _ => None,
+    let pid = pid?;
+    // lsof's `c` field is truncated to the executable name ("Python"), which
+    // cannot tell one script from another — the arguments are what identify a
+    // leftover stub, so prefer the full command line.
+    let command = full_command(&pid).or(cmd).unwrap_or_default();
+    Some(PortHolder { pid, command })
+}
+
+/// Full command line of `pid`, via `ps`. None on Windows or when ps fails.
+fn full_command(pid: &str) -> Option<String> {
+    if cfg!(windows) {
+        return None;
     }
+    let out = std::process::Command::new("ps")
+        .args(["-p", pid, "-o", "command="])
+        .env("PATH", crate::services::process::rich_path())
+        .output()
+        .ok()?;
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!line.is_empty()).then_some(line)
+}
+
+/// Stop whatever is listening on `port` and wait for the socket to clear.
+///
+/// A scenario that declares `wait_for_port` owns that port for its duration, so
+/// a squatter is reclaimed rather than reported — leaving the user to run
+/// `kill` by hand only when that does not work. Returns false when the port is
+/// still held afterwards (nothing was listening, or the kill did not take).
+fn reclaim_port(port: u16) -> bool {
+    if crate::services::port_owner::kill_listener(port).is_none() {
+        return false;
+    }
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(100));
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Does the process already on the port look like the one the step tried to
+/// start — i.e. is this the idempotent "service is already up" case?
+///
+/// Matched on the most specific argument (the script or jar path) rather than
+/// the program, since every Python stub in the tree runs as `python3`.
+fn holder_is_same_process(holder: &PortHolder, command: &str, args: &[String]) -> bool {
+    let basename = |s: &str| {
+        s.rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(s)
+            .to_ascii_lowercase()
+    };
+    let haystack = holder.command.to_ascii_lowercase();
+    let fingerprint = args
+        .iter()
+        .find(|a| a.contains('.') || a.contains('/') || a.contains('\\'))
+        .map(|a| basename(a))
+        .unwrap_or_else(|| basename(command));
+    !fingerprint.is_empty() && haystack.contains(&fingerprint)
 }
 
 async fn wait_for_port(
@@ -1486,22 +1553,27 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                 .unwrap_or_else(|| ctx.project_root.display().to_string());
 
             let program = crate::services::process::resolve_bin(command);
-            let mut cmd = std::process::Command::new(&program);
-            cmd.args(args)
-                .current_dir(&resolved_dir)
-                // A desktop-launched app inherits a minimal PATH that often
-                // lacks python3/node; rich_path() is what the service handlers
-                // already use to find their binaries.
-                .env("PATH", crate::services::process::rich_path())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
-            for (k, v) in env {
-                cmd.env(k, v);
-            }
+            // A closure, not a one-shot `Command`: reclaiming a squatted port
+            // means starting the helper a second time, and `spawn` consumes
+            // nothing but the builder is not `Clone`.
+            let spawn_helper = || {
+                let mut cmd = std::process::Command::new(&program);
+                cmd.args(args)
+                    .current_dir(&resolved_dir)
+                    // A desktop-launched app inherits a minimal PATH that often
+                    // lacks python3/node; rich_path() is what the service handlers
+                    // already use to find their binaries.
+                    .env("PATH", crate::services::process::rich_path())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                for (k, v) in env {
+                    cmd.env(k, v);
+                }
+                cmd.spawn()
+                    .map_err(|e| format!("could not start '{program}': {e}"))
+            };
 
-            let mut child = cmd
-                .spawn()
-                .map_err(|e| format!("could not start '{program}': {e}"))?;
+            let mut child = spawn_helper()?;
 
             let label = if args.is_empty() {
                 command.clone()
@@ -1522,21 +1594,71 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                     match outcome? {
                         PortBind::ByChild => format!("started '{label}' — listening on {p}"),
                         PortBind::Preexisting(status) => {
-                            // Name the holder and the way out: the step stays
-                            // green (reusing a service that is already up is a
-                            // normal pattern), but a leftover stub from an
-                            // earlier run is the far more common case, and
-                            // "port was taken" alone leaves the reader stuck.
-                            let holder = port_holder(*p)
-                                .map(|h| format!("held by {h}"))
-                                .unwrap_or_else(|| "held by another process".to_string());
-                            format!(
-                                "port {p} is {holder} — '{label}' exited ({status}) without \
-                                 binding it, so this scenario is talking to that process, not \
-                                 the one it just started. If it is a leftover from an earlier \
-                                 run, stop it and re-run; otherwise check it serves what this \
-                                 scenario expects"
-                            )
+                            // Reusing a service that is already up is a normal,
+                            // idempotent way to write a scenario — but only when
+                            // the holder really is that service. A *stranger* on
+                            // the port makes every later step talk to the wrong
+                            // server, and the scenario then fails several steps
+                            // downstream as an unexplained workflow failure.
+                            //
+                            // The step declares the port, so ais-runner reclaims
+                            // it rather than handing back a dead end: stop the
+                            // squatter, wait for the socket, start the helper
+                            // again. Only a port that stays held is an error, and
+                            // then with the command to run.
+                            let holder = port_holder(*p);
+                            let same = holder
+                                .as_ref()
+                                .is_some_and(|h| holder_is_same_process(h, command, args));
+                            match holder {
+                                Some(h) if same => format!(
+                                    "port {p} was already served by {h} — reusing it; '{label}' \
+                                     exited ({status}) without binding"
+                                ),
+                                other => {
+                                    let who = other
+                                        .as_ref()
+                                        .map(|h| h.to_string())
+                                        .unwrap_or_else(|| "an unidentified process".to_string());
+                                    let port = *p;
+                                    let killed =
+                                        tokio::task::spawn_blocking(move || reclaim_port(port))
+                                            .await
+                                            .unwrap_or(false);
+                                    if !killed {
+                                        return Err(format!(
+                                            "port {p} is held by {who} and could not be freed, \
+                                             while '{label}' exited ({status}) without binding \
+                                             it — every later step would talk to that process. \
+                                             Run `lsof -nP -iTCP:{p} -sTCP:LISTEN` to find it, \
+                                             stop it, and re-run."
+                                        ));
+                                    }
+                                    let mut retry = spawn_helper()?;
+                                    let outcome =
+                                        wait_for_port(*p, *wait_timeout_ms, &mut retry).await;
+                                    state.processes.push(SpawnedProcess {
+                                        label: label.clone(),
+                                        child: retry,
+                                        stop_at_end: *stop_at_end,
+                                    });
+                                    match outcome? {
+                                        PortBind::ByChild => format!(
+                                            "port {p} was held by {who} — stopped it and started \
+                                             '{label}', now listening on {p}"
+                                        ),
+                                        PortBind::Preexisting(st) => {
+                                            return Err(format!(
+                                                "port {p} was held by {who}; it was stopped, but \
+                                                 something took the port again before '{label}' \
+                                                 could bind it (exited {st}). Run `lsof -nP \
+                                                 -iTCP:{p} -sTCP:LISTEN` to find it, stop it, \
+                                                 and re-run."
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -2156,6 +2278,35 @@ fn expand(text: &str, vars: &Vars) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_port_holder_is_only_ours_when_the_script_matches() {
+        let holder = |c: &str| super::PortHolder {
+            pid: "123".into(),
+            command: c.into(),
+        };
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        // Same stub, restarted earlier — reuse is fine.
+        assert!(holder_is_same_process(
+            &holder("/usr/bin/python3 .ais-runner/fixtures/ignite-stub-server.py 8899"),
+            "python3",
+            &args(&[".ais-runner/fixtures/ignite-stub-server.py", "8899"]),
+        ));
+        // A different project's mock on the same port is a stranger, even
+        // though both run as python3.
+        assert!(!holder_is_same_process(
+            &holder("/opt/python3 tests/kyriba/ignite-dab-mock.py --port 8899"),
+            "python3",
+            &args(&[".ais-runner/fixtures/ignite-stub-server.py", "8899"]),
+        ));
+        // With no script argument, the program name is all we have to go on.
+        assert!(holder_is_same_process(
+            &holder("/usr/local/bin/azurite"),
+            "azurite",
+            &[]
+        ));
+    }
     use super::*;
 
     fn vars(pairs: &[(&str, &str)]) -> Vars {
@@ -2691,9 +2842,10 @@ mod tests {
     /// Twice this hid a real failure: a stub whose file was missing, and a
     /// function host that had died — both reported "listening on <port>"
     /// because something stale still held the socket, so the step went green
-    /// and the scenario failed later somewhere unrelated. The step still
-    /// passes (starting a service only when it is not already up is a normal
-    /// pattern), but it now says what actually happened.
+    /// and the scenario failed later somewhere unrelated. A stranger on the
+    /// port is now reclaimed and the helper restarted; here the holder is this
+    /// test process, which `kill_listener` refuses to touch, so the step fails
+    /// with the manual way out instead.
     #[tokio::test]
     async fn an_already_served_port_does_not_claim_the_step_started_it() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2711,15 +2863,17 @@ mod tests {
             stop_at_end: true,
         };
 
-        let detail = exec(&step, &ctx, &mut state).await.unwrap();
+        let err = exec(&step, &ctx, &mut state).await.unwrap_err();
         assert!(
-            detail.contains("is held by") && detail.contains("without binding"),
-            "unexpected detail: {detail}"
+            err.contains("is held by") && err.contains("without binding"),
+            "unexpected error: {err}"
         );
         assert!(
-            !detail.contains("listening on"),
-            "still claims it started the service: {detail}"
+            !err.contains("listening on"),
+            "still claims it started the service: {err}"
         );
+        // Still tracked, so teardown reaps it even though the step failed.
+        assert_eq!(state.processes.len(), 1);
         stop_processes(&mut state);
     }
 
