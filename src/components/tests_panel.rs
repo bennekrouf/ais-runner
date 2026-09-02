@@ -548,6 +548,11 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
                 {
                 let is_collapsed = group.as_ref().is_some_and(|g| collapsed_groups.read().contains(g));
                 let group_key = group.clone().unwrap_or_default();
+                // Read out of the signal here rather than in the markup: the
+                // step rows below read `results` again, and a borrow held
+                // across the render would collide with a live run's writes.
+                let stats = collect_stats(&items, &results.read(), busy.as_deref());
+                let failed = failed_in(&items, &results.read());
                 rsx! {
                 // Keyed per group, header and cards together: without a stable
                 // key, toggling collapse changes how many nodes this iteration
@@ -574,6 +579,11 @@ pub fn TestsPanel(props: TestsPanelProps) -> Element {
                             span { class: "scenario-group-name", "📁 {group_name}" }
                             span { class: "scenario-count", "{items.len()} scenario(s)" }
                         }
+                        // The group's verdict, on the header line itself: the
+                        // view is then two things deep — a header per group and
+                        // its scenarios — with nothing between them to scroll
+                        // past on the way to a failure.
+                        {kpi_inline(stats, failed)}
                         button {
                             class: "btn btn-small btn-run",
                             disabled: busy.is_some(),
@@ -922,8 +932,8 @@ async fn run_many(
     } else {
         (
             format!(
-                "❌ {label}: {passed}/{total} passed — failed: {}",
-                failed_names.join(", ")
+                "❌ {label}: {passed}/{total} passed — {} failed",
+                failed_names.len()
             ),
             true,
         )
@@ -1115,6 +1125,149 @@ fn summary_badge(steps: &[StepResult], is_running: bool) -> Element {
     }
 }
 
+/// Roll-up of the last run over a set of scenarios, behind the KPI strips.
+///
+/// A scenario counts as failed when any of its steps failed and as passed
+/// otherwise — the same accounting `run_many` uses for its status line, so the
+/// tiles and that line can never disagree. The scenario currently running is
+/// counted on its own: `run_one` clears a scenario's results and streams the
+/// new ones in step by step, so folding a half-finished run into "passed" would
+/// show a green tile that flips red a second later.
+#[derive(Default, Clone, Copy)]
+struct RunStats {
+    passed: usize,
+    failed: usize,
+    running: usize,
+    not_run: usize,
+    steps_passed: usize,
+    steps_total: usize,
+    elapsed_ms: u128,
+}
+
+impl RunStats {
+    /// Scenarios with a settled verdict — the denominator for the pass rate.
+    /// Deliberately excludes "not run": a group where one scenario of twelve
+    /// has been run, and passed, is at 100% with 11 not run, not at 8%.
+    fn settled(&self) -> usize {
+        self.passed + self.failed
+    }
+
+    fn pass_rate(&self) -> usize {
+        match self.settled() {
+            0 => 0,
+            n => ((self.passed as f64 / n as f64) * 100.0).round() as usize,
+        }
+    }
+}
+
+fn collect_stats(
+    items: &[Scenario],
+    results: &HashMap<String, Vec<StepResult>>,
+    busy: Option<&str>,
+) -> RunStats {
+    let mut st = RunStats::default();
+    for s in items {
+        if busy == Some(s.name.as_str()) {
+            st.running += 1;
+            continue;
+        }
+        match results.get(&s.name) {
+            Some(steps) if !steps.is_empty() => {
+                let failed = steps
+                    .iter()
+                    .filter(|r| r.status == StepStatus::Failed)
+                    .count();
+                st.steps_total += steps.len();
+                st.steps_passed += steps.iter().filter(|r| r.status == StepStatus::Ok).count();
+                st.elapsed_ms += steps.iter().map(|r| r.elapsed_ms).sum::<u128>();
+                if failed > 0 {
+                    st.failed += 1;
+                } else {
+                    st.passed += 1;
+                }
+            }
+            // Both "never run" and "cleared, about to run": neither has a
+            // verdict to report.
+            _ => st.not_run += 1,
+        }
+    }
+    st
+}
+
+/// Names of the scenarios in `items` whose last run failed, in list order.
+fn failed_in(items: &[Scenario], results: &HashMap<String, Vec<StepResult>>) -> Vec<String> {
+    items
+        .iter()
+        .filter(|s| results.get(&s.name).is_some_and(|steps| has_failure(steps)))
+        .map(|s| s.name.clone())
+        .collect()
+}
+
+/// The group's verdict, rendered inline on its header row.
+///
+/// A sweep used to report one global line naming every failed scenario; past a
+/// handful of them that line is unreadable, and it puts the names far from the
+/// group that produced them. Each group states its own result instead, on the
+/// header that names it — so the view stays two things deep, a header and its
+/// scenarios, with no third band between them.
+///
+/// The failed names ride along as the failure chip's tooltip rather than a row
+/// of their own: the cards below already show which scenario failed, so the
+/// header only has to say how many, and stay one line while it does.
+///
+/// Renders nothing until something has actually run — a row of zeroes is noise
+/// above cards that each already say "not run".
+fn kpi_inline(st: RunStats, failed: Vec<String>) -> Element {
+    if st.settled() == 0 && st.running == 0 {
+        return rsx! {};
+    }
+    let rate = st.pass_rate();
+    rsx! {
+        span { class: "kpi-inline",
+            span {
+                class: if st.failed > 0 { "kpi-chip fail" } else { "kpi-chip ok" },
+                title: "Share of the scenarios that have run and passed",
+                "{rate}%"
+            }
+            span { class: "kpi-chip ok", title: "Scenarios passed", "✅ {st.passed}" }
+            span {
+                class: if st.failed > 0 { "kpi-chip fail" } else { "kpi-chip idle" },
+                title: if failed.is_empty() {
+                    "Scenarios failed".to_string()
+                } else {
+                    format!("Failed: {}", failed.join(", "))
+                },
+                "❌ {st.failed}"
+            }
+            if st.running > 0 {
+                span { class: "kpi-chip running", title: "Running now", "▶ {st.running}" }
+            }
+            if st.not_run > 0 {
+                span { class: "kpi-chip idle", title: "Never run in this session", "⋯ {st.not_run}" }
+            }
+            span {
+                class: "kpi-chip",
+                title: "Steps passed across the group",
+                "{st.steps_passed}/{st.steps_total} steps"
+            }
+            span { class: "kpi-chip", title: "Total run time", "{fmt_elapsed(st.elapsed_ms)}" }
+        }
+    }
+}
+
+/// Compact elapsed time for a KPI tile: a sweep runs for minutes, a single
+/// scenario for seconds, and neither wants three decimal places.
+fn fmt_elapsed(ms: u128) -> String {
+    let secs = ms / 1000;
+    if secs >= 60 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else if secs > 0 {
+        format!("{}.{}s", secs, (ms % 1000) / 100)
+    } else {
+        format!("{ms}ms")
+    }
+}
+
 /// True when a scenario's most recent run had at least one failed step.
 /// A scenario that has not run yet reports false — there is nothing to read,
 /// so "collapse passed" leaves it alone rather than hiding it.
@@ -1282,6 +1435,76 @@ mod tests {
         // "Collapse passed" walks the results map; an empty result set must not
         // read as a failure, or a never-run scenario would be forced open.
         assert!(!has_failure(&[]));
+    }
+
+    fn scn(name: &str) -> Scenario {
+        Scenario {
+            name: name.into(),
+            description: String::new(),
+            vars: Default::default(),
+            steps: Vec::new(),
+            source: PathBuf::new(),
+        }
+    }
+
+    fn res(status: StepStatus, elapsed_ms: u128) -> StepResult {
+        StepResult {
+            index: 0,
+            label: "step".into(),
+            status,
+            detail: String::new(),
+            elapsed_ms,
+        }
+    }
+
+    #[test]
+    fn group_stats_count_a_scenario_by_its_worst_step() {
+        // Same accounting as `run_many`: one failed step fails the scenario,
+        // however many of its steps passed.
+        let items = vec![scn("a"), scn("b"), scn("c")];
+        let results = HashMap::from([
+            ("a".to_string(), vec![res(StepStatus::Ok, 500)]),
+            (
+                "b".to_string(),
+                vec![res(StepStatus::Ok, 250), res(StepStatus::Failed, 250)],
+            ),
+        ]);
+        let st = collect_stats(&items, &results, None);
+        assert_eq!((st.passed, st.failed, st.not_run), (1, 1, 1));
+        assert_eq!((st.steps_passed, st.steps_total), (2, 3));
+        assert_eq!(st.elapsed_ms, 1000);
+        assert_eq!(failed_in(&items, &results), vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn the_running_scenario_is_held_out_of_the_verdict() {
+        // `run_one` clears the results and streams new ones in, so a run that
+        // has passed two of its five steps must not read as a pass yet.
+        let items = vec![scn("a")];
+        let results = HashMap::from([("a".to_string(), vec![res(StepStatus::Ok, 10)])]);
+        let st = collect_stats(&items, &results, Some("a"));
+        assert_eq!((st.passed, st.failed, st.running), (0, 0, 1));
+    }
+
+    #[test]
+    fn pass_rate_ignores_what_has_not_run() {
+        // One scenario of twelve run, and green, is 100% with 11 not run —
+        // not 8%, which would read as a broken suite.
+        let items: Vec<Scenario> = (0..12).map(|i| scn(&format!("s{i}"))).collect();
+        let results = HashMap::from([("s0".to_string(), vec![res(StepStatus::Ok, 10)])]);
+        let st = collect_stats(&items, &results, None);
+        assert_eq!(st.pass_rate(), 100);
+        assert_eq!(st.not_run, 11);
+
+        // Nothing settled at all reports 0 rather than dividing by zero.
+        assert_eq!(collect_stats(&items, &HashMap::new(), None).pass_rate(), 0);
+    }
+
+    #[test]
+    fn elapsed_reads_as_a_duration_at_every_scale() {
+        assert_eq!(fmt_elapsed(84), "84ms");
+        assert_eq!(fmt_elapsed(2_500), "2.5s");
+        assert_eq!(fmt_elapsed(64_000), "1m04s");
     }
 
     #[test]

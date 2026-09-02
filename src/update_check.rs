@@ -5,6 +5,7 @@
 //! cheap and side-effect-free so it can run in the background at startup.
 
 use serde::Deserialize;
+use std::collections::HashMap;
 
 /// Served from mayorana.ch alongside the builds it describes. It used to be
 /// fetched from the GitHub release, which meant update checks broke for every
@@ -12,15 +13,30 @@ use serde::Deserialize;
 /// app should not depend on the source host to tell users a build exists.
 const LATEST_URL: &str = "https://mayorana.ch/downloads/ais-runner/latest/latest.json";
 
-/// Where the user is sent to actually get the new version. The binaries are
-/// distributed from mayorana.ch, not from GitHub, so pointing at the releases
-/// page would land them somewhere with nothing to download.
+/// Fallback when `latest.json` has no entry for this OS (e.g. an Intel Mac —
+/// only Apple Silicon is built). Sends the user to pick a build by hand
+/// instead of at a link that would 404.
 const RELEASES_URL: &str = "https://mayorana.ch/en/apps";
 
 #[derive(Debug, Deserialize)]
 struct LatestJson {
     version: String,
     tag: String,
+    platforms: Platforms,
+}
+
+#[derive(Debug, Deserialize)]
+struct Platforms {
+    macos: HashMap<String, Artifact>,
+    windows: HashMap<String, Artifact>,
+    linux: HashMap<String, Artifact>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Artifact {
+    url: String,
+    #[allow(dead_code)]
+    sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -54,11 +70,28 @@ pub async fn check() -> Option<UpdateInfo> {
         Some(UpdateInfo {
             latest_version: latest.version,
             latest_tag: latest.tag,
-            release_url: RELEASES_URL.to_string(),
+            release_url: platform_url(&latest.platforms),
         })
     } else {
         None
     }
+}
+
+/// Picks the one artifact URL published for this OS. Empty (build missing
+/// for this OS) or unparseable falls back to the landing page.
+fn platform_url(platforms: &Platforms) -> String {
+    let by_os = match std::env::consts::OS {
+        "macos" => &platforms.macos,
+        "windows" => &platforms.windows,
+        "linux" => &platforms.linux,
+        _ => return RELEASES_URL.to_string(),
+    };
+    by_os
+        .values()
+        .next()
+        .map(|a| a.url.clone())
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| RELEASES_URL.to_string())
 }
 
 fn is_newer(a: &str, b: &str) -> bool {

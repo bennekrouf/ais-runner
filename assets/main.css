@@ -4364,6 +4364,36 @@ body.light .wf-chip-liquid { background: #f5f3ff; color: #6d28d9; border-color: 
 .scenario-badge.ok      { color: var(--green); background: color-mix(in srgb, var(--green) 16%, transparent); }
 .scenario-badge.fail    { color: var(--red);   background: color-mix(in srgb, var(--red)   16%, transparent); }
 
+/* KPI chips — a group's verdict, inline on its own header row. Kept on that
+   line rather than in a band beneath it so the view is two things deep: a
+   header per group and the scenarios under it, with nothing in between to
+   scroll past on the way to a failure. `.scenario-group-toggle` is flex:1, so
+   the chips land hard against the Run-group button on the right. */
+.kpi-inline {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+}
+/* Tabular figures so the row doesn't jitter as counts change during a run. */
+.kpi-chip {
+    font-size: 11px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    padding: 2px 8px;
+    border-radius: 10px;
+    color: var(--text2);
+    background: var(--bg0);
+}
+/* The `--*-bg` variables are solid saturated fills meant for white text, which
+   read as mud behind coloured text — derive a low-opacity tint from the accent
+   instead, which also tracks the light/dark theme a hardcoded rgba() would not. */
+.kpi-chip.ok      { color: var(--green); background: color-mix(in srgb, var(--green) 16%, transparent); }
+.kpi-chip.fail    { color: var(--red);   background: color-mix(in srgb, var(--red)   16%, transparent); }
+.kpi-chip.running { color: var(--blue);  background: color-mix(in srgb, var(--blue)  16%, transparent); }
+.kpi-chip.idle    { color: var(--text3); background: var(--bg0); }
+
 .scenario-steps {
     display: flex;
     flex-direction: column;
