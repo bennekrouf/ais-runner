@@ -335,6 +335,7 @@ pub fn handle_start(
                 LogLevel::Error,
             );
                 func_state.set(ServiceState::Stopped);
+                restore_connections(&func_cwd, &mut push);
                 return;
             }
 
@@ -634,10 +635,35 @@ pub fn handle_start(
                         String::new()
                     };
                     push(format!("func start error: {}{}", e, hint), LogLevel::Error);
+                    restore_connections(&func_cwd, &mut push);
                 }
             }
         } // end port-check block
     }); // end spawn(async move)
+}
+
+/// Hand connections.json back the way the developer had it. It is the
+/// committed, cloud-facing file — leaving it patched means a permanently dirty
+/// working tree they never edited and must remember not to commit.
+///
+/// Called from every path that ends a func start, not just the Stop button:
+/// the file is patched before func is even spawned, so an early bail leaves it
+/// dirty with func never having run.
+fn restore_connections(dir: &str, push: &mut impl FnMut(String, LogLevel)) {
+    let workspace = crate::services::workflows::resolve_logic_apps_dir(dir);
+    match crate::services::connections_snapshot::restore(&workspace) {
+        Ok(true) => push(
+            "  ✓ Restored connections.json to its committed state".into(),
+            LogLevel::Info,
+        ),
+        Ok(false) => {}
+        Err(e) => push(
+            format!(
+                "  ⚠ Could not restore connections.json ({e}) — it is still patched for local use"
+            ),
+            LogLevel::Warn,
+        ),
+    }
 }
 
 pub fn handle_stop(
@@ -655,23 +681,7 @@ pub fn handle_stop(
         Err(e) => push(format!("Error: {}", e), LogLevel::Error),
     }
 
-    // Hand connections.json back the way the developer had it. It is the
-    // committed, cloud-facing file — leaving it patched means a permanently
-    // dirty working tree they never edited and must remember not to commit.
-    let workspace = crate::services::workflows::resolve_logic_apps_dir(&dir);
-    match crate::services::connections_snapshot::restore(&workspace) {
-        Ok(true) => push(
-            "  ✓ Restored connections.json to its committed state".into(),
-            LogLevel::Info,
-        ),
-        Ok(false) => {}
-        Err(e) => push(
-            format!(
-                "  ⚠ Could not restore connections.json ({e}) — it is still patched for local use"
-            ),
-            LogLevel::Warn,
-        ),
-    }
+    restore_connections(&dir, &mut push);
 }
 
 #[cfg(test)]

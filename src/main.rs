@@ -209,6 +209,13 @@ fn main() {
     if stopped > 0 {
         eprintln!("ais-runner: stopped {stopped} background process(es) on exit");
     }
+
+    // Same gap for connections.json: restore ran only from the Stop button, so
+    // closing the app left the committed, cloud-facing file patched.
+    let restored = ais_runner::services::connections_snapshot::restore_all();
+    if restored > 0 {
+        eprintln!("ais-runner: restored {restored} connections.json file(s) on exit");
+    }
 }
 
 fn window_config(webview_data_dir: std::path::PathBuf) -> dioxus::desktop::Config {
