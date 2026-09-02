@@ -1149,6 +1149,39 @@ enum PortBind {
     Preexisting(std::process::ExitStatus),
 }
 
+/// Who is listening on `port`, as "pid 1234 (python3)".
+///
+/// A scenario that lost the bind is otherwise a dead end for anyone who does
+/// not already know `lsof`: the step says the port was taken but not by whom,
+/// and the run silently talks to a stranger. Best-effort — an unidentified
+/// holder still gets a message, just a vaguer one.
+fn port_holder(port: u16) -> Option<String> {
+    let out = std::process::Command::new("lsof")
+        .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpc"])
+        .env("PATH", crate::services::process::rich_path())
+        .output()
+        .ok()?;
+    // -F prints one field per line, tagged by its first char: p<pid>, c<command>.
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut pid = None;
+    let mut cmd = None;
+    for line in text.lines() {
+        match line.as_bytes().first() {
+            Some(b'p') => pid = Some(line[1..].to_string()),
+            Some(b'c') => cmd = Some(line[1..].to_string()),
+            _ => {}
+        }
+        if pid.is_some() && cmd.is_some() {
+            break;
+        }
+    }
+    match (pid, cmd) {
+        (Some(p), Some(c)) => Some(format!("pid {p} ({c})")),
+        (Some(p), None) => Some(format!("pid {p}")),
+        _ => None,
+    }
+}
+
 async fn wait_for_port(
     port: u16,
     timeout_ms: u64,
@@ -1488,10 +1521,23 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                     });
                     match outcome? {
                         PortBind::ByChild => format!("started '{label}' — listening on {p}"),
-                        PortBind::Preexisting(status) => format!(
-                            "port {p} was already served by another process — \
-                             '{label}' exited ({status}) without binding it"
-                        ),
+                        PortBind::Preexisting(status) => {
+                            // Name the holder and the way out: the step stays
+                            // green (reusing a service that is already up is a
+                            // normal pattern), but a leftover stub from an
+                            // earlier run is the far more common case, and
+                            // "port was taken" alone leaves the reader stuck.
+                            let holder = port_holder(*p)
+                                .map(|h| format!("held by {h}"))
+                                .unwrap_or_else(|| "held by another process".to_string());
+                            format!(
+                                "port {p} is {holder} — '{label}' exited ({status}) without \
+                                 binding it, so this scenario is talking to that process, not \
+                                 the one it just started. If it is a leftover from an earlier \
+                                 run, stop it and re-run; otherwise check it serves what this \
+                                 scenario expects"
+                            )
+                        }
                     }
                 }
                 None => {
@@ -2667,7 +2713,7 @@ mod tests {
 
         let detail = exec(&step, &ctx, &mut state).await.unwrap();
         assert!(
-            detail.contains("already served") && detail.contains("without binding"),
+            detail.contains("is held by") && detail.contains("without binding"),
             "unexpected detail: {detail}"
         );
         assert!(
