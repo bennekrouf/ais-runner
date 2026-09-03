@@ -29,7 +29,7 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
     rsx! {
         div { id: "welcome",
             div { id: "welcome-header",
-                h1 { "AIS Local Runner" }
+                h1 { "AIS Runner" }
                 p { "Select your AIS platform folder to get started." }
             }
 

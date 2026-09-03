@@ -54,7 +54,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| dir.clone());
         dioxus::desktop::window().set_title(&format!(
-            "AIS Local Runner {} — {}",
+            "AIS Runner {} — {}",
             env!("CARGO_PKG_VERSION"),
             basename,
         ));
