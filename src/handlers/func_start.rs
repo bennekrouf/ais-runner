@@ -113,6 +113,29 @@ pub fn handle_start(
             //    content has to land here. It must not stay: the pristine file is
             //    snapshotted first and put back by handle_stop, so the working
             //    tree is only dirty while func is running.
+            // 2a. workflow.json — drop ActiveDirectoryOAuth from HTTP actions.
+            //     There is no AAD to authenticate against locally, and the
+            //     tenant/clientId/secret parameters resolve through
+            //     @appsetting() keys that a local checkout does not have, so
+            //     every Ignite/JDE call fails with "The required OAuth
+            //     authentication property 'tenant' is missing" before it can
+            //     reach the stub. Snapshotted and restored like connections.json.
+            match crate::services::workflow_auth::patch_all(std::path::Path::new(&d)) {
+                Ok(names) if !names.is_empty() => push(
+                    format!(
+                        "  ✓ Removed ActiveDirectoryOAuth from {} workflow(s) for local run — restored on stop: {}",
+                        names.len(),
+                        names.join(", ")
+                    ),
+                    LogLevel::Info,
+                ),
+                Ok(_) => {}
+                Err(e) => push(
+                    format!("  ⚠ Could not strip OAuth from workflows ({e}) — Ignite/JDE calls will fail locally"),
+                    LogLevel::Warn,
+                ),
+            }
+
             let conn_path = std::path::Path::new(&d).join("connections.json");
             if conn_path.exists() {
                 match crate::services::connections_snapshot::snapshot(std::path::Path::new(&d)) {
@@ -661,6 +684,17 @@ fn restore_connections(dir: &str, push: &mut impl FnMut(String, LogLevel)) {
             format!(
                 "  ⚠ Could not restore connections.json ({e}) — it is still patched for local use"
             ),
+            LogLevel::Warn,
+        ),
+    }
+    match crate::services::workflow_auth::restore(&workspace) {
+        Ok(0) => {}
+        Ok(n) => push(
+            format!("  ✓ Restored ActiveDirectoryOAuth in {n} workflow(s)"),
+            LogLevel::Info,
+        ),
+        Err(e) => push(
+            format!("  ⚠ Could not restore workflow.json files ({e}) — OAuth is still stripped"),
             LogLevel::Warn,
         ),
     }

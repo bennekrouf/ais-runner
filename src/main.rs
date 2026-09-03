@@ -216,6 +216,11 @@ fn main() {
     if restored > 0 {
         eprintln!("ais-runner: restored {restored} connections.json file(s) on exit");
     }
+
+    let wf = ais_runner::services::workflow_auth::restore_all();
+    if wf > 0 {
+        eprintln!("ais-runner: restored OAuth in {wf} workflow.json file(s) on exit");
+    }
 }
 
 fn window_config(webview_data_dir: std::path::PathBuf) -> dioxus::desktop::Config {
