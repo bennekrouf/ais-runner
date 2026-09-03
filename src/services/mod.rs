@@ -40,5 +40,6 @@ pub mod sql_hint;
 pub mod sql_runner;
 pub mod system_check;
 pub mod workflow_analysis;
+pub mod workflow_auth;
 pub mod workflow_outline;
 pub mod workflows;
