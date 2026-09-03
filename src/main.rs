@@ -228,7 +228,7 @@ fn window_config(webview_data_dir: std::path::PathBuf) -> dioxus::desktop::Confi
         .with_data_directory(webview_data_dir)
         .with_window(
             dioxus::desktop::WindowBuilder::new()
-                .with_title(concat!("AIS Local Runner ", env!("CARGO_PKG_VERSION")))
+                .with_title(concat!("AIS Runner ", env!("CARGO_PKG_VERSION")))
                 .with_inner_size(LogicalSize::new(1280.0, 820.0))
                 .with_maximized(true)
                 .with_always_on_top(false)
@@ -437,8 +437,7 @@ fn AppWindow(initial: Option<String>) -> Element {
         let mut screen = screen;
         move |_| {
             // Reset window title to the neutral form when returning to the picker.
-            dioxus::desktop::window()
-                .set_title(concat!("AIS Local Runner ", env!("CARGO_PKG_VERSION")));
+            dioxus::desktop::window().set_title(concat!("AIS Runner ", env!("CARGO_PKG_VERSION")));
             screen.set(Screen::Welcome);
         }
     };
@@ -462,7 +461,7 @@ fn AppWindow(initial: Option<String>) -> Element {
         if let (Some(info), false) = (update_info.read().clone(), *update_dismissed.read()) {
             div { class: "update-banner",
                 span { class: "update-banner-text",
-                    "ais-runner "
+                    "AIS Runner "
                     strong { "{info.latest_version}" }
                     " is available (you have {env!(\"CARGO_PKG_VERSION\")})."
                 }
