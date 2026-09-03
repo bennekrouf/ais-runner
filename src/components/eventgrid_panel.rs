@@ -338,6 +338,7 @@ fn render_eg_data(
                                 "Endpoint: "
                                 span { class: "eg-endpoint-inline", "{topic.endpoint}" }
                             }
+                            { render_overlaps(&topic.name, subs) }
                             { render_subs_table(subs, query, detail) }
                         }
                     }
@@ -365,6 +366,62 @@ fn render_eg_data(
     }
 }
 
+/// Warn about subscription pairs that can both match one event.
+///
+/// Event Grid fans out to every match, so an overlap is a silent duplicate
+/// delivery — two consumers each process the message, usually with only one of
+/// them written for it. Nothing in Azure flags this.
+fn render_overlaps(topic: &str, subs: &[EgSubscription]) -> Element {
+    let overlaps = eventgrid_check::find_overlaps(topic, subs);
+    if overlaps.is_empty() {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "eg-overlaps",
+            div { class: "eg-overlap-head",
+                "⚠ {overlaps.len()} overlapping filter pair(s) — these events are delivered twice"
+            }
+            for o in overlaps.iter() {
+                div { class: "eg-overlap-row",
+                    span { class: "eg-overlap-pair", "{o.left}  ↔  {o.right}" }
+                    span { class: "eg-overlap-why", " on {o.event_type} — {o.reason}" }
+                }
+            }
+        }
+    }
+}
+
+/// Shorten a destination for the table.
+///
+/// The value is a full ARM resource id and the part that identifies it — the
+/// queue or topic name — is the *last* segment. Truncating from the left made
+/// every row read `/subscriptions/<guid>/resourceG…`, i.e. identical, so the
+/// column answered nothing. Keep the tail; the full id is on hover and in the
+/// detail popup.
+fn short_endpoint(endpoint: &str) -> String {
+    if endpoint.is_empty() {
+        return "—".into();
+    }
+    match endpoint.rsplit_once('/') {
+        Some((_, last)) if !last.is_empty() => format!("…/{last}"),
+        _ => endpoint.to_string(),
+    }
+}
+
+/// One-line delivery summary: retries, and — the part that matters — whether
+/// anything catches an event that never gets delivered.
+fn delivery_summary(sub: &EgSubscription) -> (String, bool) {
+    let retries = match (sub.max_delivery_attempts, sub.event_ttl_minutes) {
+        (Some(a), Some(t)) => format!("{a}× / {t}m"),
+        (Some(a), None) => format!("{a}×"),
+        _ => "—".to_string(),
+    };
+    match &sub.dead_letter {
+        Some(dl) => (format!("{retries} → {}", short_endpoint(dl)), false),
+        None => (format!("{retries} → dropped"), true),
+    }
+}
+
 fn render_subs_table(
     subs: &[EgSubscription],
     query: &str,
@@ -373,69 +430,113 @@ fn render_subs_table(
     if subs.is_empty() {
         return rsx! { div { class: "eg-empty", "No event subscriptions" } };
     }
+
+    // Group by event type — it is the topic's first-level discriminator, so
+    // subscriptions that compete for the same events sit together, and an
+    // overlap is visible as two rows under one heading.
+    let mut order: Vec<String> = Vec::new();
+    for s in subs.iter() {
+        let key = if s.included_event_types.is_empty() {
+            "(all event types)".to_string()
+        } else {
+            s.included_event_types.join(", ")
+        };
+        if !order.contains(&key) {
+            order.push(key);
+        }
+    }
+    order.sort();
+
     rsx! {
         table { class: "eg-table",
             thead {
                 tr {
                     th { "Subscription" }
-                    th { "Event Types" }
                     th { "Filters" }
                     th { "Endpoint" }
+                    th { "Delivery" }
                     th { "State" }
                 }
             }
             tbody {
-                for sub in subs.iter() {
+                for group in order.iter() {
                     {
-                        let name_lc = sub.name.to_lowercase();
-                        let endpoint_lc = sub.endpoint.to_lowercase();
-                        let matches = query.is_empty()
-                            || name_lc.contains(query)
-                            || endpoint_lc.contains(query)
-                            || sub.included_event_types.iter().any(|t| t.to_lowercase().contains(query));
-                        if matches {
-                            let events_str = sub.included_event_types.join(", ");
-                            let filters_str: String = sub.filters.iter()
-                                .map(|f| format!("{}: {}", f.label, f.value))
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            let endpoint_display = if sub.endpoint.len() > 60 {
-                                format!("{}…", &sub.endpoint[..60])
+                        let rows: Vec<&EgSubscription> = subs.iter().filter(|s| {
+                            let key = if s.included_event_types.is_empty() {
+                                "(all event types)".to_string()
                             } else {
-                                sub.endpoint.clone()
+                                s.included_event_types.join(", ")
                             };
-                            let full_endpoint = sub.endpoint.clone();
-                            let sub_name = sub.name.clone();
-                            let prov = sub.provisioning_state.clone();
-                            let filters_display = if filters_str.is_empty() { "—".to_string() } else { filters_str };
-                            rsx! {
-                                tr {
-                                    td { "{sub_name}" }
-                                    td { class: "eg-events", "{events_str}" }
-                                    td {
-                                        class: "eg-filters",
-                                        title: "{filters_display}",
-                                        pre { style: "margin:0;white-space:pre-wrap;font-size:11px", "{filters_display}" }
-                                    }
-                                    td {
-                                        class: "eg-endpoint",
-                                        title: "{full_endpoint}",
-                                        onclick: {
-                                            let title = sub_name.clone();
-                                            let content = full_endpoint.clone();
-                                            let mut detail = detail.clone();
-                                            move |_| detail.set(Some((title.clone(), content.clone())))
-                                        },
-                                        "{endpoint_display}"
-                                    }
-                                    td {
-                                        class: if prov == "Succeeded" { "eg-state-ok" } else { "eg-state-warn" },
-                                        "{prov}"
+                            if &key != group { return false; }
+                            let name_lc = s.name.to_lowercase();
+                            let endpoint_lc = s.endpoint.to_lowercase();
+                            query.is_empty()
+                                || name_lc.contains(query)
+                                || endpoint_lc.contains(query)
+                                || s.included_event_types.iter().any(|t| t.to_lowercase().contains(query))
+                        }).collect();
+                        if rows.is_empty() { return rsx! {}; }
+                        let heading = format!("{group}  ·  {} subscription(s)", rows.len());
+                        rsx! {
+                            tr { class: "eg-group-row",
+                                th { colspan: "5", class: "eg-group-head", "{heading}" }
+                            }
+                            for sub in rows {
+                                {
+                                    let filters_str: String = sub.filters.iter()
+                                        .map(|f| format!("{}: {}", f.label, f.value))
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    let filters_display = if filters_str.is_empty() {
+                                        "— matches every event of this type".to_string()
+                                    } else { filters_str };
+                                    let endpoint_display = short_endpoint(&sub.endpoint);
+                                    let full_endpoint = if sub.endpoint.is_empty() {
+                                        "(no destination reported)".to_string()
+                                    } else { sub.endpoint.clone() };
+                                    let (delivery, dropped) = delivery_summary(sub);
+                                    let arrays = sub.advanced_filtering_on_arrays;
+                                    let sub_name = sub.name.clone();
+                                    let prov = sub.provisioning_state.clone();
+                                    rsx! {
+                                        tr {
+                                            td {
+                                                "{sub_name}"
+                                                if arrays {
+                                                    span { class: "eg-chip", title: "enableAdvancedFilteringOnArrays", " arrays" }
+                                                }
+                                            }
+                                            td {
+                                                class: "eg-filters",
+                                                title: "{filters_display}",
+                                                pre { style: "margin:0;white-space:pre-wrap;font-size:11px", "{filters_display}" }
+                                            }
+                                            td {
+                                                class: "eg-endpoint",
+                                                title: "{full_endpoint}",
+                                                onclick: {
+                                                    let title = sub_name.clone();
+                                                    let content = full_endpoint.clone();
+                                                    let mut detail = detail.clone();
+                                                    move |_| detail.set(Some((title.clone(), content.clone())))
+                                                },
+                                                "{endpoint_display}"
+                                            }
+                                            td {
+                                                class: if dropped { "eg-state-warn" } else { "eg-state-ok" },
+                                                title: if dropped {
+                                                    "No deadLetterDestination — Event Grid discards the event once retries are exhausted"
+                                                } else { "Undeliverable events are dead-lettered" },
+                                                "{delivery}"
+                                            }
+                                            td {
+                                                class: if prov == "Succeeded" { "eg-state-ok" } else { "eg-state-warn" },
+                                                "{prov}"
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        } else {
-                            rsx! {}
                         }
                     }
                 }
