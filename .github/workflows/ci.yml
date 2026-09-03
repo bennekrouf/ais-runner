@@ -8,8 +8,6 @@ name: CI
 # trip plus a download and a manual click-through.
 on:
   pull_request:
-  push:
-    branches: [master]
 
 # A newer push on the same ref cancels the run it superseded.
 concurrency:
