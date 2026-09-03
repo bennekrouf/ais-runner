@@ -197,9 +197,22 @@ pub fn handle_start(
         // hardcoded port 7071 which conflicts with Logic Apps func start.
         let staging = format!("{}/target/azure-functions/ais-functions", dir);
         let func = crate::services::runtime_manager::resolve_tool("func");
-        let java_home = detect_java_home();
-        if let Some(ref jh) = java_home {
-            let msg = format!("JAVA_HOME={}", jh);
+        // Pick the JDK *before* starting the host: an unsupported one makes the
+        // worker die silently and the host time out 40s later with nothing but
+        // "Failed to start a new language worker for runtime: java".
+        let jdk = match select_jdk(&dir) {
+            Ok(jdk) => jdk,
+            Err(e) => {
+                for line in e.lines() {
+                    push(line.to_string(), LogLevel::Error);
+                    java_lines.write().push(line.to_string());
+                }
+                state.set(ServiceState::Stopped);
+                return;
+            }
+        };
+        {
+            let msg = format!("JAVA_HOME={} (Java {})", jdk.home, jdk.major);
             push(msg.clone(), LogLevel::Info);
             java_lines.write().push(msg);
         }
@@ -207,10 +220,16 @@ pub fn handle_start(
         push(cmd_msg.clone(), LogLevel::Info);
         java_lines.write().push(cmd_msg);
 
-        let mut cmd_env: Vec<(String, String)> = vec![];
-        if let Some(jh) = java_home {
-            cmd_env.push(("JAVA_HOME".into(), jh));
-        }
+        // Both are needed: the host reads JAVA_HOME to build the worker command,
+        // and a keg-only JDK is on no PATH the app inherits, so `java` itself
+        // has to be findable too.
+        let cmd_env: Vec<(String, String)> = vec![
+            ("JAVA_HOME".into(), jdk.home.clone()),
+            (
+                "PATH".into(),
+                format!("{}/bin:{}", jdk.home, crate::services::process::rich_path()),
+            ),
+        ];
 
         match proc.read().start_with_env(
             &func,
@@ -249,47 +268,156 @@ pub fn handle_start(
     });
 }
 
-/// Detect JAVA_HOME so `func host start` can launch the Java worker.
-/// GUI apps on macOS don't inherit the shell PATH, so we probe common locations.
-fn detect_java_home() -> Option<String> {
-    // 1. Already set in environment
+/// JDK major versions the Azure Functions Java worker can run on (Core Tools
+/// v4). Anything newer starts and dies immediately, which the host reports only
+/// as "Failed to start a new language worker for runtime: java".
+const SUPPORTED_JAVA: [u32; 4] = [8, 11, 17, 21];
+
+pub struct Jdk {
+    pub home: String,
+    pub major: u32,
+}
+
+/// Choose the JDK to run the function host with.
+///
+/// Preference order: the version the project's pom targets, then the newest
+/// version the worker supports. A machine with only unsupported JDKs gets an
+/// error naming what it found and what to install — not a 40s host timeout.
+fn select_jdk(func_apps_dir: &str) -> Result<Jdk, String> {
+    let found = discover_jdks();
+    if found.is_empty() {
+        return Err("❌ No JDK found — the Java worker cannot start.\n  \
+             hint: brew install openjdk@17 (or openjdk@21)"
+            .into());
+    }
+    let wanted = project_java_version(func_apps_dir);
+    let mut supported: Vec<Jdk> = found
+        .into_iter()
+        .filter(|j| SUPPORTED_JAVA.contains(&j.major))
+        .collect();
+    if supported.is_empty() {
+        return Err(format!(
+            "❌ No JDK the Azure Functions Java worker supports (needs {}).\n  \
+             hint: brew install openjdk@{} — then start again",
+            SUPPORTED_JAVA
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join("/"),
+            wanted.unwrap_or(17)
+        ));
+    }
+    // Newest first, so the fallback is the most capable supported JDK.
+    supported.sort_by(|a, b| b.major.cmp(&a.major));
+    let pick = wanted
+        .and_then(|w| supported.iter().position(|j| j.major == w))
+        .unwrap_or(0);
+    Ok(supported.swap_remove(pick))
+}
+
+/// `<java.version>` from the function app's pom, when it declares one.
+fn project_java_version(func_apps_dir: &str) -> Option<u32> {
+    let pom = std::fs::read_to_string(std::path::Path::new(func_apps_dir).join("pom.xml")).ok()?;
+    let raw = pom
+        .split("<java.version>")
+        .nth(1)?
+        .split("</java.version>")
+        .next()?
+        .trim()
+        .to_string();
+    // "1.8" is how Java 8 is spelled in a pom.
+    raw.strip_prefix("1.").unwrap_or(&raw).parse().ok()
+}
+
+/// Every JDK we can find, newest-first order not guaranteed.
+///
+/// GUI apps on macOS inherit neither the shell PATH nor SDKMAN, and a
+/// Homebrew `openjdk@N` is keg-only — so nothing shows up unless we look in
+/// the install locations directly.
+fn discover_jdks() -> Vec<Jdk> {
+    let mut homes: Vec<String> = Vec::new();
+    let mut add = |p: String| {
+        if !p.is_empty()
+            && !homes.contains(&p)
+            && std::path::Path::new(&p).join("bin/java").exists()
+        {
+            homes.push(p);
+        }
+    };
+
     if let Ok(jh) = std::env::var("JAVA_HOME") {
-        if !jh.is_empty() && std::path::Path::new(&jh).exists() {
-            return Some(jh);
-        }
+        add(jh);
     }
-    // 2. Ask java_home utility (macOS)
+    // macOS registry (only lists JDKs installed under /Library/Java).
     if let Ok(out) = std::process::Command::new("/usr/libexec/java_home").output() {
-        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !path.is_empty() && std::path::Path::new(&path).exists() {
-            return Some(path);
+        if out.status.success() {
+            add(String::from_utf8_lossy(&out.stdout).trim().to_string());
         }
     }
-    // 3. Derive from `java` binary on PATH
+    // Whatever `java` on PATH resolves to (…/Home/bin/java → …/Home).
     let java = crate::services::runtime_manager::resolve_tool("java");
     if let Ok(canonical) = std::fs::canonicalize(&java) {
-        // .../jdk/bin/java → parent of bin/ is JAVA_HOME
-        if let Some(bin) = canonical.parent() {
-            if let Some(home) = bin.parent() {
-                if home.join("lib").exists() || home.join("include").exists() {
-                    return Some(home.to_string_lossy().to_string());
+        if let Some(home) = canonical.parent().and_then(|bin| bin.parent()) {
+            add(home.to_string_lossy().to_string());
+        }
+    }
+    // Homebrew kegs (openjdk, openjdk@17, openjdk@21, …), system JDKs, SDKMAN.
+    let globs = [
+        "/opt/homebrew/opt",
+        "/usr/local/opt",
+        "/Library/Java/JavaVirtualMachines",
+    ];
+    for base in globs {
+        if let Ok(entries) = std::fs::read_dir(base) {
+            for e in entries.flatten() {
+                let p = e.path();
+                let name = e.file_name().to_string_lossy().to_string();
+                if !name.starts_with("openjdk") && !p.join("Contents/Home").exists() {
+                    continue;
                 }
+                // Homebrew keg layout, then the .jdk bundle layout.
+                add(p
+                    .join("libexec/openjdk.jdk/Contents/Home")
+                    .to_string_lossy()
+                    .to_string());
+                add(p.join("Contents/Home").to_string_lossy().to_string());
             }
         }
     }
-    // 4. Common Homebrew / SDKMAN paths
-    let candidates = [
-        "/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home",
-        "/usr/local/opt/openjdk/libexec/openjdk.jdk/Contents/Home",
-        "/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home",
-        "/Library/Java/JavaVirtualMachines/openjdk-17.jdk/Contents/Home",
-    ];
-    for c in &candidates {
-        if std::path::Path::new(c).exists() {
-            return Some(c.to_string());
+    if let Some(home) = dirs_next_home() {
+        if let Ok(entries) = std::fs::read_dir(home.join(".sdkman/candidates/java")) {
+            for e in entries.flatten() {
+                add(e.path().to_string_lossy().to_string());
+            }
         }
     }
-    None
+
+    homes
+        .into_iter()
+        .filter_map(|home| jdk_major(&home).map(|major| Jdk { home, major }))
+        .collect()
+}
+
+fn dirs_next_home() -> Option<std::path::PathBuf> {
+    std::env::var("HOME").ok().map(std::path::PathBuf::from)
+}
+
+/// Major version of the JDK at `home`, read from its `release` file — cheaper
+/// and more reliable than spawning `java -version` for every candidate.
+fn jdk_major(home: &str) -> Option<u32> {
+    let release = std::fs::read_to_string(std::path::Path::new(home).join("release")).ok()?;
+    let v = release
+        .lines()
+        .find_map(|l| l.strip_prefix("JAVA_VERSION="))?
+        .trim()
+        .trim_matches('"');
+    let first = v.split('.').next()?;
+    // 1.8.0_392 → 8; 21.0.12.1 → 21.
+    if first == "1" {
+        v.split('.').nth(1)?.parse().ok()
+    } else {
+        first.parse().ok()
+    }
 }
 
 pub fn handle_stop(
@@ -304,5 +432,46 @@ pub fn handle_stop(
             push("Java Function App stopped.".into(), LogLevel::Warn);
         }
         Err(e) => push(format!("Error: {}", e), LogLevel::Error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pom_java_version_is_read_in_both_spellings() {
+        let dir = std::env::temp_dir().join(format!("ais-pom-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pom = dir.join("pom.xml");
+        std::fs::write(&pom, "<project><java.version>17</java.version></project>").unwrap();
+        assert_eq!(project_java_version(&dir.to_string_lossy()), Some(17));
+        // Java 8 is spelled 1.8 in a pom.
+        std::fs::write(&pom, "<project><java.version>1.8</java.version></project>").unwrap();
+        assert_eq!(project_java_version(&dir.to_string_lossy()), Some(8));
+        std::fs::write(&pom, "<project/>").unwrap();
+        assert_eq!(project_java_version(&dir.to_string_lossy()), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The bug this replaced: with only Java 21 and Java 26 installed, the old
+    /// probe returned the first *existing* path (Homebrew's plain `openjdk`,
+    /// i.e. 26), whose worker dies on startup.
+    #[test]
+    fn only_worker_supported_jdks_are_ever_selected() {
+        for jdk in discover_jdks() {
+            if !SUPPORTED_JAVA.contains(&jdk.major) {
+                continue;
+            }
+            assert!(std::path::Path::new(&jdk.home).join("bin/java").exists());
+        }
+        // Whatever this machine has, a selection is never an unsupported major.
+        if let Ok(picked) = select_jdk(".") {
+            assert!(
+                SUPPORTED_JAVA.contains(&picked.major),
+                "picked {}",
+                picked.major
+            );
+        }
     }
 }
