@@ -26,6 +26,7 @@ pub mod port_owner;
 pub mod preflight;
 pub mod process;
 pub mod recorder;
+pub mod run_explain;
 pub mod run_readiness;
 pub mod runtime_manager;
 pub mod sb_amqp;
