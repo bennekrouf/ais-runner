@@ -180,6 +180,13 @@ async fn main() -> ExitCode {
         cancel: CancelFlag::default(),
     };
 
+    // Ctrl-C, or a CI job cancelling the step, must unwind the run rather than
+    // sever it: `scenario::run` restores local.settings.json and kills the
+    // processes it started on its way out, and killing this process outright
+    // skips both — leaving a modified settings file in the workspace and
+    // orphaned emulators for the next job to trip over.
+    cancel_on_signal(ctx.cancel.clone());
+
     let mut suites: Vec<SuiteReport> = Vec::new();
 
     for s in &selected {
@@ -295,4 +302,13 @@ fn write_junit(path: &Path, suites: &[SuiteReport]) -> std::io::Result<()> {
         }
     }
     std::fs::write(path, junit::render(suites))
+}
+
+/// Turn the first SIGINT/SIGTERM into a cancellation, and let a second one
+/// through unchanged for anyone who has stopped waiting politely.
+fn cancel_on_signal(cancel: CancelFlag) {
+    ais_runner::services::signals::on_termination(false, move || {
+        eprintln!("\nais-test: cancelling — restoring settings and stopping processes");
+        cancel.cancel();
+    });
 }

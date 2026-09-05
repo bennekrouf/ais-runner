@@ -46,6 +46,10 @@ tower       = "0.5"
 notify-rust = "4"
 ais-core    = { path = "crates/ais-core" }
 
+# Signal handling on exit paths that never unwind — see services::signals.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }
 

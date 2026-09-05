@@ -140,6 +140,13 @@ fn main() {
                 info
             );
             let _ = std::fs::write(&crash_log2, &msg);
+            // The crash the heal-on-open path exists to clean up after. Doing
+            // it here instead means the working tree is already correct by the
+            // time the developer looks at it, and the next open has nothing to
+            // guess about. `restore_all` only touches files it can prove it
+            // patched, so this is safe even when the panic came from unrelated
+            // code mid-run.
+            restore_patched_files_bounded();
             // Also try a Windows message box so non-technical users see something
             #[cfg(target_os = "windows")]
             {
@@ -199,6 +206,8 @@ fn main() {
         ),
     );
 
+    install_signal_handlers();
+
     let cfg = window_config(webview_data_dir);
     LaunchBuilder::desktop().with_cfg(cfg).launch(App);
 
@@ -210,17 +219,61 @@ fn main() {
         eprintln!("ais-runner: stopped {stopped} background process(es) on exit");
     }
 
-    // Same gap for connections.json: restore ran only from the Stop button, so
-    // closing the app left the committed, cloud-facing file patched.
+    restore_patched_files();
+}
+
+/// Put every file we patched back the way the developer had it.
+///
+/// Idempotent and lock-free enough to run from a panic hook or a signal
+/// handler: both `restore_all` calls drain a registry and skip anything they
+/// cannot claim. Calling it twice is a no-op the second time.
+///
+/// This is the *primary* cleanup. `heal_stale_patch` on the next project open
+/// is the safety net for what even this cannot cover — SIGKILL, a power cut, a
+/// func host that outlives the app.
+fn restore_patched_files() {
     let restored = ais_runner::services::connections_snapshot::restore_all();
     if restored > 0 {
         eprintln!("ais-runner: restored {restored} connections.json file(s) on exit");
     }
-
     let wf = ais_runner::services::workflow_auth::restore_all();
     if wf > 0 {
         eprintln!("ais-runner: restored OAuth in {wf} workflow.json file(s) on exit");
     }
+}
+
+/// `restore_patched_files`, but it cannot take the process down with it.
+///
+/// Called from the panic hook, which runs *before* unwinding — so if the panic
+/// happened inside the patched-file registry's critical section, that mutex is
+/// still held by this very thread and is neither poisoned nor free. Taking it
+/// again here would deadlock a process that is already dying. Another thread
+/// can block on it harmlessly instead, and the timeout means we give up rather
+/// than hang.
+fn restore_patched_files_bounded() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        restore_patched_files();
+        let _ = tx.send(());
+    });
+    if rx.recv_timeout(std::time::Duration::from_secs(5)).is_err() {
+        eprintln!("ais-runner: restore did not finish in time — files may still be patched");
+    }
+}
+
+/// Restore patched files and stop children on the signals that end a process
+/// without unwinding.
+///
+/// Without this, Ctrl-C in a terminal, a `kill`, or a logout leaves
+/// connections.json and every workflow.json stripped, with no process left to
+/// notice — the exact mess the next project open then has to clean up. SIGKILL
+/// is unreachable by definition; that one stays the safety net's problem.
+fn install_signal_handlers() {
+    ais_runner::services::signals::on_termination(true, || {
+        eprintln!("ais-runner: signalled — restoring patched files");
+        restore_patched_files();
+        let _ = ais_runner::services::process::stop_all();
+    });
 }
 
 fn window_config(webview_data_dir: std::path::PathBuf) -> dioxus::desktop::Config {

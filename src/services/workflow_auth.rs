@@ -38,8 +38,12 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-const CACHE_DIR: &str = ".ais-cache/workflows";
+use crate::services::cache_dir;
+use crate::services::net;
+
+const CACHE_SUBDIR: &str = "workflows";
 const OAUTH: &str = "ActiveDirectoryOAuth";
+const KEY: &str = "\"authentication\"";
 
 fn patched_dirs() -> &'static Mutex<HashSet<PathBuf>> {
     static DIRS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
@@ -47,11 +51,31 @@ fn patched_dirs() -> &'static Mutex<HashSet<PathBuf>> {
 }
 
 fn cache_dir(logic_apps_dir: &Path) -> PathBuf {
-    logic_apps_dir.join(CACHE_DIR)
+    cache_dir::root(logic_apps_dir).join(CACHE_SUBDIR)
 }
 
 fn backup_path(logic_apps_dir: &Path, workflow: &str) -> PathBuf {
     cache_dir(logic_apps_dir).join(format!("{workflow}.workflow.json.original"))
+}
+
+/// Byte offset of the `{` that opens this member's value, when the value is an
+/// object. `from` is the offset just past the key. `None` for every other value
+/// shape — a string, a number, `null` — which is what keeps the brace matcher
+/// from wandering into the next action.
+fn object_value_at(raw: &str, from: usize) -> Option<usize> {
+    let bytes = raw.as_bytes();
+    let mut k = from;
+    while bytes.get(k).is_some_and(u8::is_ascii_whitespace) {
+        k += 1;
+    }
+    if bytes.get(k)? != &b':' {
+        return None;
+    }
+    k += 1;
+    while bytes.get(k).is_some_and(u8::is_ascii_whitespace) {
+        k += 1;
+    }
+    (bytes.get(k)? == &b'{').then_some(k)
 }
 
 /// Remove every `"authentication": { … "ActiveDirectoryOAuth" … }` member.
@@ -63,11 +87,17 @@ pub fn strip(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut i = 0;
 
-    while let Some(rel) = raw[i..].find("\"authentication\"") {
+    while let Some(rel) = raw[i..].find(KEY) {
         let start = i + rel;
-        // Walk to the member's value and brace-match it.
-        let Some(open) = raw[start..].find('{').map(|o| start + o) else {
-            break;
+        // The value has to be an object *right here*. `"authentication":
+        // "@parameters('$authentication')"` is a documented shape, and an
+        // unbounded search for the next '{' would run straight past it and
+        // brace-match a later action's object instead — deleting every action
+        // in between and leaving invalid JSON behind.
+        let Some(open) = object_value_at(raw, start + KEY.len()) else {
+            out.push_str(&raw[i..start + 1]);
+            i = start + 1;
+            continue;
         };
         let mut depth = 0usize;
         let mut end = open;
@@ -106,8 +136,11 @@ pub fn strip(raw: &str) -> String {
         let before = bytes[..start]
             .iter()
             .rposition(|b| !b.is_ascii_whitespace());
-        if before.map(|p| bytes[p] == b',').unwrap_or(false) {
-            cut_from = before.unwrap();
+        if let Some(p) = before.filter(|p| bytes[*p] == b',') {
+            // Never reach back past text already emitted. Two `"authentication"`
+            // members separated by one comma would otherwise both claim it —
+            // the second producing a backwards range, which panics.
+            cut_from = p.max(i);
         } else if let Some(p) = bytes[end..].iter().position(|b| !b.is_ascii_whitespace()) {
             if bytes[end + p] == b',' {
                 cut_to = end + p + 1;
@@ -144,7 +177,7 @@ pub fn patch_all(logic_apps_dir: &Path) -> std::io::Result<Vec<String>> {
             }
             continue;
         }
-        std::fs::create_dir_all(cache_dir(logic_apps_dir))?;
+        cache_dir::ensure(logic_apps_dir, &cache_dir(logic_apps_dir))?;
         let backup = backup_path(logic_apps_dir, &name);
         if !backup.exists() {
             std::fs::write(&backup, &raw)?;
@@ -163,65 +196,133 @@ fn register(logic_apps_dir: &Path) {
     }
 }
 
-/// Put every snapshotted workflow.json back. Returns how many files moved.
-pub fn restore(logic_apps_dir: &Path) -> std::io::Result<usize> {
+/// What a restore pass did with the snapshots it found.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RestoreReport {
+    /// Files put back the way the developer had them.
+    pub restored: usize,
+    /// Workflows left untouched because the file on disk is not the patch we
+    /// wrote — edited, pulled, or replaced since. Their snapshot is kept.
+    ///
+    /// A snapshot records what we changed; it is not a licence to overwrite
+    /// whatever happens to be there now. Without this check, a crash that left
+    /// `.ais-cache/workflows` behind turns the next project open into a silent
+    /// `git checkout` of the developer's work.
+    pub foreign: Vec<String>,
+    /// Per-file failures, as (workflow, reason). The pass keeps going: one
+    /// unreadable snapshot must not strand every later file in its patched
+    /// state.
+    pub failed: Vec<(String, String)>,
+}
+
+impl RestoreReport {
+    /// Anything a caller would want to tell the user about.
+    pub fn is_quiet(&self) -> bool {
+        self.restored == 0 && self.foreign.is_empty() && self.failed.is_empty()
+    }
+}
+
+/// Put every snapshotted workflow.json back, skipping any the developer has
+/// since changed.
+pub fn restore(logic_apps_dir: &Path) -> RestoreReport {
     let dir = cache_dir(logic_apps_dir);
-    let mut restored = 0;
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let backup = entry.path();
-            let Some(name) = entry
-                .file_name()
-                .to_string_lossy()
-                .strip_suffix(".workflow.json.original")
-                .map(str::to_string)
-            else {
+    let mut report = RestoreReport::default();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return report;
+    };
+    for entry in entries.flatten() {
+        let backup = entry.path();
+        let Some(name) = entry
+            .file_name()
+            .to_string_lossy()
+            .strip_suffix(".workflow.json.original")
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let original = match std::fs::read_to_string(&backup) {
+            Ok(o) => o,
+            Err(e) => {
+                report.failed.push((name, e.to_string()));
                 continue;
-            };
-            let target = logic_apps_dir.join(&name).join("workflow.json");
-            let original = std::fs::read_to_string(&backup)?;
-            if std::fs::read_to_string(&target).ok().as_deref() != Some(original.as_str()) {
-                std::fs::write(&target, original)?;
-                restored += 1;
             }
-            let _ = std::fs::remove_file(&backup);
+        };
+        let target = logic_apps_dir.join(&name).join("workflow.json");
+        let current = std::fs::read_to_string(&target).ok();
+        match current.as_deref() {
+            // Already the way the developer had it.
+            Some(c) if c == original => {}
+            // Byte-for-byte what `patch_all` would have written from this
+            // snapshot, so it is ours and ours alone to put back. Comparing
+            // against `strip(original)` rather than testing the file for
+            // "looks patched" is the whole point: a file with no OAuth block
+            // in it is indistinguishable from a stripped one by inspection.
+            Some(c) if strip(&original) == c => {
+                if let Err(e) = std::fs::write(&target, &original) {
+                    report.failed.push((name, e.to_string()));
+                    continue;
+                }
+                report.restored += 1;
+            }
+            // Deleted while we held a snapshot of it — putting it back is
+            // strictly better than leaving the project a workflow short.
+            None => match std::fs::write(&target, &original) {
+                Ok(()) => report.restored += 1,
+                Err(e) => {
+                    report.failed.push((name, e.to_string()));
+                    continue;
+                }
+            },
+            // Something we never wrote. Hands off, and keep the snapshot.
+            Some(_) => {
+                report.foreign.push(name);
+                continue;
+            }
+        }
+        let _ = std::fs::remove_file(&backup);
+    }
+    // Fails while any snapshot is still held back; that is the intent.
+    let _ = std::fs::remove_dir(&dir);
+    if report.foreign.is_empty() {
+        if let Ok(mut dirs) = patched_dirs().lock() {
+            dirs.remove(logic_apps_dir);
         }
     }
-    let _ = std::fs::remove_dir(&dir);
-    if let Ok(mut dirs) = patched_dirs().lock() {
-        dirs.remove(logic_apps_dir);
-    }
-    Ok(restored)
+    report
 }
 
-/// Put back workflow.json files left patched by a session that never
-/// restored them — a hard crash, a force-quit, or (as happened once) func
-/// left running after ais-runner itself closed. `restore_all` only covers a
-/// clean exit from *this* process; this covers opening a project and finding
-/// someone else's mess, the case that bit us the day this function was
-/// written: 17 workflow.json files sat OAuth-stripped in the working tree
-/// with no ais-runner process left alive to put them back.
+/// Put back workflow.json files left patched by a session that never restored
+/// them — a hard crash, a force-quit, or func left running after ais-runner
+/// itself closed. `restore_all` only covers a clean exit from *this* process;
+/// this covers opening a project and finding someone else's mess.
 ///
-/// Skipped while something is serving :7071 — that's a func host from an
-/// earlier session still running, and it re-reads these files on workflow
-/// reload. Its exit isn't observable from here, so the patch waits for the
-/// next open.
-pub fn heal_stale_patch(logic_apps_dir: &Path) -> std::io::Result<usize> {
-    let dir = cache_dir(logic_apps_dir);
-    if !dir.is_dir() {
-        return Ok(0);
+/// This is a safety net, not the primary mechanism: the panic hook and the
+/// signal handler in `main` both call `restore_all`, so a crash normally cleans
+/// up after itself and this finds nothing.
+pub fn heal_stale_patch(logic_apps_dir: &Path) -> RestoreReport {
+    heal_stale_patch_with(logic_apps_dir, net::is_listening(net::FUNC_PORT))
+}
+
+/// The testable core. `func_running` is injected so unit tests do not depend on
+/// whatever happens to hold :7071 on the machine running them — which, on a
+/// developer box working on this project, is usually func.
+pub fn heal_stale_patch_with(logic_apps_dir: &Path, func_running: bool) -> RestoreReport {
+    let report = RestoreReport::default();
+    if !cache_dir(logic_apps_dir).is_dir() {
+        return report;
     }
-    if func_is_listening() {
+    if func_running {
+        // Deferred, not skipped. A func host from an earlier session re-reads
+        // these files on workflow reload, so swapping them now would change a
+        // running workflow mid-flight. Registering hands the job to this
+        // process's teardown, where `restore_all` picks it up on close.
+        //
+        // The probe cannot tell whose func that is; a host serving a different
+        // project is a false positive that costs nothing but the deferral.
         register(logic_apps_dir);
-        return Ok(0);
+        return report;
     }
     restore(logic_apps_dir)
-}
-
-fn func_is_listening() -> bool {
-    use std::net::{Ipv4Addr, SocketAddr, TcpStream};
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 7071));
-    TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)).is_ok()
 }
 
 /// Restore every directory patched in this session — teardown, where there is
@@ -231,7 +332,7 @@ pub fn restore_all() -> usize {
         Ok(d) => d.iter().cloned().collect(),
         Err(_) => return 0,
     };
-    dirs.iter().map(|d| restore(d).unwrap_or(0)).sum()
+    dirs.iter().map(|d| restore(d).restored).sum()
 }
 
 #[cfg(test)]
@@ -243,20 +344,20 @@ mod tests {
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// A `TempDir`, not a hand-rolled pid+nanos path: it cleans up even when
+    /// the test panics. `tempfile` was already a dev-dependency.
+    fn workspace() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
     /// The exact scenario that motivated this function: a patched workflow
     /// with no live ais-runner process — func not listening, nothing in the
     /// registry (fresh test process). Opening the project must put it back.
     #[test]
     fn heal_stale_patch_restores_when_func_is_not_listening() {
         let _g = serialised();
-        let ws = std::env::temp_dir().join(format!(
-            "ais-wfauth-heal-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let tmp = workspace();
+        let ws = tmp.path().to_path_buf();
         let wf_dir = ws.join("Send-Http-Get-Ignite-AddressBook");
         std::fs::create_dir_all(&wf_dir).unwrap();
         let wf = wf_dir.join("workflow.json");
@@ -267,26 +368,132 @@ mod tests {
         // simulate a crash: nothing registered for this dir in this process
         patched_dirs().lock().unwrap().remove(&ws);
 
-        assert_eq!(heal_stale_patch(&ws).unwrap(), 1);
+        assert_eq!(heal_stale_patch_with(&ws, false).restored, 1);
         assert_eq!(std::fs::read_to_string(&wf).unwrap(), WF);
+    }
 
-        std::fs::remove_dir_all(&ws).ok();
+    /// A func host from an earlier session is still reading these files, so the
+    /// swap waits — but the directory is registered, or this session's teardown
+    /// would skip it too and the patch would outlive us again.
+    #[test]
+    fn heal_stale_patch_defers_to_teardown_while_func_is_up() {
+        let _g = serialised();
+        let tmp = workspace();
+        let ws = tmp.path().to_path_buf();
+        std::fs::create_dir_all(ws.join("W")).unwrap();
+        std::fs::write(ws.join("W/workflow.json"), WF).unwrap();
+        patch_all(&ws).unwrap();
+        patched_dirs().lock().unwrap().remove(&ws);
+
+        let report = heal_stale_patch_with(&ws, true);
+        assert!(report.is_quiet());
+        assert!(!std::fs::read_to_string(ws.join("W/workflow.json"))
+            .unwrap()
+            .contains(OAUTH));
+        assert!(
+            patched_dirs().lock().unwrap().contains(&ws),
+            "deferred, so teardown has to know about it"
+        );
+        restore(&ws);
     }
 
     #[test]
     fn heal_stale_patch_is_a_no_op_with_no_backup() {
         let _g = serialised();
-        let ws = std::env::temp_dir().join(format!(
-            "ais-wfauth-heal-none-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&ws).unwrap();
-        assert_eq!(heal_stale_patch(&ws).unwrap(), 0);
-        std::fs::remove_dir_all(&ws).ok();
+        let tmp = workspace();
+        assert!(heal_stale_patch_with(tmp.path(), false).is_quiet());
+    }
+
+    /// The data-loss case, and the reason `restore` compares against
+    /// `strip(original)` instead of trusting the snapshot's existence. A crash
+    /// leaves `.ais-cache/workflows` behind; the developer then does the
+    /// obvious thing with 17 dirty files — `git checkout .` — and pulls. The
+    /// next project open must not quietly revert what they pulled.
+    #[test]
+    fn a_file_we_did_not_patch_is_never_overwritten() {
+        let _g = serialised();
+        let tmp = workspace();
+        let ws = tmp.path().to_path_buf();
+        std::fs::create_dir_all(ws.join("W")).unwrap();
+        let wf = ws.join("W/workflow.json");
+        std::fs::write(&wf, WF).unwrap();
+        patch_all(&ws).unwrap();
+        patched_dirs().lock().unwrap().remove(&ws);
+
+        let theirs = WF.replace("Execute_Strategy_stored_procedure", "Renamed_By_Hand");
+        std::fs::write(&wf, &theirs).unwrap();
+
+        let report = heal_stale_patch_with(&ws, false);
+        assert_eq!(report.restored, 0);
+        assert_eq!(report.foreign, ["W"]);
+        assert_eq!(
+            std::fs::read_to_string(&wf).unwrap(),
+            theirs,
+            "their work survived"
+        );
+        assert!(
+            backup_path(&ws, "W").exists(),
+            "snapshot kept — we still have not restored it"
+        );
+    }
+
+    /// One unreadable snapshot used to abort the whole pass with `?`, leaving
+    /// every later workflow stranded in its patched state.
+    #[test]
+    fn one_bad_snapshot_does_not_strand_the_others() {
+        let _g = serialised();
+        let tmp = workspace();
+        let ws = tmp.path().to_path_buf();
+        for name in ["A", "B"] {
+            std::fs::create_dir_all(ws.join(name)).unwrap();
+            std::fs::write(ws.join(name).join("workflow.json"), WF).unwrap();
+        }
+        patch_all(&ws).unwrap();
+        // A's snapshot becomes unreadable: a directory where a file should be.
+        std::fs::remove_file(backup_path(&ws, "A")).unwrap();
+        std::fs::create_dir(backup_path(&ws, "A")).unwrap();
+
+        let report = restore(&ws);
+        assert_eq!(report.restored, 1, "B was still put back");
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(report.failed[0].0, "A");
+        assert_eq!(
+            std::fs::read_to_string(ws.join("B/workflow.json")).unwrap(),
+            WF
+        );
+    }
+
+    /// `strip` used to search for the next `{` anywhere in the file, so a
+    /// string-valued `"authentication"` — a documented Logic Apps shape — made
+    /// it brace-match a *later* action and delete everything in between.
+    #[test]
+    fn a_string_valued_authentication_does_not_swallow_the_next_action() {
+        let raw = r#"{
+  "A": { "inputs": { "authentication": "@parameters('$authentication')" } },
+  "B": { "inputs": { "authentication": { "type": "ActiveDirectoryOAuth", "tenant": "t" } } }
+}"#;
+        let out = strip(raw);
+        assert!(out.contains("\"A\""), "action A survived: {out}");
+        assert!(!out.contains(OAUTH), "B's OAuth block still went: {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("still valid JSON");
+        assert_eq!(
+            v["A"]["inputs"]["authentication"], "@parameters('$authentication')",
+            "the string-valued member is left exactly as it was"
+        );
+    }
+
+    /// Two `"authentication"` members sharing one comma: the second used to
+    /// claim a comma the first had already consumed, producing a backwards
+    /// slice range and a panic.
+    #[test]
+    fn adjacent_authentication_members_do_not_panic() {
+        let raw = concat!(
+            r#"{"a":1,"authentication":{"type":"ActiveDirectoryOAuth"},"#,
+            r#""authentication":{"type":"ActiveDirectoryOAuth"}}"#
+        );
+        let out = strip(raw);
+        assert!(!out.contains(OAUTH));
+        serde_json::from_str::<serde_json::Value>(&out).expect("still valid JSON");
     }
 
     /// Verbatim shape from Send-Http-Get-Ignite-AddressBook.
@@ -386,7 +593,7 @@ mod tests {
         // a second start must not snapshot the patched file over the original
         assert!(patch_all(&ws).unwrap().is_empty());
 
-        assert_eq!(restore(&ws).unwrap(), 1);
+        assert_eq!(restore(&ws).restored, 1);
         assert_eq!(std::fs::read_to_string(&wf).unwrap(), WF);
 
         std::fs::remove_dir_all(&ws).ok();

@@ -7,34 +7,40 @@
 //! lives one level down, in a repetition, and the reason one level further, in
 //! the response body of the workflow it invoked.
 //!
-//! This module walks that trail once, for every caller: the scenario runner
-//! puts the one-line summary on the failed step, and the run detail panel can
-//! show the same conclusion without re-deriving it.
+//! This module walks that trail once, for every caller.
+
+use std::time::Duration;
 
 use crate::services::workflows::{self, ActionItem};
-
-/// The root cause of a failed run.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Cause {
-    /// One line, ready to put on a failed step.
-    pub summary: String,
-    /// Containers that only restated the failure, outermost first. Empty when
-    /// the failing action was top level.
-    pub trail: Vec<String>,
-}
 
 /// Codes an action reports when something *inside* it failed — never the
 /// reason, only the echo.
 const CONTAINER_CODES: [&str; 2] = ["ActionFailed", "ActionDependencyFailed"];
 
-/// Explain a failed run, following repetitions and invoked workflows.
-pub async fn explain(workflow: &str, run_id: &str) -> Option<Cause> {
+/// Total time this may spend talking to the runtime before giving up.
+///
+/// It runs on the failure path of a scenario step: the step has already failed
+/// and this only decorates the message. `reqwest` applies no timeout of its
+/// own, and `poll_until`'s deadline is not in play — that arm has already left
+/// the poll loop — so without a bound here a wedged func host hangs the whole
+/// scenario, forever, on the one path most likely to meet a wedged func host.
+const BUDGET: Duration = Duration::from_secs(10);
+
+/// One line naming the action that actually broke a failed run, ready to put on
+/// a failed step. `None` when the runtime will not say.
+pub async fn explain(workflow: &str, run_id: &str) -> Option<String> {
+    tokio::time::timeout(BUDGET, walk(workflow, run_id))
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn walk(workflow: &str, run_id: &str) -> Option<String> {
     let actions = workflows::list_actions(workflow, run_id).await.ok()?;
     let root = pick_root(&actions)?;
-    let trail = containers(&actions, &root.name);
 
     if let Some(summary) = describe(root) {
-        return Some(Cause { summary, trail });
+        return Some(summary);
     }
 
     // No error on the action itself. Two shapes to follow, in order: a Foreach
@@ -49,17 +55,11 @@ pub async fn explain(workflow: &str, run_id: &str) -> Option<Cause> {
                 .as_ref()
                 .and_then(|e| error_text(e.code.as_deref(), e.message.as_deref()))
             {
-                return Some(Cause {
-                    summary: format!("'{}' failed: {text}", root.name),
-                    trail,
-                });
+                return Some(format!("'{}' failed: {text}", root.name));
             }
             if let Some(detail) = outputs_of(workflow, run_id, &root.name, Some(&failed.name)).await
             {
-                return Some(Cause {
-                    summary: format!("'{}' failed: {detail}", root.name),
-                    trail,
-                });
+                return Some(format!("'{}' failed: {detail}", root.name));
             }
         }
     }
@@ -70,71 +70,69 @@ pub async fn explain(workflow: &str, run_id: &str) -> Option<Cause> {
         .clone()
         .or_else(|| root.properties.error.as_ref().and_then(|e| e.code.clone()))
         .unwrap_or_default();
-    let summary = match (detail, code.is_empty()) {
+    Some(match (detail, code.is_empty()) {
         (Some(d), _) => format!("'{}' failed: {d}", root.name),
         // Nothing to read: the code alone still beats a bare status.
         (None, false) => format!("'{}' failed: {code}", root.name),
         (None, true) => format!("'{}' failed", root.name),
-    };
-    Some(Cause { summary, trail })
+    })
 }
 
 /// Read an action's (or one repetition's) outputs and turn them into a reason.
 ///
-/// The listing endpoints carry no payload — only a SAS link on the individual
-/// record — so this is two hops: fetch the record, then follow `outputsLink`.
+/// `get_action_detail_at` already does the two hops — fetch the record, follow
+/// `outputsLink` — and inlines the blob under `/properties/outputs`, parsed
+/// when it was JSON and as raw text when it was not.
 async fn outputs_of(
     workflow: &str,
     run_id: &str,
     action: &str,
     rep: Option<&str>,
 ) -> Option<String> {
-    let base = format!(
-        "{}/workflows/{}/runs/{}/actions/{}",
-        workflows::BASE,
-        workflow,
-        run_id,
-        action
-    );
-    let url = match rep {
-        Some(r) => format!("{base}/repetitions/{r}"),
-        None => base,
-    };
-    let record: serde_json::Value = serde_json::from_str(&fetch(&url).await?).ok()?;
-    let uri = record
-        .pointer("/properties/outputsLink/uri")
-        .and_then(|u| u.as_str())?;
-    explain_outputs(&fetch(uri).await?)
+    let detail = workflows::get_action_detail_at(workflow, run_id, action, rep)
+        .await
+        .ok()?;
+    let outputs = detail.pointer("/properties/outputs")?;
+    match outputs.as_str() {
+        Some(text) => explain_outputs(text),
+        None => explain_outputs(&outputs.to_string()),
+    }
 }
 
-/// The failed action worth reporting: the first one carrying a real error, or
-/// a container as a last resort.
+/// The failed action worth reporting: the earliest one carrying a real error,
+/// or the earliest container as a last resort.
+///
+/// Ordered by start time rather than by position in the response. A run with
+/// two independent failures should name the one that happened first, not
+/// whichever the management API chose to list first — the ordering of that
+/// list is not part of its contract.
 fn pick_root(actions: &[ActionItem]) -> Option<&ActionItem> {
-    let mut fallback = None;
-    for a in actions.iter().filter(|a| a.properties.status == "Failed") {
-        let code = a
-            .properties
+    let mut failed: Vec<&ActionItem> = actions
+        .iter()
+        .filter(|a| a.properties.status == "Failed")
+        .collect();
+    // RFC 3339 in UTC, so lexical order is chronological order. Records with no
+    // start time sort last: they carry no evidence either way, and `~` is above
+    // every digit and letter a timestamp can start with.
+    failed.sort_by_key(|a| {
+        a.properties
+            .start_time
+            .clone()
+            .unwrap_or_else(|| "~".to_string())
+    });
+
+    let is_echo = |a: &ActionItem| {
+        a.properties
             .error
             .as_ref()
-            .and_then(|e| e.code.clone())
-            .unwrap_or_default();
-        if CONTAINER_CODES.contains(&code.as_str()) {
-            fallback.get_or_insert(a);
-        } else {
-            return Some(a);
-        }
-    }
-    fallback
-}
-
-/// Failed containers other than the root — the "it failed because something in
-/// it failed" chain, kept for the detail view.
-fn containers(actions: &[ActionItem], root: &str) -> Vec<String> {
-    actions
+            .and_then(|e| e.code.as_deref())
+            .is_some_and(|c| CONTAINER_CODES.contains(&c))
+    };
+    failed
         .iter()
-        .filter(|a| a.properties.status == "Failed" && a.name != root)
-        .map(|a| a.name.clone())
-        .collect()
+        .find(|a| !is_echo(a))
+        .or(failed.first())
+        .copied()
 }
 
 /// "'Name' failed: Code — message", when the action knows why it failed.
@@ -155,17 +153,14 @@ fn error_text(code: Option<&str>, message: Option<&str>) -> Option<String> {
     }
 }
 
-async fn fetch(url: &str) -> Option<String> {
-    reqwest::get(url).await.ok()?.text().await.ok()
-}
-
 /// Turn an action's raw outputs into a reason.
 ///
 /// A failed `Invoke a workflow` returns the child's HTTP response: the status
 /// code, the child's name in `x-ms-workflow-name`, and — for this platform's
 /// workflows — the error the child built under `ais.workflow.error`. Falls back
-/// to the usual `error`/`message` shapes so a plain HTTP action reads too.
-pub fn explain_outputs(body: &str) -> Option<String> {
+/// to the usual `error`/`message` shapes, and to a plain string body, so an
+/// ordinary HTTP action reads too.
+fn explain_outputs(body: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
     let status = v["statusCode"].as_i64();
     let callee = v
@@ -180,17 +175,22 @@ pub fn explain_outputs(body: &str) -> Option<String> {
     let message = inner
         .get("message")
         .and_then(|m| m.as_str())
-        .or_else(|| inner.get("code").and_then(|c| c.as_str()));
+        .or_else(|| inner.get("code").and_then(|c| c.as_str()))
+        // A string body *is* the message. Without this the only text the
+        // response carried is dropped and the reader gets a bare status code.
+        .or_else(|| inner.as_str())
+        .map(str::trim)
+        .filter(|m| !m.is_empty());
 
     let mut out = String::new();
     if let Some(s) = status {
         out.push_str(&s.to_string());
     }
     if let Some(c) = callee {
-        out.push_str(&format!(
-            "{}from {c}",
-            if out.is_empty() { "" } else { " " }
-        ));
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!("from {c}"));
     }
     match (action, message) {
         (Some(a), Some(m)) => out.push_str(&format!(" — action '{a}': {m}")),
@@ -208,11 +208,21 @@ mod tests {
     use crate::services::workflows::{ActionError, ActionProperties};
 
     fn action(name: &str, status: &str, code: Option<&str>, msg: Option<&str>) -> ActionItem {
+        at(name, status, code, msg, None)
+    }
+
+    fn at(
+        name: &str,
+        status: &str,
+        code: Option<&str>,
+        msg: Option<&str>,
+        start: Option<&str>,
+    ) -> ActionItem {
         ActionItem {
             name: name.into(),
             properties: ActionProperties {
                 status: status.into(),
-                start_time: None,
+                start_time: start.map(|s| s.into()),
                 end_time: None,
                 error: code.map(|c| ActionError {
                     code: Some(c.into()),
@@ -249,7 +259,6 @@ mod tests {
             summary.contains("BadRequest") && summary.contains("tenant"),
             "{summary}"
         );
-        assert_eq!(containers(&actions, &root.name), ["Module_=_Companies"]);
     }
 
     /// AB 05's shape: the only failed action outside containers carries no
@@ -278,6 +287,29 @@ mod tests {
         );
     }
 
+    /// Two independent failures: the answer is the one that happened first, not
+    /// the one the management API happened to list first.
+    #[test]
+    fn the_earliest_failure_wins_regardless_of_list_order() {
+        let actions = [
+            at(
+                "Later",
+                "Failed",
+                Some("Conflict"),
+                Some("b"),
+                Some("2024-05-02T10:00:02Z"),
+            ),
+            at(
+                "Earlier",
+                "Failed",
+                Some("BadRequest"),
+                Some("a"),
+                Some("2024-05-02T10:00:01Z"),
+            ),
+        ];
+        assert_eq!(pick_root(&actions).unwrap().name, "Earlier");
+    }
+
     /// The 400 a child workflow returns, as the runtime actually writes it.
     #[test]
     fn a_child_workflow_response_names_the_callee_and_its_failed_action() {
@@ -300,5 +332,21 @@ mod tests {
         // Nothing usable in, nothing invented out.
         assert!(explain_outputs("{}").is_none());
         assert!(explain_outputs("not json").is_none());
+    }
+
+    /// A string body is the only text the response carried; it used to be
+    /// dropped on the floor, leaving the reader a bare status code.
+    #[test]
+    fn a_string_body_is_the_message() {
+        assert_eq!(
+            explain_outputs(r#"{"statusCode":502,"body":"upstream refused the connection"}"#)
+                .unwrap(),
+            "502 — upstream refused the connection"
+        );
+        // Still nothing invented when the body is empty.
+        assert_eq!(
+            explain_outputs(r#"{"statusCode":502,"body":"   "}"#).unwrap(),
+            "502"
+        );
     }
 }

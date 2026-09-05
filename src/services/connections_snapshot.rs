@@ -22,6 +22,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+use crate::services::cache_dir;
+use crate::services::net;
 use crate::services::setup_manager;
 
 const BACKUP_NAME: &str = "connections.json.original";
@@ -38,7 +40,7 @@ fn patched_dirs() -> &'static Mutex<HashSet<PathBuf>> {
 }
 
 fn cache_dir(logic_apps_dir: &Path) -> PathBuf {
-    logic_apps_dir.join(".ais-cache")
+    cache_dir::root(logic_apps_dir)
 }
 
 pub fn backup_path(logic_apps_dir: &Path) -> PathBuf {
@@ -74,7 +76,7 @@ pub fn snapshot(logic_apps_dir: &Path) -> std::io::Result<bool> {
     if is_patched(&raw) {
         return Ok(false);
     }
-    std::fs::create_dir_all(cache_dir(logic_apps_dir))?;
+    cache_dir::ensure(logic_apps_dir, &cache_dir(logic_apps_dir))?;
     std::fs::write(backup_path(logic_apps_dir), raw)?;
     Ok(true)
 }
@@ -85,33 +87,52 @@ fn register(logic_apps_dir: &Path) {
     }
 }
 
-/// Put back a `connections.json` left patched by a session that never
-/// restored it — a crash, a force-quit, or func left running after ais-runner
-/// itself closed. `restore_all` only covers this process's own clean exit;
-/// this covers opening a project and finding someone else's mess.
-///
-/// Skipped while something is serving :7071 — that func host re-reads this
-/// file on workflow reload, so the patch waits for the next open rather than
-/// being pulled out from under a still-running instance.
-pub fn heal_stale_patch(logic_apps_dir: &Path) -> std::io::Result<bool> {
-    if !backup_path(logic_apps_dir).exists() {
-        return Ok(false);
-    }
-    let raw = std::fs::read_to_string(logic_apps_dir.join("connections.json"))?;
-    if !is_patched(&raw) {
-        return Ok(false);
-    }
-    if func_is_listening() {
-        register(logic_apps_dir);
-        return Ok(false);
-    }
-    restore(logic_apps_dir)
+/// What a restore pass did with the snapshot it found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Restore {
+    /// No snapshot on disk, or the file already matches it.
+    Nothing,
+    /// The pristine file is back.
+    Restored,
+    /// The file on disk is not the patch we wrote — edited, pulled, or
+    /// replaced since. Left untouched and the snapshot kept.
+    Foreign,
 }
 
-fn func_is_listening() -> bool {
-    use std::net::{Ipv4Addr, SocketAddr, TcpStream};
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 7071));
-    TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)).is_ok()
+/// Put back a `connections.json` left patched by a session that never restored
+/// it — a crash, a force-quit, or func left running after ais-runner itself
+/// closed. `restore_all` only covers this process's own clean exit; this covers
+/// opening a project and finding someone else's mess.
+///
+/// This is a safety net, not the primary mechanism: the panic hook and the
+/// signal handler in `main` both call `restore_all`, so a crash normally cleans
+/// up after itself and this finds nothing.
+pub fn heal_stale_patch(logic_apps_dir: &Path) -> std::io::Result<Restore> {
+    heal_stale_patch_with(logic_apps_dir, net::is_listening(net::FUNC_PORT))
+}
+
+/// The testable core. `func_running` is injected so unit tests do not depend on
+/// whatever happens to hold :7071 on the machine running them — which, on a
+/// developer box working on this project, is usually func.
+pub fn heal_stale_patch_with(
+    logic_apps_dir: &Path,
+    func_running: bool,
+) -> std::io::Result<Restore> {
+    if !backup_path(logic_apps_dir).exists() {
+        return Ok(Restore::Nothing);
+    }
+    if func_running {
+        // Deferred, not skipped. A func host from an earlier session re-reads
+        // this file on workflow reload, so swapping it now would change a
+        // running workflow mid-flight. Registering hands the job to this
+        // process's teardown, where `restore_all` picks it up on close.
+        //
+        // The probe cannot tell whose func that is; a host serving a different
+        // project is a false positive that costs nothing but the deferral.
+        register(logic_apps_dir);
+        return Ok(Restore::Nothing);
+    }
+    restore(logic_apps_dir)
 }
 
 /// Restore every directory patched in this session. Returns how many files
@@ -121,29 +142,54 @@ pub fn restore_all() -> usize {
         Ok(d) => d.iter().cloned().collect(),
         Err(_) => return 0,
     };
-    dirs.iter().filter(|d| restore(d).unwrap_or(false)).count()
+    dirs.iter()
+        .filter(|d| matches!(restore(d), Ok(Restore::Restored)))
+        .count()
 }
 
-/// Put the pristine `connections.json` back. Returns whether anything changed,
-/// so the caller only logs when the file actually moved.
-pub fn restore(logic_apps_dir: &Path) -> std::io::Result<bool> {
+/// Put the pristine `connections.json` back, unless the developer has changed
+/// it since we patched it.
+pub fn restore(logic_apps_dir: &Path) -> std::io::Result<Restore> {
     let backup = backup_path(logic_apps_dir);
     if !backup.exists() {
-        return Ok(false);
+        return Ok(Restore::Nothing);
     }
     let original = std::fs::read_to_string(&backup)?;
     let target = logic_apps_dir.join("connections.json");
-    if std::fs::read_to_string(&target).ok().as_deref() == Some(original.as_str()) {
+    let outcome = match std::fs::read_to_string(&target).ok().as_deref() {
+        // Already the way the developer had it.
+        Some(c) if c == original => Restore::Nothing,
+        // Byte-for-byte what the start path would have written from this
+        // snapshot, so it is ours to put back.
+        //
+        // `is_patched` is not good enough here, and that distinction is the
+        // whole point: a connections.json that already points at local
+        // emulators is a fixed point of the patch without us ever having
+        // touched it. Treating "is a fixed point" as "we patched this" hands a
+        // stale snapshot the authority to overwrite work we never did.
+        Some(c) if patched(&original) == c => {
+            std::fs::write(&target, &original)?;
+            Restore::Restored
+        }
+        // Deleted while we held a snapshot of it — putting it back is strictly
+        // better than leaving the project without its connections.
+        None => {
+            std::fs::write(&target, &original)?;
+            Restore::Restored
+        }
+        // Something we never wrote. Hands off, and keep the snapshot.
+        Some(_) => Restore::Foreign,
+    };
+    if outcome != Restore::Foreign {
+        // The snapshot has done its job. Leaving it behind makes every later
+        // session believe a patch is still outstanding.
+        let _ = std::fs::remove_file(&backup);
+        let _ = std::fs::remove_dir(cache_dir(logic_apps_dir));
         if let Ok(mut dirs) = patched_dirs().lock() {
             dirs.remove(logic_apps_dir);
         }
-        return Ok(false);
     }
-    std::fs::write(&target, original)?;
-    if let Ok(mut dirs) = patched_dirs().lock() {
-        dirs.remove(logic_apps_dir);
-    }
-    Ok(true)
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -157,17 +203,11 @@ mod tests {
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn workspace() -> PathBuf {
-        let ws = std::env::temp_dir().join(format!(
-            "ais-connsnap-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&ws).unwrap();
-        ws
+    /// A `TempDir`, not a hand-rolled pid+nanos path: it cleans up even when
+    /// the test panics, which the old `remove_dir_all` on the success path did
+    /// not. `tempfile` was already a dev-dependency.
+    fn workspace() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
     }
 
     /// A connections.json that the local patch actually rewrites, so the tests
@@ -188,7 +228,8 @@ mod tests {
     #[test]
     fn a_run_leaves_the_working_tree_clean() {
         let _g = serialised();
-        let ws = workspace();
+        let tmp = workspace();
+        let ws = tmp.path().to_path_buf();
         let conn = ws.join("connections.json");
         std::fs::write(&conn, CLOUD).unwrap();
 
@@ -202,10 +243,8 @@ mod tests {
         );
 
         // stop: the developer gets their file back untouched
-        assert!(restore(&ws).unwrap());
+        assert_eq!(restore(&ws).unwrap(), Restore::Restored);
         assert_eq!(std::fs::read_to_string(&conn).unwrap(), CLOUD);
-
-        std::fs::remove_dir_all(&ws).ok();
     }
 
     /// A crash leaves the file patched. Restarting must not snapshot that and
@@ -214,7 +253,8 @@ mod tests {
     #[test]
     fn restarting_over_a_patched_file_keeps_the_pristine_snapshot() {
         let _g = serialised();
-        let ws = workspace();
+        let tmp = workspace();
+        let ws = tmp.path().to_path_buf();
         let conn = ws.join("connections.json");
         std::fs::write(&conn, CLOUD).unwrap();
 
@@ -228,8 +268,6 @@ mod tests {
 
         restore(&ws).unwrap();
         assert_eq!(std::fs::read_to_string(&conn).unwrap(), CLOUD);
-
-        std::fs::remove_dir_all(&ws).ok();
     }
 
     /// The Stop button was the only caller of `restore`, so closing the app or
@@ -238,7 +276,8 @@ mod tests {
     #[test]
     fn restore_all_cleans_up_a_run_that_never_stopped() {
         let _g = serialised();
-        let ws = workspace();
+        let tmp = workspace();
+        let ws = tmp.path().to_path_buf();
         let conn = ws.join("connections.json");
         std::fs::write(&conn, CLOUD).unwrap();
 
@@ -249,8 +288,6 @@ mod tests {
         assert!(restore_all() >= 1);
         assert_eq!(std::fs::read_to_string(&conn).unwrap(), CLOUD);
         assert_eq!(restore_all(), 0, "nothing left registered");
-
-        std::fs::remove_dir_all(&ws).ok();
     }
 
     /// A previous session that exited without restoring leaves a snapshot on
@@ -259,7 +296,8 @@ mod tests {
     #[test]
     fn a_stale_snapshot_is_re_registered_on_the_next_start() {
         let _g = serialised();
-        let ws = workspace();
+        let tmp = workspace();
+        let ws = tmp.path().to_path_buf();
         let conn = ws.join("connections.json");
         std::fs::write(&conn, CLOUD).unwrap();
         snapshot(&ws).unwrap();
@@ -274,20 +312,19 @@ mod tests {
         );
 
         restore(&ws).unwrap();
-        std::fs::remove_dir_all(&ws).ok();
     }
 
     #[test]
     fn restore_without_a_snapshot_is_a_no_op() {
         let _g = serialised();
-        let ws = workspace();
+        let tmp = workspace();
+        let ws = tmp.path().to_path_buf();
         std::fs::write(ws.join("connections.json"), CLOUD).unwrap();
-        assert!(!restore(&ws).unwrap());
+        assert_eq!(restore(&ws).unwrap(), Restore::Nothing);
         assert_eq!(
             std::fs::read_to_string(ws.join("connections.json")).unwrap(),
             CLOUD
         );
-        std::fs::remove_dir_all(&ws).ok();
     }
 
     /// The scenario that motivated this function: a patched connections.json
@@ -297,7 +334,8 @@ mod tests {
     #[test]
     fn heal_stale_patch_restores_when_func_is_not_listening() {
         let _g = serialised();
-        let ws = workspace();
+        let tmp = workspace();
+        let ws = tmp.path().to_path_buf();
         let conn = ws.join("connections.json");
         std::fs::write(&conn, CLOUD).unwrap();
 
@@ -306,18 +344,75 @@ mod tests {
         // simulate a crash: nothing registered for this dir in this process
         patched_dirs().lock().unwrap().remove(&ws);
 
-        assert!(heal_stale_patch(&ws).unwrap());
+        assert_eq!(
+            heal_stale_patch_with(&ws, false).unwrap(),
+            Restore::Restored
+        );
         assert_eq!(std::fs::read_to_string(&conn).unwrap(), CLOUD);
+    }
 
-        std::fs::remove_dir_all(&ws).ok();
+    /// A func host from an earlier session is still reading the file, so the
+    /// swap waits — but the directory is registered, or this session's
+    /// teardown would skip it too and the patch would outlive us again.
+    #[test]
+    fn heal_stale_patch_defers_to_teardown_while_func_is_up() {
+        let _g = serialised();
+        let tmp = workspace();
+        let ws = tmp.path().to_path_buf();
+        let conn = ws.join("connections.json");
+        std::fs::write(&conn, CLOUD).unwrap();
+        snapshot(&ws).unwrap();
+        std::fs::write(&conn, patched(CLOUD)).unwrap();
+        patched_dirs().lock().unwrap().remove(&ws);
+
+        assert_eq!(heal_stale_patch_with(&ws, true).unwrap(), Restore::Nothing);
+        assert_eq!(std::fs::read_to_string(&conn).unwrap(), patched(CLOUD));
+        assert!(
+            patched_dirs().lock().unwrap().contains(&ws),
+            "deferred, so teardown has to know about it"
+        );
+        restore(&ws).unwrap();
     }
 
     #[test]
     fn heal_stale_patch_is_a_no_op_with_no_backup() {
         let _g = serialised();
-        let ws = workspace();
+        let tmp = workspace();
+        let ws = tmp.path().to_path_buf();
         std::fs::write(ws.join("connections.json"), CLOUD).unwrap();
-        assert!(!heal_stale_patch(&ws).unwrap());
-        std::fs::remove_dir_all(&ws).ok();
+        assert_eq!(heal_stale_patch_with(&ws, false).unwrap(), Restore::Nothing);
+    }
+
+    /// The data-loss case. A crash leaves a snapshot behind; the developer then
+    /// makes connections.json all-local themselves and commits it. That file is
+    /// a fixed point of the patch, so an `is_patched` test calls it "patched"
+    /// and the stale snapshot overwrites work we never did.
+    #[test]
+    fn a_file_we_did_not_patch_is_never_overwritten() {
+        let _g = serialised();
+        let tmp = workspace();
+        let ws = tmp.path().to_path_buf();
+        let conn = ws.join("connections.json");
+        std::fs::write(&conn, CLOUD).unwrap();
+        snapshot(&ws).unwrap();
+        // crash, then the developer rewrites the file by hand and commits it
+        let theirs = patched(CLOUD).replace("AzureBlob", "AzureBlobRenamedByHand");
+        assert!(
+            is_patched(&theirs),
+            "test premise: their file is a fixed point"
+        );
+        std::fs::write(&conn, &theirs).unwrap();
+        patched_dirs().lock().unwrap().remove(&ws);
+
+        assert_eq!(heal_stale_patch_with(&ws, false).unwrap(), Restore::Foreign);
+        assert_eq!(
+            std::fs::read_to_string(&conn).unwrap(),
+            theirs,
+            "their work survived"
+        );
+        assert!(
+            backup_path(&ws).exists(),
+            "snapshot kept — we still have not restored it"
+        );
     }
 }
