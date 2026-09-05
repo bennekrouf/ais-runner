@@ -65,6 +65,7 @@ dependencies = [
  "fe2o3-amqp-types",
  "hmac",
  "indexmap 2.14.0",
+ "libc",
  "liquid",
  "liquid-core",
  "notify-rust",

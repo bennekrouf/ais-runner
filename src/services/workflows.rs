@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
-// Shared with run_explain, which follows links the list endpoints do not carry.
-pub const BASE: &str = "http://localhost:7071/runtime/webhooks/workflow/api/management";
+const BASE: &str = "http://localhost:7071/runtime/webhooks/workflow/api/management";
 
 /// The one remediation sentence for "Azurite's storage tables are unusable".
 ///
@@ -24,6 +23,39 @@ pub const AZURITE_RESET_HINT: &str =
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(reqwest::Client::new)
+}
+
+/// Percent-encode one path segment.
+///
+/// Workflow, run and action names reach these URLs from scenario files and
+/// from the runtime, and a name carrying `/`, `?`, `#` or a space otherwise
+/// changes which endpoint gets called rather than which resource. Unreserved
+/// set per RFC 3986; everything else is escaped.
+fn seg(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// A management-API URL from already-untrusted path segments.
+///
+/// `tail` is appended verbatim, so it is the place for the fixed parts of the
+/// path and any query string — never for a name.
+fn mgmt_url(segments: &[&str], tail: &str) -> String {
+    let mut url = String::from(BASE);
+    for s in segments {
+        url.push('/');
+        url.push_str(&seg(s));
+    }
+    url.push_str(tail);
+    url
 }
 
 // ── Workflow list ──────────────────────────────────────────────────────────
@@ -166,8 +198,10 @@ pub fn scan_all_connectors(
 }
 
 pub async fn list_workflows() -> Result<Vec<WorkflowItem>, String> {
-    let url = format!("{}/workflows", BASE);
-    let resp = reqwest::get(&url)
+    let url = mgmt_url(&["workflows"], "");
+    let resp = http_client()
+        .get(&url)
+        .send()
         .await
         .map_err(|e| format!("Cannot reach func start: {}", e))?;
 
@@ -294,7 +328,15 @@ pub fn scan_trigger_providers(logic_apps_dir: &str) -> std::collections::HashMap
 /// Returns the actual directory containing the workflow folders.
 /// It checks if the provided `base_dir` contains `logic_apps` or `logic-apps` subfolders.
 pub fn resolve_logic_apps_dir(base_dir: &str) -> std::path::PathBuf {
-    let p = std::path::Path::new(base_dir);
+    resolve_logic_apps_dir_at(std::path::Path::new(base_dir))
+}
+
+/// As [`resolve_logic_apps_dir`], for callers that already hold a `Path`.
+///
+/// Going through the `&str` form costs a `to_string_lossy()`, which silently
+/// mangles any path that is not valid UTF-8 — on the one platform where paths
+/// are bytes, that is a real project directory that stops resolving.
+pub fn resolve_logic_apps_dir_at(p: &std::path::Path) -> std::path::PathBuf {
     if p.join("logic_apps").exists() {
         p.join("logic_apps")
     } else if p.join("logic-apps").exists() {
@@ -479,9 +521,9 @@ fn extract_api_error(body: &serde_json::Value) -> Option<String> {
 }
 
 pub async fn get_callback_url(workflow: &str, trigger: &str) -> Result<String, String> {
-    let url = format!(
-        "{}/workflows/{}/triggers/{}/listCallbackUrl",
-        BASE, workflow, trigger
+    let url = mgmt_url(
+        &["workflows", workflow, "triggers", trigger],
+        "/listCallbackUrl",
     );
     let body: serde_json::Value = http_client()
         .post(&url)
@@ -508,7 +550,7 @@ pub async fn get_callback_url(workflow: &str, trigger: &str) -> Result<String, S
 
 /// For Recurrence / push triggers that have no callback URL — call /run directly.
 pub async fn run_trigger_direct(workflow: &str, trigger: &str, body: &str) -> Result<(), String> {
-    let url = format!("{}/workflows/{}/triggers/{}/run", BASE, workflow, trigger);
+    let url = mgmt_url(&["workflows", workflow, "triggers", trigger], "/run");
     let body_val: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
     let resp = http_client()
         .post(&url)
@@ -635,8 +677,15 @@ fn parse_value_array<T: for<'de> Deserialize<'de>>(
 /// Status of one run, or None when it cannot be read. Used to tell "the action
 /// has not run yet" apart from "the run finished without ever reaching it".
 pub async fn run_status(workflow: &str, run_id: &str) -> Option<String> {
-    let url = format!("{}/workflows/{}/runs/{}", BASE, workflow, run_id);
-    let body: serde_json::Value = reqwest::get(&url).await.ok()?.json().await.ok()?;
+    let url = mgmt_url(&["workflows", workflow, "runs", run_id], "");
+    let body: serde_json::Value = http_client()
+        .get(&url)
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
     body["properties"]["status"]
         .as_str()
         .or_else(|| body["status"].as_str())
@@ -644,8 +693,10 @@ pub async fn run_status(workflow: &str, run_id: &str) -> Option<String> {
 }
 
 pub async fn list_runs(workflow: &str) -> Result<Vec<RunItem>, String> {
-    let url = format!("{}/workflows/{}/runs", BASE, workflow);
-    let body: serde_json::Value = reqwest::get(&url)
+    let url = mgmt_url(&["workflows", workflow, "runs"], "");
+    let body: serde_json::Value = http_client()
+        .get(&url)
+        .send()
         .await
         .map_err(|e| e.to_string())?
         .json()
@@ -654,8 +705,8 @@ pub async fn list_runs(workflow: &str) -> Result<Vec<RunItem>, String> {
 
     if body["error"]["code"].as_str() == Some("WorkflowNotFound") {
         // Check whether the workflow itself is accessible (design-time vs runtime split).
-        let wf_url = format!("{}/workflows/{}", BASE, workflow);
-        let wf_body: serde_json::Value = if let Ok(resp) = reqwest::get(&wf_url).await {
+        let wf_url = mgmt_url(&["workflows", workflow], "");
+        let wf_body: serde_json::Value = if let Ok(resp) = http_client().get(&wf_url).send().await {
             resp.json().await.unwrap_or_default()
         } else {
             serde_json::Value::Null
@@ -687,9 +738,16 @@ pub async fn list_runs(workflow: &str) -> Result<Vec<RunItem>, String> {
 /// - Some(false) → not registered in runtime at all (connection error blocked startup registration)
 /// - None        → management API unreachable (func not running or still starting)
 pub async fn not_found_hints(workflow: &str) -> Vec<String> {
-    let url = format!("{}/workflows/{}", BASE, workflow);
+    let url = mgmt_url(&["workflows", workflow], "");
     let in_runtime: Option<bool> = async {
-        let body: serde_json::Value = reqwest::get(&url).await.ok()?.json().await.ok()?;
+        let body: serde_json::Value = http_client()
+            .get(&url)
+            .send()
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()?;
         if body["error"]["code"].as_str() == Some("WorkflowNotFound") {
             Some(false)
         } else if body["name"].as_str().is_some() {
@@ -719,8 +777,8 @@ pub async fn not_found_hints(workflow: &str) -> Vec<String> {
 
 /// Lightweight existence check — fetches at most 1 run to minimise data transfer.
 pub async fn check_has_runs(workflow: &str) -> bool {
-    let url = format!("{}/workflows/{}/runs?$top=1", BASE, workflow);
-    let Ok(resp) = reqwest::get(&url).await else {
+    let url = mgmt_url(&["workflows", workflow, "runs"], "?$top=1");
+    let Ok(resp) = http_client().get(&url).send().await else {
         return false;
     };
     let Ok(body) = resp.json::<serde_json::Value>().await else {
@@ -758,6 +816,29 @@ pub struct ActionError {
     pub message: Option<String>,
 }
 
+/// URL of one action's record, or of one repetition of it.
+fn action_url(workflow: &str, run_id: &str, action: &str, rep: Option<&str>) -> String {
+    match rep {
+        Some(r) => mgmt_url(
+            &[
+                "workflows",
+                workflow,
+                "runs",
+                run_id,
+                "actions",
+                action,
+                "repetitions",
+                r,
+            ],
+            "",
+        ),
+        None => mgmt_url(
+            &["workflows", workflow, "runs", run_id, "actions", action],
+            "",
+        ),
+    }
+}
+
 /// Fetch the raw detail JSON for a single action, and inline the inputs/outputs
 /// blobs referenced by `inputsLink.uri` / `outputsLink.uri`. The actual error
 /// message for a failed connector call (e.g. SQL exception text) lives in the
@@ -767,11 +848,25 @@ pub async fn get_action_detail(
     run_id: &str,
     action: &str,
 ) -> Result<serde_json::Value, String> {
-    let url = format!(
-        "{}/workflows/{}/runs/{}/actions/{}",
-        BASE, workflow, run_id, action
-    );
-    let mut detail: serde_json::Value = reqwest::get(&url)
+    get_action_detail_at(workflow, run_id, action, None).await
+}
+
+/// One action's record, or one repetition of it.
+///
+/// An action nested in a `Foreach` carries no payload of its own — its status
+/// and its `outputsLink` live per iteration under `/repetitions/<name>`, and
+/// its own `/repetitions` endpoint 404s when it is top level. `rep` picks
+/// between the two shapes.
+pub async fn get_action_detail_at(
+    workflow: &str,
+    run_id: &str,
+    action: &str,
+    rep: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let url = action_url(workflow, run_id, action, rep);
+    let mut detail: serde_json::Value = http_client()
+        .get(&url)
+        .send()
         .await
         .map_err(|e| e.to_string())?
         .json()
@@ -779,7 +874,7 @@ pub async fn get_action_detail(
         .map_err(|e| e.to_string())?;
 
     async fn fetch_blob(uri: &str) -> serde_json::Value {
-        match reqwest::get(uri).await {
+        match http_client().get(uri).send().await {
             Ok(resp) => match resp.text().await {
                 Ok(text) => {
                     serde_json::from_str(&text).unwrap_or_else(|_| serde_json::Value::String(text))
@@ -817,11 +912,13 @@ pub async fn get_action_detail(
 
 pub async fn list_actions(workflow: &str, run_id: &str) -> Result<Vec<ActionItem>, String> {
     // $expand=outputLinks makes the runtime include child actions of scopes
-    let url = format!(
-        "{}/workflows/{}/runs/{}/actions?$expand=outputLinks",
-        BASE, workflow, run_id
+    let url = mgmt_url(
+        &["workflows", workflow, "runs", run_id, "actions"],
+        "?$expand=outputLinks",
     );
-    let body: serde_json::Value = reqwest::get(&url)
+    let body: serde_json::Value = http_client()
+        .get(&url)
+        .send()
         .await
         .map_err(|e| e.to_string())?
         .json()
@@ -871,11 +968,11 @@ pub async fn action_payload(
 
     // Nested-in-Foreach case: pull every iteration's payload instead.
     if text.trim().is_empty() {
-        let url = format!(
-            "{}/workflows/{}/runs/{}/actions/{}/repetitions",
-            BASE, workflow, run_id, action
+        let url = mgmt_url(
+            &["workflows", workflow, "runs", run_id, "actions", action],
+            "/repetitions",
         );
-        if let Ok(resp) = reqwest::get(&url).await {
+        if let Ok(resp) = http_client().get(&url).send().await {
             if let Ok(body) = resp.text().await {
                 let parsed: serde_json::Value =
                     serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
@@ -886,7 +983,7 @@ pub async fn action_payload(
                             .pointer(&format!("/properties/{link}/uri"))
                             .and_then(|v| v.as_str())
                         {
-                            if let Ok(r) = reqwest::get(uri).await {
+                            if let Ok(r) = http_client().get(uri).send().await {
                                 if let Ok(t) = r.text().await {
                                     text.push_str(&t);
                                     text.push('\n');
@@ -925,11 +1022,13 @@ pub async fn list_repetitions(
     run_id: &str,
     action: &str,
 ) -> Result<Vec<RepetitionItem>, String> {
-    let url = format!(
-        "{}/workflows/{}/runs/{}/actions/{}/repetitions",
-        BASE, workflow, run_id, action
+    let url = mgmt_url(
+        &["workflows", workflow, "runs", run_id, "actions", action],
+        "/repetitions",
     );
-    let body: serde_json::Value = reqwest::get(&url)
+    let body: serde_json::Value = http_client()
+        .get(&url)
+        .send()
         .await
         .map_err(|e| e.to_string())?
         .json()
@@ -945,11 +1044,22 @@ pub async fn list_repetition_actions(
     action: &str,
     rep: &str,
 ) -> Result<Vec<ActionItem>, String> {
-    let url = format!(
-        "{}/workflows/{}/runs/{}/actions/{}/repetitions/{}/actions",
-        BASE, workflow, run_id, action, rep
+    let url = mgmt_url(
+        &[
+            "workflows",
+            workflow,
+            "runs",
+            run_id,
+            "actions",
+            action,
+            "repetitions",
+            rep,
+        ],
+        "/actions",
     );
-    let body: serde_json::Value = reqwest::get(&url)
+    let body: serde_json::Value = http_client()
+        .get(&url)
+        .send()
         .await
         .map_err(|e| e.to_string())?
         .json()
@@ -964,11 +1074,13 @@ pub async fn list_scoped_repetitions(
     run_id: &str,
     action: &str,
 ) -> Result<Vec<ActionItem>, String> {
-    let url = format!(
-        "{}/workflows/{}/runs/{}/actions/{}/scopedRepetitions",
-        BASE, workflow, run_id, action
+    let url = mgmt_url(
+        &["workflows", workflow, "runs", run_id, "actions", action],
+        "/scopedRepetitions",
     );
-    let body: serde_json::Value = reqwest::get(&url)
+    let body: serde_json::Value = http_client()
+        .get(&url)
+        .send()
         .await
         .map_err(|e| e.to_string())?
         .json()

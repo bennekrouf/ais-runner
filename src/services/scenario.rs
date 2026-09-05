@@ -1681,7 +1681,20 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
 
         // ── Synchronisation ─────────────────────────────────────────────
         Sleep { ms } => {
-            tokio::time::sleep(Duration::from_millis(*ms)).await;
+            // Chunked rather than one long await: a cancel arriving during a
+            // 30 s sleep has to stop the run now, not thirty seconds from now.
+            // Every other waiting step already checks, through `poll_until`.
+            let deadline = std::time::Instant::now() + Duration::from_millis(*ms);
+            loop {
+                if ctx.cancel.is_cancelled() {
+                    return Err(CANCELLED.to_string());
+                }
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                tokio::time::sleep(left.min(POLL_INTERVAL)).await;
+            }
             Ok(format!("slept {ms}ms"))
         }
         WaitForMessage {
@@ -1712,6 +1725,11 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
             // the await.
             let winner: std::cell::RefCell<Option<String>> = Default::default();
 
+            // Resolved once, here, rather than inside the closure: the answer
+            // comes off disk, cannot change while we wait, and that closure
+            // runs every POLL_INTERVAL until the timeout expires.
+            let unwinnable = stateless_run_history_error(&ctx.project_root, workflow);
+
             let detail = poll_until(*timeout_ms, &ctx.cancel, || async {
                 match latest_terminal_run(workflow, floor, &claimed).await {
                     Some((run_name, status)) if status == *expect_status => {
@@ -1726,7 +1744,9 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                         // A bare status is a dead end: the reader still has to
                         // open the run and hunt for the action that broke. Name
                         // it here, with its error.
-                        let why = match failing_action(workflow, &run_name).await {
+                        let why = match crate::services::run_explain::explain(workflow, &run_name)
+                            .await
+                        {
                             Some(a) => format!(" — {a}"),
                             None => String::new(),
                         };
@@ -1752,27 +1772,17 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                         // host is told to, so waiting for one is unwinnable —
                         // and the emulator-ordering hint below is a red herring
                         // that costs the full timeout before it is even shown.
-                        Ok(runs)
-                            if runs.is_empty()
-                                && stateless_without_run_history(&ctx.project_root, workflow) =>
-                        {
-                            Err(format!(
-                                "'{workflow}' is a Stateless workflow and the host keeps no run \
-                                 history for it, so this step can never see a run. Either add \
-                                 \"Workflows.{workflow}.OperationOptions\": \
-                                 \"WithStatelessRunHistory\" to logic_apps/local.settings.json \
-                                 and restart func, or assert on its output queue instead of its \
-                                 run."
-                            ))
-                        }
-                        Ok(runs) if runs.is_empty() => Ok((
-                            false,
-                            format!(
-                                "'{workflow}' has no runs at all — if it is queue-triggered, \
-                                 func likely started before the Service Bus emulator and \
-                                 attached no listeners; restart func"
-                            ),
-                        )),
+                        Ok(runs) if runs.is_empty() => match &unwinnable {
+                            Some(why) => Err(why.clone()),
+                            None => Ok((
+                                false,
+                                format!(
+                                    "'{workflow}' has no runs at all — if it is queue-triggered, \
+                                     func likely started before the Service Bus emulator and \
+                                     attached no listeners; restart func"
+                                ),
+                            )),
+                        },
                         Ok(_) => Ok((false, "no terminal run yet".to_string())),
                     },
                 }
@@ -2167,32 +2177,30 @@ async fn latest_terminal_run(
         .map(|r| (r.name.clone(), r.properties.status.clone()))
 }
 
-/// Is this a Stateless workflow on a host that records no stateless runs?
+/// Why `wait for run` can never succeed for this workflow, if it cannot.
 ///
-/// Then `wait for run` is unwinnable: the runtime never writes a run record,
-/// so the step would burn its whole timeout and then blame the Service Bus
-/// listener ordering — the one cause it certainly is not.
-fn stateless_without_run_history(project_root: &Path, workflow: &str) -> bool {
-    let dir = workflows::resolve_logic_apps_dir(&project_root.to_string_lossy());
-    let wf: serde_json::Value =
-        match std::fs::read_to_string(dir.join(workflow).join("workflow.json")) {
-            Ok(t) => serde_json::from_str(&t).unwrap_or_default(),
-            Err(_) => return false,
-        };
+/// A Stateless workflow on a host that records no stateless runs writes no run
+/// record at all, so the step would burn its whole timeout and then blame the
+/// Service Bus listener ordering — the one cause it certainly is not.
+fn stateless_run_history_error(project_root: &Path, workflow: &str) -> Option<String> {
+    let dir = workflows::resolve_logic_apps_dir_at(project_root);
+    let wf: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join(workflow).join("workflow.json")).ok()?,
+    )
+    .unwrap_or_default();
     if !wf["kind"]
         .as_str()
         .unwrap_or_default()
         .eq_ignore_ascii_case("stateless")
     {
-        return false;
+        return None;
     }
-    // Opt-in run history, host-wide or per workflow.
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.join("local.settings.json")).unwrap_or_default(),
-    )
-    .unwrap_or_default();
-    // Documented form is per workflow; the host-wide key is accepted too
-    // because some workspaces set it that way.
+    // Opt-in run history. The documented form is per workflow; the host-wide
+    // key is accepted too because some workspaces set it that way.
+    let settings_path = dir.join("local.settings.json");
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap_or_default())
+            .unwrap_or_default();
     let per_workflow = format!("Workflows.{workflow}.OperationOptions");
     let opted_in = settings["Values"]
         .as_object()
@@ -2206,15 +2214,18 @@ fn stateless_without_run_history(project_root: &Path, workflow: &str) -> bool {
             })
         })
         .unwrap_or(false);
-    !opted_in
-}
-
-/// The action that actually broke a run, resolved once in `run_explain` so the
-/// step detail and the run panel agree on the answer.
-async fn failing_action(workflow: &str, run_id: &str) -> Option<String> {
-    crate::services::run_explain::explain(workflow, run_id)
-        .await
-        .map(|c| c.summary)
+    if opted_in {
+        return None;
+    }
+    // The path we actually resolved, not a guess: the layout may be
+    // `logic_apps`, `logic-apps`, or flat, and naming the wrong one sends the
+    // reader to a file that is not there.
+    Some(format!(
+        "'{workflow}' is a Stateless workflow and the host keeps no run history for it, so this \
+         step can never see a run. Either add \"{per_workflow}\": \"WithStatelessRunHistory\" to \
+         {} and restart func, or assert on its output queue instead of its run.",
+        settings_path.display()
+    ))
 }
 
 fn started_at_or_after(start_time: Option<&str>, floor: chrono::DateTime<chrono::Utc>) -> bool {
@@ -2356,8 +2367,9 @@ fn expand(text: &str, vars: &Vars) -> String {
 mod tests {
 
     #[test]
-    fn a_stateless_workflow_without_run_history_is_recognised() {
-        let root = std::env::temp_dir().join(format!("ais-stateless-{}", std::process::id()));
+    fn a_stateless_workflow_without_run_history_is_diagnosed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
         let la = root.join("logic_apps");
         std::fs::create_dir_all(la.join("Pivot")).unwrap();
         std::fs::write(
@@ -2366,7 +2378,12 @@ mod tests {
         )
         .unwrap();
         std::fs::write(la.join("local.settings.json"), r#"{"Values":{}}"#).unwrap();
-        assert!(stateless_without_run_history(&root, "Pivot"));
+        let why = stateless_run_history_error(root, "Pivot").expect("diagnosed");
+        assert!(why.contains("WithStatelessRunHistory"), "{why}");
+        assert!(
+            why.contains(&la.join("local.settings.json").display().to_string()),
+            "names the settings file it actually resolved: {why}"
+        );
 
         // Opting into stateless run history makes the wait winnable again.
         std::fs::write(
@@ -2374,15 +2391,14 @@ mod tests {
             r#"{"Values":{"Workflows.Pivot.OperationOptions":"WithStatelessRunHistory"}}"#,
         )
         .unwrap();
-        assert!(!stateless_without_run_history(&root, "Pivot"));
+        assert!(stateless_run_history_error(root, "Pivot").is_none());
 
         // Stateful workflows keep history regardless.
         std::fs::create_dir_all(la.join("Send")).unwrap();
         std::fs::write(la.join("Send/workflow.json"), r#"{"kind":"Stateful"}"#).unwrap();
-        assert!(!stateless_without_run_history(&root, "Send"));
+        assert!(stateless_run_history_error(root, "Send").is_none());
         // An unknown workflow must not invent a diagnosis.
-        assert!(!stateless_without_run_history(&root, "Nope"));
-        std::fs::remove_dir_all(&root).ok();
+        assert!(stateless_run_history_error(root, "Nope").is_none());
     }
 
     #[test]

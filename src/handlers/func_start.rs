@@ -674,12 +674,22 @@ pub fn handle_start(
 /// dirty with func never having run.
 fn restore_connections(dir: &str, push: &mut impl FnMut(String, LogLevel)) {
     let workspace = crate::services::workflows::resolve_logic_apps_dir(dir);
+    use crate::services::connections_snapshot::Restore;
     match crate::services::connections_snapshot::restore(&workspace) {
-        Ok(true) => push(
+        Ok(Restore::Restored) => push(
             "  ✓ Restored connections.json to its committed state".into(),
             LogLevel::Info,
         ),
-        Ok(false) => {}
+        Ok(Restore::Nothing) => {}
+        // Not a failure, and not something to fix silently: the file on disk
+        // is not what we patched, so someone changed it while func ran and
+        // only they know which version they want.
+        Ok(Restore::Foreign) => push(
+            "  ⚠ connections.json has been edited since it was patched — left as it is. \
+             Its pristine copy is in logic_apps/.ais-cache/connections.json.original"
+                .into(),
+            LogLevel::Warn,
+        ),
         Err(e) => push(
             format!(
                 "  ⚠ Could not restore connections.json ({e}) — it is still patched for local use"
@@ -687,16 +697,31 @@ fn restore_connections(dir: &str, push: &mut impl FnMut(String, LogLevel)) {
             LogLevel::Warn,
         ),
     }
-    match crate::services::workflow_auth::restore(&workspace) {
-        Ok(0) => {}
-        Ok(n) => push(
-            format!("  ✓ Restored ActiveDirectoryOAuth in {n} workflow(s)"),
+    let wf = crate::services::workflow_auth::restore(&workspace);
+    if wf.restored > 0 {
+        push(
+            format!(
+                "  ✓ Restored ActiveDirectoryOAuth in {} workflow(s)",
+                wf.restored
+            ),
             LogLevel::Info,
-        ),
-        Err(e) => push(
-            format!("  ⚠ Could not restore workflow.json files ({e}) — OAuth is still stripped"),
+        );
+    }
+    if !wf.foreign.is_empty() {
+        push(
+            format!(
+                "  ⚠ Edited since they were patched, so left as they are: {}. \
+                 Their pristine copies are in logic_apps/.ais-cache/workflows/",
+                wf.foreign.join(", ")
+            ),
             LogLevel::Warn,
-        ),
+        );
+    }
+    for (name, why) in &wf.failed {
+        push(
+            format!("  ⚠ Could not restore {name}/workflow.json ({why}) — OAuth is still stripped"),
+            LogLevel::Warn,
+        );
     }
 }
 

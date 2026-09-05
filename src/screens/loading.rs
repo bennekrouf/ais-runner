@@ -41,45 +41,85 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                 push_log("Starting initialization...".to_string(), LogLevel::Info);
 
                 // 0. Heal a patch left over from a session that never cleanly
-                //    stopped — func force-quit, ais-runner crashed, or the app
-                //    was closed while a func host from an *earlier* session
-                //    kept running. `restore_all()` covers a clean exit from
-                //    this process; it covers none of those, so a project can
-                //    sit with connections.json and 17 workflow.json files
-                //    OAuth-stripped indefinitely with no process left to
-                //    notice. Skipped for a workspace still serving :7071 —
-                //    that func host re-reads these files live.
+                //    stopped. The panic hook and the signal handler in `main`
+                //    both run teardown now, so this is the last line of defence
+                //    — a SIGKILL, a power cut, or a func host that outlived the
+                //    app that started it. Neither restore overwrites a file the
+                //    developer has changed since; anything it declines to touch
+                //    is reported here rather than left to be discovered later.
                 {
                     let d = dir.clone();
-                    let (conn_healed, wf_healed): (bool, usize) =
-                        tokio::task::spawn_blocking(move || {
-                            let logic_apps_dir =
-                                crate::services::workflows::resolve_logic_apps_dir(&d);
-                            let conn = crate::services::connections_snapshot::heal_stale_patch(
+                    let healed = tokio::task::spawn_blocking(move || {
+                        let logic_apps_dir = crate::services::workflows::resolve_logic_apps_dir(&d);
+                        (
+                            crate::services::connections_snapshot::heal_stale_patch(
                                 &logic_apps_dir,
-                            )
-                            .unwrap_or(false);
-                            let wf =
-                                crate::services::workflow_auth::heal_stale_patch(&logic_apps_dir)
-                                    .unwrap_or(0);
-                            (conn, wf)
-                        })
-                        .await
-                        .unwrap_or_default();
-                    if conn_healed {
-                        push_log(
-                            "🔧 Restored connections.json left patched by a previous session"
-                                .to_string(),
-                            LogLevel::Info,
-                        );
-                    }
-                    if wf_healed > 0 {
-                        push_log(
-                            format!(
-                                "🔧 Restored ActiveDirectoryOAuth in {wf_healed} workflow.json file(s) left patched by a previous session"
                             ),
-                            LogLevel::Info,
-                        );
+                            crate::services::workflow_auth::heal_stale_patch(&logic_apps_dir),
+                        )
+                    })
+                    .await;
+
+                    match healed {
+                        Ok((conn, wf)) => {
+                            use crate::services::connections_snapshot::Restore;
+                            match conn {
+                                Ok(Restore::Restored) => push_log(
+                                    "🔧 Restored connections.json left patched by a previous \
+                                     session"
+                                        .to_string(),
+                                    LogLevel::Info,
+                                ),
+                                Ok(Restore::Foreign) => push_log(
+                                    "⚠ connections.json was left patched by a previous session \
+                                     and has been edited since — left as it is. Its pristine copy \
+                                     is in logic_apps/.ais-cache/connections.json.original"
+                                        .to_string(),
+                                    LogLevel::Warn,
+                                ),
+                                Ok(Restore::Nothing) => {}
+                                Err(e) => push_log(
+                                    format!(
+                                        "⚠ Could not check connections.json for a stale patch: {e}"
+                                    ),
+                                    LogLevel::Warn,
+                                ),
+                            }
+                            if wf.restored > 0 {
+                                push_log(
+                                    format!(
+                                        "🔧 Restored ActiveDirectoryOAuth in {} workflow.json \
+                                         file(s) left patched by a previous session",
+                                        wf.restored
+                                    ),
+                                    LogLevel::Info,
+                                );
+                            }
+                            if !wf.foreign.is_empty() {
+                                push_log(
+                                    format!(
+                                        "⚠ Left patched by a previous session and edited since, \
+                                         so left as they are: {}. Their pristine copies are in \
+                                         logic_apps/.ais-cache/workflows/",
+                                        wf.foreign.join(", ")
+                                    ),
+                                    LogLevel::Warn,
+                                );
+                            }
+                            for (name, why) in &wf.failed {
+                                push_log(
+                                    format!("⚠ Could not restore {name}/workflow.json: {why}"),
+                                    LogLevel::Warn,
+                                );
+                            }
+                        }
+                        // A panic in the blocking task used to vanish into
+                        // `unwrap_or_default()`, leaving a project silently
+                        // patched with nothing in the log to explain it.
+                        Err(e) => push_log(
+                            format!("⚠ Stale-patch check did not run: {e}"),
+                            LogLevel::Warn,
+                        ),
                     }
                 }
 
