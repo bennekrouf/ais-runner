@@ -85,6 +85,35 @@ fn register(logic_apps_dir: &Path) {
     }
 }
 
+/// Put back a `connections.json` left patched by a session that never
+/// restored it — a crash, a force-quit, or func left running after ais-runner
+/// itself closed. `restore_all` only covers this process's own clean exit;
+/// this covers opening a project and finding someone else's mess.
+///
+/// Skipped while something is serving :7071 — that func host re-reads this
+/// file on workflow reload, so the patch waits for the next open rather than
+/// being pulled out from under a still-running instance.
+pub fn heal_stale_patch(logic_apps_dir: &Path) -> std::io::Result<bool> {
+    if !backup_path(logic_apps_dir).exists() {
+        return Ok(false);
+    }
+    let raw = std::fs::read_to_string(logic_apps_dir.join("connections.json"))?;
+    if !is_patched(&raw) {
+        return Ok(false);
+    }
+    if func_is_listening() {
+        register(logic_apps_dir);
+        return Ok(false);
+    }
+    restore(logic_apps_dir)
+}
+
+fn func_is_listening() -> bool {
+    use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 7071));
+    TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)).is_ok()
+}
+
 /// Restore every directory patched in this session. Returns how many files
 /// actually moved. Used by teardown, where there is no `push` to log through.
 pub fn restore_all() -> usize {
@@ -258,6 +287,37 @@ mod tests {
             std::fs::read_to_string(ws.join("connections.json")).unwrap(),
             CLOUD
         );
+        std::fs::remove_dir_all(&ws).ok();
+    }
+
+    /// The scenario that motivated this function: a patched connections.json
+    /// with no live ais-runner process to notice — func not listening,
+    /// nothing registered in this (fresh) process. Opening the project must
+    /// put it back rather than leave the committed file dirty forever.
+    #[test]
+    fn heal_stale_patch_restores_when_func_is_not_listening() {
+        let _g = serialised();
+        let ws = workspace();
+        let conn = ws.join("connections.json");
+        std::fs::write(&conn, CLOUD).unwrap();
+
+        snapshot(&ws).unwrap();
+        std::fs::write(&conn, patched(CLOUD)).unwrap();
+        // simulate a crash: nothing registered for this dir in this process
+        patched_dirs().lock().unwrap().remove(&ws);
+
+        assert!(heal_stale_patch(&ws).unwrap());
+        assert_eq!(std::fs::read_to_string(&conn).unwrap(), CLOUD);
+
+        std::fs::remove_dir_all(&ws).ok();
+    }
+
+    #[test]
+    fn heal_stale_patch_is_a_no_op_with_no_backup() {
+        let _g = serialised();
+        let ws = workspace();
+        std::fs::write(ws.join("connections.json"), CLOUD).unwrap();
+        assert!(!heal_stale_patch(&ws).unwrap());
         std::fs::remove_dir_all(&ws).ok();
     }
 }

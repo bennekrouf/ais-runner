@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
-const BASE: &str = "http://localhost:7071/runtime/webhooks/workflow/api/management";
+// Shared with run_explain, which follows links the list endpoints do not carry.
+pub const BASE: &str = "http://localhost:7071/runtime/webhooks/workflow/api/management";
 
 /// The one remediation sentence for "Azurite's storage tables are unusable".
 ///

@@ -194,6 +194,36 @@ pub fn restore(logic_apps_dir: &Path) -> std::io::Result<usize> {
     Ok(restored)
 }
 
+/// Put back workflow.json files left patched by a session that never
+/// restored them — a hard crash, a force-quit, or (as happened once) func
+/// left running after ais-runner itself closed. `restore_all` only covers a
+/// clean exit from *this* process; this covers opening a project and finding
+/// someone else's mess, the case that bit us the day this function was
+/// written: 17 workflow.json files sat OAuth-stripped in the working tree
+/// with no ais-runner process left alive to put them back.
+///
+/// Skipped while something is serving :7071 — that's a func host from an
+/// earlier session still running, and it re-reads these files on workflow
+/// reload. Its exit isn't observable from here, so the patch waits for the
+/// next open.
+pub fn heal_stale_patch(logic_apps_dir: &Path) -> std::io::Result<usize> {
+    let dir = cache_dir(logic_apps_dir);
+    if !dir.is_dir() {
+        return Ok(0);
+    }
+    if func_is_listening() {
+        register(logic_apps_dir);
+        return Ok(0);
+    }
+    restore(logic_apps_dir)
+}
+
+fn func_is_listening() -> bool {
+    use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 7071));
+    TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)).is_ok()
+}
+
 /// Restore every directory patched in this session — teardown, where there is
 /// no project directory to hand.
 pub fn restore_all() -> usize {
@@ -211,6 +241,52 @@ mod tests {
     fn serialised() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: Mutex<()> = Mutex::new(());
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The exact scenario that motivated this function: a patched workflow
+    /// with no live ais-runner process — func not listening, nothing in the
+    /// registry (fresh test process). Opening the project must put it back.
+    #[test]
+    fn heal_stale_patch_restores_when_func_is_not_listening() {
+        let _g = serialised();
+        let ws = std::env::temp_dir().join(format!(
+            "ais-wfauth-heal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let wf_dir = ws.join("Send-Http-Get-Ignite-AddressBook");
+        std::fs::create_dir_all(&wf_dir).unwrap();
+        let wf = wf_dir.join("workflow.json");
+        std::fs::write(&wf, WF).unwrap();
+
+        patch_all(&ws).unwrap();
+        assert!(!std::fs::read_to_string(&wf).unwrap().contains(OAUTH));
+        // simulate a crash: nothing registered for this dir in this process
+        patched_dirs().lock().unwrap().remove(&ws);
+
+        assert_eq!(heal_stale_patch(&ws).unwrap(), 1);
+        assert_eq!(std::fs::read_to_string(&wf).unwrap(), WF);
+
+        std::fs::remove_dir_all(&ws).ok();
+    }
+
+    #[test]
+    fn heal_stale_patch_is_a_no_op_with_no_backup() {
+        let _g = serialised();
+        let ws = std::env::temp_dir().join(format!(
+            "ais-wfauth-heal-none-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&ws).unwrap();
+        assert_eq!(heal_stale_patch(&ws).unwrap(), 0);
+        std::fs::remove_dir_all(&ws).ok();
     }
 
     /// Verbatim shape from Send-Http-Get-Ignite-AddressBook.

@@ -40,6 +40,49 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
 
                 push_log("Starting initialization...".to_string(), LogLevel::Info);
 
+                // 0. Heal a patch left over from a session that never cleanly
+                //    stopped — func force-quit, ais-runner crashed, or the app
+                //    was closed while a func host from an *earlier* session
+                //    kept running. `restore_all()` covers a clean exit from
+                //    this process; it covers none of those, so a project can
+                //    sit with connections.json and 17 workflow.json files
+                //    OAuth-stripped indefinitely with no process left to
+                //    notice. Skipped for a workspace still serving :7071 —
+                //    that func host re-reads these files live.
+                {
+                    let d = dir.clone();
+                    let (conn_healed, wf_healed): (bool, usize) =
+                        tokio::task::spawn_blocking(move || {
+                            let logic_apps_dir =
+                                crate::services::workflows::resolve_logic_apps_dir(&d);
+                            let conn = crate::services::connections_snapshot::heal_stale_patch(
+                                &logic_apps_dir,
+                            )
+                            .unwrap_or(false);
+                            let wf =
+                                crate::services::workflow_auth::heal_stale_patch(&logic_apps_dir)
+                                    .unwrap_or(0);
+                            (conn, wf)
+                        })
+                        .await
+                        .unwrap_or_default();
+                    if conn_healed {
+                        push_log(
+                            "🔧 Restored connections.json left patched by a previous session"
+                                .to_string(),
+                            LogLevel::Info,
+                        );
+                    }
+                    if wf_healed > 0 {
+                        push_log(
+                            format!(
+                                "🔧 Restored ActiveDirectoryOAuth in {wf_healed} workflow.json file(s) left patched by a previous session"
+                            ),
+                            LogLevel::Info,
+                        );
+                    }
+                }
+
                 // 1. Localize connections — ais-runner runs local-only, so any
                 //    MSI or cloud-pointing connection is adapted to a local
                 //    emulator/mock now, before the user wastes time debugging a
