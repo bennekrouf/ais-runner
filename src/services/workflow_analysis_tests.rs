@@ -471,9 +471,9 @@ fn liquid_map_name_legacy_integration_account_style() {
 #[test]
 fn http_host_is_extracted_and_path_stripped() {
     let a = analyse(&wf(serde_json::json!({
-        "Call": { "type": "Http", "inputs": { "uri": "https://func-tom-dev-chn-001.azurewebsites.net/api/ConvertXlsxToTxt" } }
+        "Call": { "type": "Http", "inputs": { "uri": "https://func-example.azurewebsites.net/api/ConvertXlsxToTxt" } }
     })));
-    assert_eq!(a.http_calls, vec!["func-tom-dev-chn-001.azurewebsites.net"]);
+    assert_eq!(a.http_calls, vec!["func-example.azurewebsites.net"]);
 }
 
 #[test]
