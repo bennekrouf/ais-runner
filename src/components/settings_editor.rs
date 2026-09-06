@@ -8,8 +8,6 @@ use ais_core::servicebus as azure_sb;
 use dioxus::prelude::*;
 use indexmap::IndexMap;
 
-const DEFAULT_SUBSCRIPTION: &str = "b4c0de7e-1fe0-4d3b-90c7-e3e9c9e4b9db";
-
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 #[derive(Clone, PartialEq)]
@@ -100,10 +98,13 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
         link.and_then(|l| l.sb_namespace.clone())
             .unwrap_or_default()
     });
-    let mut subscription = use_signal(|| {
-        link.map(|l| l.subscription_id.clone())
-            .unwrap_or_else(|| DEFAULT_SUBSCRIPTION.to_string())
-    });
+    // Empty until the workspace is linked. This used to default to a real
+    // subscription id belonging to one tenant, which every other user of the
+    // tool then saw pre-filled — and shipped in every binary. There is no
+    // sensible default here: the "Load" button next to the field lists the
+    // subscriptions the signed-in account can actually see.
+    let mut subscription =
+        use_signal(|| link.map(|l| l.subscription_id.clone()).unwrap_or_default());
     let mut ns_options = use_signal(|| Vec::<String>::new());
     let mut ns_loading = use_signal(|| false);
     let mut sub_options = use_signal(|| Vec::<(String, String)>::new());
@@ -495,7 +496,7 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                 div { class: "settings-cfg-ns-wrap",
                     input {
                         class: "settings-cfg-val",
-                        placeholder: "e.g. logic-tom-dev-chn-001",
+                        placeholder: "e.g. logic-<project>-<env>-001",
                         value: "{sb_namespace}",
                         oninput: {
                             let dir = logic_apps_dir.clone();

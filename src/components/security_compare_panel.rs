@@ -377,13 +377,13 @@ pub fn SecurityComparePanel(props: SecurityComparePanelProps) -> Element {
                                 }
                                 label { "Resource group" }
                                 input {
-                                    placeholder: "rg-tom-dev-chn-001",
+                                    placeholder: "rg-<project>-<env>-001",
                                     value: "{buf.resource_group}",
                                     oninput: move |e| { edit_buf.write().resource_group = e.value(); }
                                 }
                                 label { "Cosmos account" }
                                 input {
-                                    placeholder: "cosmos-tom-dev-chn-001 (optional)",
+                                    placeholder: "cosmos-<project>-<env>-001 (optional)",
                                     value: "{buf.cosmos_account.clone().unwrap_or_default()}",
                                     oninput: move |e| {
                                         let v = e.value();
@@ -392,7 +392,7 @@ pub fn SecurityComparePanel(props: SecurityComparePanelProps) -> Element {
                                 }
                                 label { "Key vault" }
                                 input {
-                                    placeholder: "kv-tom-dev-chn-001 (optional)",
+                                    placeholder: "kv-<project>-<env>-001 (optional)",
                                     value: "{buf.key_vault.clone().unwrap_or_default()}",
                                     oninput: move |e| {
                                         let v = e.value();

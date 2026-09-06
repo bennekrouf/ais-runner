@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(
             classify(
                 "AIS_Functions_BaseUrl",
-                "https://func-tom-dev.azurewebsites.net"
+                "https://func-example.azurewebsites.net"
             ),
             SettingKind::Url,
             "a cloud function host has no local equivalent — mock it"

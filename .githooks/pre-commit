@@ -7,9 +7,28 @@
 #
 # Only *staged* files are touched — unstaged work is left alone.
 #
+# It also refuses a commit carrying a credential or a tenant's identity — the
+# same check CI runs, moved to the point where it is cheap to act on. A secret
+# caught here never reaches a push; a secret that reaches a push is public
+# whatever you do to the history afterwards.
+#
 # Enable once, per clone:
 #   git config core.hooksPath .githooks
+#
+# Bypass, if you are certain and in a hurry:
+#   git commit --no-verify
 set -e
+
+# Before the formatting, and unconditionally: a commit touching no .rs file at
+# all is exactly how the Service Bus key got in (it was local.settings.json).
+if command -v cargo >/dev/null 2>&1; then
+    if ! cargo test --quiet --test no_tenant_secrets; then
+        echo "pre-commit: refusing to commit. --no-verify overrides this." >&2
+        exit 1
+    fi
+else
+    echo "pre-commit: cargo not found, skipping the secret scan" >&2
+fi
 
 files=$(git diff --name-only --cached --diff-filter=ACM -- '*.rs')
 [ -z "$files" ] && exit 0

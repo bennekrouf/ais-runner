@@ -5,10 +5,10 @@
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "FUNCTIONS_WORKER_RUNTIME": "node",
     "SERVICE_BUS_CONNECTION_STRING": "Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;",
-    "WEBSITE_SITE_NAME": "logic-tom-dev-chn-001",
+    "WEBSITE_SITE_NAME": "logic-sample-local-001",
     "WORKFLOWS_LOCATION_NAME": "francecentral",
     "WORKFLOWS_MANAGEMENT_BASE_URI": "http://127.0.0.1:7079",
-    "WORKFLOWS_RESOURCE_GROUP_NAME": "rg-tom-dev-chn-001",
-    "WORKFLOWS_SUBSCRIPTION_ID": "b4c0de7e-1fe0-4d3b-90c7-e3e9c9e4b9db"
+    "WORKFLOWS_RESOURCE_GROUP_NAME": "rg-sample-local-001",
+    "WORKFLOWS_SUBSCRIPTION_ID": "00000000-0000-0000-0000-000000000000"
   }
 }

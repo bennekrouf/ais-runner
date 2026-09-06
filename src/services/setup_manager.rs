@@ -583,18 +583,18 @@ pub fn smart_default(key: &str) -> String {
 
     match key {
         // ── Blob endpoints ────────────────────────────────────────────────────
-        "AzureBlob_blobStorageEndpoint"    => AZURITE.into(),
-        "IgniteBlob_blobStorageEndpoint"   => AZURITE.into(),
-        "KyribaBlob_blobStorageEndpoint"   => AZURITE.into(),
-        "VentriksBlob_blobStorageEndpoint" => AZURITE.into(),
+        // Matched by suffix, as rule 1 above says. These were once four named
+        // arms — AzureBlob, IgniteBlob, KyribaBlob, VentriksBlob — every one
+        // returning the same value. Naming them bought nothing, hardcoded one
+        // customer's connection names into a tool meant to be generic, and
+        // silently failed for a project whose blob connection is called
+        // anything else.
+        k if k.ends_with("_blobStorageEndpoint") => AZURITE.into(),
         // Blob connection strings — used when parameterSetName is "connectionString".
         // MSI (parameterSetName "ManagedServiceIdentity") cannot authenticate to Azurite
         // locally because there is no Azure Instance Metadata Service endpoint.
         // Connection string auth works in both Azurite and Azure.
-        "AzureBlob_connectionString"    => "UseDevelopmentStorage=true".into(),
-        "IgniteBlob_connectionString"   => "UseDevelopmentStorage=true".into(),
-        "KyribaBlob_connectionString"   => "UseDevelopmentStorage=true".into(),
-        "VentriksBlob_connectionString" => "UseDevelopmentStorage=true".into(),
+        k if k.ends_with("Blob_connectionString") => "UseDevelopmentStorage=true".into(),
 
         // ── Standard func-host settings ───────────────────────────────────────
         "AzureWebJobsStorage"      => "UseDevelopmentStorage=true".into(),
