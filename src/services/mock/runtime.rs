@@ -138,6 +138,7 @@ impl MockRuntime {
 mod tests {
     use super::*;
     use crate::services::mock::events::ResponseSource;
+    use crate::services::sample_workspace;
 
     /// End-to-end smoke test: scan the real workspace if present, start the
     /// server, fire a probe HTTP request through the mock prefix, assert the
@@ -155,15 +156,15 @@ mod tests {
     #[ignore = "rewrites and restores a real workspace's local.settings.json — see doc comment"]
     #[tokio::test(flavor = "current_thread")]
     async fn e2e_runtime_against_real_workspace() {
-        let path = std::path::Path::new("/Users/mb/code/oryx/ais_tom_platform/logic_apps");
-        if !path.exists() {
-            eprintln!("skipping e2e — workspace not present");
+        let Some(path) = sample_workspace() else {
+            eprintln!("skipping e2e — set AIS_SAMPLE_WORKSPACE to run it");
             return;
-        }
+        };
+        let path = path.join("logic_apps");
 
         let bus = EventBus::new();
         let mut rx = bus.subscribe();
-        let runtime = MockRuntime::start(path, bus.clone())
+        let runtime = MockRuntime::start(&path, bus.clone())
             .await
             .expect("runtime should start");
         let port = runtime.port().expect("port");

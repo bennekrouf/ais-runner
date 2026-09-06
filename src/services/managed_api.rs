@@ -98,7 +98,7 @@ mod tests {
     use super::*;
 
     const CONNECTIONS: &str = r#"{
-        "functionConnections": { "IgniteInvoiceProcessing": {} },
+        "functionConnections": { "AcmeInvoiceProcessing": {} },
         "managedApiConnections": {
             "azureLogAnalyticsDataCollector": {},
             "sharepointonline": {},
@@ -120,7 +120,7 @@ mod tests {
         // Service providers and function connections all have local equivalents.
         assert!(!m.contains("serviceBus"));
         assert!(!m.contains("sql-server-ais"));
-        assert!(!m.contains("IgniteInvoiceProcessing"));
+        assert!(!m.contains("AcmeInvoiceProcessing"));
     }
 
     #[test]

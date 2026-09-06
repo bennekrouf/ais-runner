@@ -75,7 +75,7 @@ Two limits worth knowing:
 - Only **app settings** are rewritten. A workflow whose base URL arrives in the
   message payload, or is built from `variables(...)`, is never redirected — use
   a `run_process` stub for those (below).
-- When a setting doubles as the AAD `audience` (`"audience": "@{parameters('Jde_Url')}"`),
+- When a setting doubles as the AAD `audience` (`"audience": "@{parameters('Erp_Url')}"`),
   pointing it at localhost also changes what token is requested, and the call
   fails at auth before reaching the mock.
 

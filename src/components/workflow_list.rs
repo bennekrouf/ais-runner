@@ -111,7 +111,7 @@ enum FilterMode {
 }
 
 /// Does `name` match the filter box? `terms` are the already-lowercased,
-/// whitespace-split search words, OR'd together — typing "check kyriba" lists
+/// whitespace-split search words, OR'd together — typing "check globex" lists
 /// workflows matching either word. An empty term list matches everything, so a
 /// blank or whitespace-only box never blanks the list.
 fn matches_filter(name: &str, terms: &[&str]) -> bool {
@@ -128,7 +128,7 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
     let mut filter_mode = use_signal(|| FilterMode::All);
 
     let query = filter.read().to_lowercase();
-    // Space-separated terms are OR'd, so "check kyriba" lists every workflow
+    // Space-separated terms are OR'd, so "check globex" lists every workflow
     // matching *either* word. Collected once rather than per-row, and via
     // split_whitespace so a stray/trailing space never blanks the list.
     let terms: Vec<&str> = query.split_whitespace().collect();
@@ -291,7 +291,7 @@ pub fn WorkflowList(props: WorkflowListProps) -> Element {
                 }
                 input {
                     id: "wf-filter",
-                    placeholder: "Filter… (space = or, e.g. check kyriba)",
+                    placeholder: "Filter… (space = or, e.g. check globex)",
                     value: "{filter}",
                     oninput: move |e| filter.set(e.value()),
                 }
@@ -398,25 +398,25 @@ mod filter_tests {
 
     #[test]
     fn multi_word_query_ors_the_terms() {
-        let t = terms("check kyriba");
-        assert!(matches_filter("Check-Ignite-Payment-File", &t));
-        assert!(matches_filter("Rcv-Kyriba-files-broadcast", &t));
-        assert!(!matches_filter("Verify-Ignite-Voucher", &t));
+        let t = terms("check globex");
+        assert!(matches_filter("Check-Acme-Payment-File", &t));
+        assert!(matches_filter("Rcv-Globex-files-broadcast", &t));
+        assert!(!matches_filter("Verify-Acme-Voucher", &t));
     }
 
     #[test]
     fn single_word_still_works() {
         assert!(matches_filter(
-            "Rcv-Kyriba-files-broadcast",
-            &terms("kyriba")
+            "Rcv-Globex-files-broadcast",
+            &terms("globex")
         ));
-        assert!(!matches_filter("Verify-Ignite-Voucher", &terms("kyriba")));
+        assert!(!matches_filter("Verify-Acme-Voucher", &terms("globex")));
     }
 
     #[test]
     fn matching_is_case_insensitive() {
         // terms arrive already lowercased from the caller
-        assert!(matches_filter("Rcv-KYRIBA-files", &terms("kyriba")));
+        assert!(matches_filter("Rcv-GLOBEX-files", &terms("globex")));
     }
 
     #[test]
@@ -425,7 +425,7 @@ mod filter_tests {
         assert!(matches_filter("Anything", &terms("   ")));
         // trailing/duplicate spaces must not blank the list
         assert!(matches_filter(
-            "Check-Ignite-Payment-File",
+            "Check-Acme-Payment-File",
             &terms("  check   ")
         ));
     }
@@ -433,7 +433,7 @@ mod filter_tests {
     #[test]
     fn non_matching_query_hides_everything() {
         assert!(!matches_filter(
-            "Check-Ignite-Payment-File",
+            "Check-Acme-Payment-File",
             &terms("zzz qqq")
         ));
     }

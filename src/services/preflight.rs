@@ -403,7 +403,7 @@ mod tests {
     fn clean_workspace_has_no_blockers() {
         let ws = workspace(serde_json::json!({
             "Teams_connectionUrl": "https://switzerlandnorth.azure-apim.net/apim/teams/teams-local/",
-            "Jde_Url": "http://localhost:9000",
+            "Erp_Url": "http://localhost:9000",
         }));
         let (blockers, _, _) = check(ws.to_str().unwrap());
         assert!(blockers.is_empty(), "unexpected blockers: {blockers:?}");
@@ -428,20 +428,20 @@ mod tests {
     #[test]
     fn recoverable_mock_leftovers_are_healed_not_blocked() {
         let ws = workspace(serde_json::json!({
-            "Jde_Url": "http://localhost:3333/__mock__/Jde_Url",
-            "__mock_original__Jde_Url": "http://localhost:9000",
+            "Erp_Url": "http://localhost:3333/__mock__/Erp_Url",
+            "__mock_original__Erp_Url": "http://localhost:9000",
         }));
         let (blockers, sanitized, _) = check(ws.to_str().unwrap());
         assert!(blockers.is_empty(), "unexpected blockers: {blockers:?}");
-        assert_eq!(sanitized.recovered, vec!["Jde_Url".to_string()]);
+        assert_eq!(sanitized.recovered, vec!["Erp_Url".to_string()]);
         std::fs::remove_dir_all(&ws).ok();
     }
 
     #[test]
     fn an_unrecoverable_mock_url_blocks() {
         let ws = workspace(serde_json::json!({
-            "Jde_Url": "http://localhost:3333/__mock__/Jde_Url",
-            "__mock_original__Jde_Url": "http://localhost:2222/__mock__/Jde_Url",
+            "Erp_Url": "http://localhost:3333/__mock__/Erp_Url",
+            "__mock_original__Erp_Url": "http://localhost:2222/__mock__/Erp_Url",
         }));
         let (blockers, _, _) = check(ws.to_str().unwrap());
         assert!(
@@ -460,19 +460,19 @@ mod tests {
     fn a_lost_setting_is_recovered_from_appconfig_dev() {
         let root = workspace_with_appconfig(
             serde_json::json!({
-                "JdeUrl": "http://localhost:3333/__mock__/JdeUrl",
-                "__mock_original__JdeUrl": "http://localhost:2222/__mock__/JdeUrl",
+                "ErpUrl": "http://localhost:3333/__mock__/ErpUrl",
+                "__mock_original__ErpUrl": "http://localhost:2222/__mock__/ErpUrl",
             }),
             serde_json::json!({
-                "JdeUrl": "https://jdeproxynativeconnectordev-oryxenergies.msappproxy.net",
+                "ErpUrl": "https://erp-proxy.example.com",
             }),
         );
         let (blockers, sanitized, _) = check(root.to_str().unwrap());
         assert!(blockers.is_empty(), "unexpected blockers: {blockers:?}");
-        assert_eq!(sanitized.recovered, vec!["JdeUrl".to_string()]);
+        assert_eq!(sanitized.recovered, vec!["ErpUrl".to_string()]);
 
         let raw = std::fs::read_to_string(root.join("logic_apps/local.settings.json")).unwrap();
-        assert!(raw.contains("jdeproxynativeconnectordev"));
+        assert!(raw.contains("erp-proxy.example.com"));
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -483,8 +483,8 @@ mod tests {
     fn a_lost_blob_endpoint_falls_back_to_azurite() {
         let root = workspace_with_appconfig(
             serde_json::json!({
-                "IgniteBlob_blobStorageEndpoint": "http://localhost:3333/__mock__/IgniteBlob_blobStorageEndpoint",
-                "__mock_original__IgniteBlob_blobStorageEndpoint": "http://localhost:2222/__mock__/IgniteBlob_blobStorageEndpoint",
+                "AcmeBlob_blobStorageEndpoint": "http://localhost:3333/__mock__/AcmeBlob_blobStorageEndpoint",
+                "__mock_original__AcmeBlob_blobStorageEndpoint": "http://localhost:2222/__mock__/AcmeBlob_blobStorageEndpoint",
             }),
             serde_json::json!({}),
         );
@@ -492,7 +492,7 @@ mod tests {
         assert!(blockers.is_empty(), "unexpected blockers: {blockers:?}");
         assert_eq!(
             sanitized.recovered,
-            vec!["IgniteBlob_blobStorageEndpoint".to_string()]
+            vec!["AcmeBlob_blobStorageEndpoint".to_string()]
         );
 
         let raw = std::fs::read_to_string(root.join("logic_apps/local.settings.json")).unwrap();
@@ -526,7 +526,7 @@ mod tests {
         // `func start` already localizes connections.json in place, and the
         // scaffolded override is an empty template — so blocking here demanded
         // a file whose contents would change nothing. Create it and report it.
-        let ws = workspace(serde_json::json!({ "Jde_Url": "http://localhost:9000" }));
+        let ws = workspace(serde_json::json!({ "Erp_Url": "http://localhost:9000" }));
         std::fs::remove_file(ws.join("connections.local.json")).unwrap();
 
         let (blockers, _, repairs) = check(ws.to_str().unwrap());

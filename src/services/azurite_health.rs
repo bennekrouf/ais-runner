@@ -505,15 +505,15 @@ mod tests {
         let registered = vec![
             "AIS-GenericCatch".to_string(),
             "Test-AppConfig".to_string(),
-            "Check-Ignite-Payment-File".to_string(),
-            "Send-Kyriba-files".to_string(),
+            "Check-Acme-Payment-File".to_string(),
+            "Send-Globex-files".to_string(),
         ];
         let gap = provisioning_gap(&d, &registered).expect("gap expected");
         assert_eq!(gap.registered, 4);
         assert_eq!(gap.provisioned, 2);
         assert_eq!(
             gap.missing,
-            vec!["Check-Ignite-Payment-File", "Send-Kyriba-files"]
+            vec!["Check-Acme-Payment-File", "Send-Globex-files"]
         );
     }
 

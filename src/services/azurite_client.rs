@@ -199,8 +199,8 @@ pub fn list_blobs(container: &str) -> Result<Vec<BlobInfo>, String> {
 
 /// A blob-safe container name derived from `name`: lowercased, every run of
 /// invalid characters (dots, underscores, spaces, …) collapsed to a single
-/// hyphen, leading/trailing hyphens trimmed. `ais.ignite.kyriba.payment`
-/// → `ais-ignite-kyriba-payment`.
+/// hyphen, leading/trailing hyphens trimmed. `ais.acme.globex.payment`
+/// → `ais-acme-globex-payment`.
 pub fn suggest_container_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut prev_dash = false;
@@ -222,7 +222,7 @@ pub fn suggest_container_name(name: &str) -> String {
 /// Validate a container name against Azure's rules, returning a human-readable
 /// reason if invalid. Rules: 3–63 chars, lowercase letters/digits/hyphens only,
 /// must start and end with a letter or digit, no consecutive hyphens.
-/// (Names like `ais.ignite.kyriba.payment` fail on the dots — that's a Service
+/// (Names like `ais.acme.globex.payment` fail on the dots — that's a Service
 /// Bus entity name, not a blob container.)
 pub fn validate_container_name(name: &str) -> Result<(), String> {
     let hint = || {
@@ -684,16 +684,16 @@ mod container_name_tests {
 
     #[test]
     fn dotted_name_is_rejected_with_a_suggestion() {
-        let err = validate_container_name("ais.ignite.kyriba.payment").unwrap_err();
+        let err = validate_container_name("ais.acme.globex.payment").unwrap_err();
         assert!(err.contains("dots"), "got: {err}");
-        assert!(err.contains("ais-ignite-kyriba-payment"), "got: {err}");
+        assert!(err.contains("ais-acme-globex-payment"), "got: {err}");
     }
 
     #[test]
     fn suggestion_is_blob_safe() {
         assert_eq!(
-            suggest_container_name("ais.ignite.kyriba.payment"),
-            "ais-ignite-kyriba-payment"
+            suggest_container_name("ais.acme.globex.payment"),
+            "ais-acme-globex-payment"
         );
         assert_eq!(
             suggest_container_name("My_Container.Name"),
@@ -705,8 +705,8 @@ mod container_name_tests {
 
     #[test]
     fn valid_names_pass() {
-        assert!(validate_container_name("kyriba-input").is_ok());
-        assert!(validate_container_name("ais-ignite-kyriba-payment").is_ok());
+        assert!(validate_container_name("globex-input").is_ok());
+        assert!(validate_container_name("ais-acme-globex-payment").is_ok());
         assert!(validate_container_name("abc").is_ok());
         assert!(validate_container_name("a1-b2-c3").is_ok());
     }

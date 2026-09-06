@@ -6,13 +6,13 @@
 //! For each setting classified as `SettingKind::Url`, we replace
 //!
 //! ```text
-//! Jde_Url = "https://jde.example.com"
+//! Erp_Url = "https://erp.example.com"
 //! ```
 //!
 //! with
 //!
 //! ```text
-//! Jde_Url = "http://localhost:<mock-port>/__mock__/Jde_Url"
+//! Erp_Url = "http://localhost:<mock-port>/__mock__/Erp_Url"
 //! ```
 //!
 //! The mock server strips the `/__mock__/<name>` prefix at request time, so it
@@ -335,15 +335,15 @@ mod tests {
 
     #[test]
     fn parse_mock_path_with_remainder() {
-        let (name, rest) = parse_mock_path("/__mock__/Jde_Url/api/bsfn/Foo/executeasync").unwrap();
-        assert_eq!(name, "Jde_Url");
+        let (name, rest) = parse_mock_path("/__mock__/Erp_Url/api/bsfn/Foo/executeasync").unwrap();
+        assert_eq!(name, "Erp_Url");
         assert_eq!(rest, "/api/bsfn/Foo/executeasync");
     }
 
     #[test]
     fn parse_mock_path_no_remainder() {
-        let (name, rest) = parse_mock_path("/__mock__/Jde_Url").unwrap();
-        assert_eq!(name, "Jde_Url");
+        let (name, rest) = parse_mock_path("/__mock__/Erp_Url").unwrap();
+        assert_eq!(name, "Erp_Url");
         assert_eq!(rest, "/");
     }
 
@@ -355,12 +355,12 @@ mod tests {
     #[test]
     fn is_patched_detects_only_a_rewritten_file() {
         let clean: Value =
-            serde_json::json!({ "Values": { "Jde_Url": "https://real.example.com" } });
+            serde_json::json!({ "Values": { "Erp_Url": "https://real.example.com" } });
         assert!(!is_patched(&clean));
 
         let patched: Value = serde_json::json!({ "Values": {
-            "Jde_Url": "http://localhost:1234/__mock__/Jde_Url",
-            "__mock_original__Jde_Url": "https://real.example.com",
+            "Erp_Url": "http://localhost:1234/__mock__/Erp_Url",
+            "__mock_original__Erp_Url": "https://real.example.com",
         }});
         assert!(is_patched(&patched));
 

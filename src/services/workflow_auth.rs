@@ -1,13 +1,13 @@
 //! Strip `ActiveDirectoryOAuth` from workflow HTTP actions for local runs.
 //!
-//! Workflows that call Ignite/JDE authenticate with:
+//! Workflows that call Acme/ERP authenticate with:
 //!
 //! ```json
 //! "authentication": {
 //!     "type": "ActiveDirectoryOAuth",
-//!     "tenant": "@{parameters('OryxTenantId')}",
-//!     "clientId": "@{parameters('DabIgniteClientId')}",
-//!     "secret": "@{parameters('DabIgniteSecret')}"
+//!     "tenant": "@{parameters('PartnerTenantId')}",
+//!     "clientId": "@{parameters('AcmeClientId')}",
+//!     "secret": "@{parameters('AcmeSecret')}"
 //! }
 //! ```
 //!
@@ -358,7 +358,7 @@ mod tests {
         let _g = serialised();
         let tmp = workspace();
         let ws = tmp.path().to_path_buf();
-        let wf_dir = ws.join("Send-Http-Get-Ignite-AddressBook");
+        let wf_dir = ws.join("Send-Http-Get-Acme-AddressBook");
         std::fs::create_dir_all(&wf_dir).unwrap();
         let wf = wf_dir.join("workflow.json");
         std::fs::write(&wf, WF).unwrap();
@@ -496,14 +496,14 @@ mod tests {
         serde_json::from_str::<serde_json::Value>(&out).expect("still valid JSON");
     }
 
-    /// Verbatim shape from Send-Http-Get-Ignite-AddressBook.
+    /// Verbatim shape from Send-Http-Get-Acme-AddressBook.
     const WF: &str = r#"{
     "definition": {
         "actions": {
             "Execute_Strategy_stored_procedure": {
                 "type": "Http",
                 "inputs": {
-                    "uri": "@concat(variables('IgniteBasePath'),'/x')",
+                    "uri": "@concat(variables('AcmeBasePath'),'/x')",
                     "method": "POST",
                     "body": {
                         "StrategyId": "@body('P')?['StrategyId']"
@@ -511,10 +511,10 @@ mod tests {
                     "authentication": {
                         "type": "ActiveDirectoryOAuth",
                         "authority": "",
-                        "tenant": "@{parameters('OryxTenantId')}",
-                        "audience": "api://@{parameters('DabIgniteClientId')}",
-                        "clientId": "@{parameters('DabIgniteClientId')}",
-                        "secret": "@{parameters('DabIgniteSecret')}"
+                        "tenant": "@{parameters('PartnerTenantId')}",
+                        "audience": "api://@{parameters('AcmeClientId')}",
+                        "clientId": "@{parameters('AcmeClientId')}",
+                        "secret": "@{parameters('AcmeSecret')}"
                     },
                     "runtimeConfiguration": {
                         "contentTransfer": {
@@ -578,16 +578,13 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let wf_dir = ws.join("Send-Http-Get-Ignite-AddressBook");
+        let wf_dir = ws.join("Send-Http-Get-Acme-AddressBook");
         std::fs::create_dir_all(&wf_dir).unwrap();
         let wf = wf_dir.join("workflow.json");
         std::fs::write(&wf, WF).unwrap();
 
         let patched = patch_all(&ws).unwrap();
-        assert_eq!(
-            patched,
-            vec!["Send-Http-Get-Ignite-AddressBook".to_string()]
-        );
+        assert_eq!(patched, vec!["Send-Http-Get-Acme-AddressBook".to_string()]);
         assert!(!std::fs::read_to_string(&wf).unwrap().contains(OAUTH));
 
         // a second start must not snapshot the patched file over the original

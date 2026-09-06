@@ -112,7 +112,7 @@ fn path_of(url: &str) -> String {
     } else if url.starts_with('/') {
         url.to_string()
     } else {
-        // Template starts with a placeholder like `@{parameters('Jde_Url')}` —
+        // Template starts with a placeholder like `@{parameters('Erp_Url')}` —
         // strip up to the first `/`.
         match url.find('/') {
             Some(i) => url[i..].to_string(),
@@ -269,7 +269,7 @@ mod tests {
         // URL template can begin with @{parameters('...')} — path_of must still extract /api/...
         let r = router_of(vec![make_endpoint(
             "POST",
-            "@{parameters('Jde_Url')}/api/query/execute",
+            "@{parameters('Erp_Url')}/api/query/execute",
         )]);
         assert!(r
             .route(&Incoming {

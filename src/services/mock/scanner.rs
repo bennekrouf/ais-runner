@@ -434,20 +434,21 @@ fn stable_id(method: &str, url_template: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::sample_workspace;
 
     #[test]
     fn stable_id_is_deterministic() {
-        let a = stable_id("POST", "@{parameters('Jde_Url')}/api/x");
-        let b = stable_id("POST", "@{parameters('Jde_Url')}/api/x");
+        let a = stable_id("POST", "@{parameters('Erp_Url')}/api/x");
+        let b = stable_id("POST", "@{parameters('Erp_Url')}/api/x");
         assert_eq!(a, b);
-        assert_ne!(a, stable_id("GET", "@{parameters('Jde_Url')}/api/x"));
+        assert_ne!(a, stable_id("GET", "@{parameters('Erp_Url')}/api/x"));
     }
 
     #[test]
     fn hardcoded_detector() {
         assert!(is_hardcoded("https://example.com/api"));
-        assert!(!is_hardcoded("@{parameters('Jde_Url')}/api"));
-        assert!(!is_hardcoded("@{appsetting('Jde_Url')}/api"));
+        assert!(!is_hardcoded("@{parameters('Erp_Url')}/api"));
+        assert!(!is_hardcoded("@{appsetting('Erp_Url')}/api"));
     }
 
     #[test]
@@ -530,15 +531,19 @@ mod tests {
 
     /// Smoke test against the real workspace, if it's present on this machine.
     /// Skips silently otherwise so CI on a clean checkout doesn't fail.
+    /// Opt-in: point `AIS_SAMPLE_WORKSPACE` at a real Logic Apps project to
+    /// run this against one. Skipped otherwise, so a clean checkout and CI
+    /// both pass. It used to hardcode one developer's home directory, which
+    /// meant it ran on exactly one machine and named the client's repo.
     #[test]
     fn smoke_real_workspace() {
-        let path = std::path::Path::new("/Users/mb/code/oryx/ais_tom_platform/logic_apps");
-        if !path.exists() {
-            eprintln!("skipping smoke test — workspace not present");
+        let Some(path) = sample_workspace() else {
+            eprintln!("skipping smoke test — set AIS_SAMPLE_WORKSPACE to run it");
             return;
-        }
-        let (contract, cache_path) =
-            super::super::scan_workspace(path).expect("scan should succeed against real workspace");
+        };
+        let path = path.join("logic_apps");
+        let (contract, cache_path) = super::super::scan_workspace(&path)
+            .expect("scan should succeed against real workspace");
         eprintln!(
             "smoke: {} endpoints, {} settings, {} warnings → {}",
             contract.endpoints.len(),

@@ -1,10 +1,10 @@
 //! Resolves URL templates from workflows to concrete URLs.
 //!
-//! Logic Apps URLs typically look like `@{parameters('Jde_Url')}/api/bsfn/...`.
+//! Logic Apps URLs typically look like `@{parameters('Erp_Url')}/api/bsfn/...`.
 //! The chain is:
 //!   workflow URL template
-//!     → `parameters.json` (`"Jde_Url": { "value": "@appsetting('Jde_Url')" }`)
-//!     → `local.settings.json` (`"Jde_Url": "https://..."`)
+//!     → `parameters.json` (`"Erp_Url": { "value": "@appsetting('Erp_Url')" }`)
+//!     → `local.settings.json` (`"Erp_Url": "https://..."`)
 //!
 //! Resolver walks that chain once at construction, then `resolve()` does string
 //! interpolation per URL discovered by the scanner.
@@ -229,7 +229,7 @@ mod tests {
         // The exclusion above must stay narrow — a normal outbound API base URL
         // is exactly what the mock exists to intercept.
         assert_eq!(
-            classify("JdeUrl", "https://jde.example.com"),
+            classify("ErpUrl", "https://erp.example.com"),
             SettingKind::Url
         );
         assert_eq!(
@@ -268,12 +268,12 @@ mod tests {
         // The exclusion must not swallow genuine outbound dependencies, and
         // must not be fooled by a hostname that merely contains "localhost".
         for v in [
-            "https://jde.example.com",
+            "https://erp.example.com",
             "https://api.partner.io/v1",
             "https://localhost.evil.example.com/api",
         ] {
             assert_eq!(
-                classify("JdeUrl", v),
+                classify("ErpUrl", v),
                 SettingKind::Url,
                 "{v} should be mockable"
             );

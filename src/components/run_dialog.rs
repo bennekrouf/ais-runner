@@ -5,7 +5,7 @@ pub struct RunDialogProps {
     pub workflow: String,
     pub trigger_type: String,
     pub payload: String,
-    pub blob_container: Option<String>, // Some("kyriba-input") for blob triggers
+    pub blob_container: Option<String>, // Some("globex-input") for blob triggers
     pub queue_name: Option<String>,     // Some("ais.pivot.trading.je-local") for SB triggers
     pub on_run: EventHandler<(String, String)>, // (blob_name_or_queue, body)
     pub on_cancel: EventHandler<()>,
