@@ -2,7 +2,7 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SftpConnection {
-    pub connection_name: String, // key in connections.json, e.g. "sftpOryx"
+    pub connection_name: String, // key in connections.json, e.g. "sftpPartner"
     pub display_name: String,
     pub host_key: String, // appsetting key for sshHostAddress
     pub user_key: String, // appsetting key for username

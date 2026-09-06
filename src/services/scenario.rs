@@ -2411,16 +2411,16 @@ mod tests {
 
         // Same stub, restarted earlier — reuse is fine.
         assert!(holder_is_same_process(
-            &holder("/usr/bin/python3 .ais-runner/fixtures/ignite-stub-server.py 8899"),
+            &holder("/usr/bin/python3 .ais-runner/fixtures/acme-stub-server.py 8899"),
             "python3",
-            &args(&[".ais-runner/fixtures/ignite-stub-server.py", "8899"]),
+            &args(&[".ais-runner/fixtures/acme-stub-server.py", "8899"]),
         ));
         // A different project's mock on the same port is a stranger, even
         // though both run as python3.
         assert!(!holder_is_same_process(
-            &holder("/opt/python3 tests/kyriba/ignite-dab-mock.py --port 8899"),
+            &holder("/opt/python3 tests/globex/acme-dab-mock.py --port 8899"),
             "python3",
-            &args(&[".ais-runner/fixtures/ignite-stub-server.py", "8899"]),
+            &args(&[".ais-runner/fixtures/acme-stub-server.py", "8899"]),
         ));
         // With no script argument, the program name is all we have to go on.
         assert!(holder_is_same_process(
@@ -2489,7 +2489,7 @@ mod tests {
 
     #[test]
     fn steps_round_trip_through_json_with_defaults_applied() {
-        let json = r#"{ "action": "run_workflow", "workflow": "Pivot-Ignite-Invoice" }"#;
+        let json = r#"{ "action": "run_workflow", "workflow": "Pivot-Acme-Invoice" }"#;
         let step: Step = serde_json::from_str(json).unwrap();
         let Step::RunWorkflow {
             workflow,
@@ -2501,7 +2501,7 @@ mod tests {
         else {
             panic!("wrong variant")
         };
-        assert_eq!(workflow, "Pivot-Ignite-Invoice");
+        assert_eq!(workflow, "Pivot-Acme-Invoice");
         assert_eq!(trigger, "manual");
         assert_eq!(body, "");
         assert_eq!(capture, None);
@@ -2536,7 +2536,7 @@ mod tests {
             { "action": "upsert_cosmos_document", "database": "EventStore", "container": "events", "document": { "id": "1" } },
             { "action": "run_cosmos_query", "database": "EventStore", "container": "events", "query": "SELECT * FROM c" },
             { "action": "run_workflow", "workflow": "W", "trigger": "manual", "body": "{}" },
-            { "action": "set_settings", "values": { "kyriba:sla:checkTime": "{{NOW_CET_HH:mm}}" } },
+            { "action": "set_settings", "values": { "globex:sla:checkTime": "{{NOW_CET_HH:mm}}" } },
             { "action": "restart_func" },
             { "action": "restore_settings" },
             { "action": "sleep", "ms": 100 },
@@ -2652,7 +2652,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ais-grp-{}", std::process::id()));
         let scenarios = scenario_dir(&root);
         std::fs::create_dir_all(scenarios.join("smoke")).unwrap();
-        std::fs::create_dir_all(scenarios.join("regression").join("kyriba")).unwrap();
+        std::fs::create_dir_all(scenarios.join("regression").join("globex")).unwrap();
 
         let mk = |dir: &Path, name: &str| Scenario {
             name: name.to_string(),
@@ -2664,7 +2664,7 @@ mod tests {
         save(&mk(&scenarios, "Root Level")).unwrap();
         save(&mk(&scenarios.join("smoke"), "Smoke One")).unwrap();
         save(&mk(
-            &scenarios.join("regression").join("kyriba"),
+            &scenarios.join("regression").join("globex"),
             "Nested Two",
         ))
         .unwrap();
@@ -2682,7 +2682,7 @@ mod tests {
             groups.iter().flatten().find(|g| g.as_str() == "smoke"),
             Some(&"smoke".to_string())
         );
-        assert!(groups.iter().flatten().any(|g| g == "regression / kyriba"));
+        assert!(groups.iter().flatten().any(|g| g == "regression / globex"));
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -3210,13 +3210,13 @@ mod tests {
     fn expect_action_label_names_both_the_action_and_its_workflow() {
         assert_eq!(
             label_of(&Step::ExpectAction {
-                workflow: "Check-Ignite-Payment-File".into(),
+                workflow: "Check-Acme-Payment-File".into(),
                 action_name: "Send_success_notification".into(),
                 status: "Succeeded".into(),
                 contains: None,
                 timeout_ms: 1,
             }),
-            "expect Send_success_notification in Check-Ignite-Payment-File"
+            "expect Send_success_notification in Check-Acme-Payment-File"
         );
     }
 
@@ -3365,13 +3365,13 @@ mod stale_assertion_tests {
         let la = tmp.join("logic_apps");
         for (wf, body) in [
             (
-                "Check-Ignite-Payment-File",
+                "Check-Acme-Payment-File",
                 r#"{"definition":{"actions":{
                 "Scope_Processing":{"type":"Scope","actions":{
                     "Send_message_to_queue":{"type":"ServiceProvider"}}}}}}"#,
             ),
             (
-                "Send-Kyriba-files",
+                "Send-Globex-files",
                 r#"{"definition":{"actions":{
                 "Send_success_notification":{"type":"ServiceProvider"}}}}"#,
             ),
@@ -3406,14 +3406,14 @@ mod stale_assertion_tests {
     fn moved_action_is_reported_with_its_new_home() {
         let tmp = workspace();
         let scenario = scenario_with(vec![expect_action(
-            "Check-Ignite-Payment-File",
+            "Check-Acme-Payment-File",
             "Send_success_notification",
         )]);
         let problems = stale_assertions(&scenario, &tmp.to_string_lossy());
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("has no action named 'Send_success_notification'"));
         assert!(
-            problems[0].contains("it exists in Send-Kyriba-files"),
+            problems[0].contains("it exists in Send-Globex-files"),
             "{}",
             problems[0]
         );
@@ -3424,8 +3424,8 @@ mod stale_assertion_tests {
     fn valid_assertions_and_unknown_workflows_are_left_alone() {
         let tmp = workspace();
         let scenario = scenario_with(vec![
-            expect_action("Send-Kyriba-files", "Send_success_notification"),
-            expect_action("Check-Ignite-Payment-File", "Send_message_to_queue"),
+            expect_action("Send-Globex-files", "Send_success_notification"),
+            expect_action("Check-Acme-Payment-File", "Send_message_to_queue"),
             // no workflow.json on disk: cannot tell, so must not be flagged
             expect_action("Deployed-Only-Workflow", "Whatever"),
         ]);
@@ -3533,7 +3533,7 @@ mod service_probe_tests {
         let tmp = std::env::temp_dir().join(format!("ais-runner-javafn-{}", std::process::id()));
         let la = tmp.join("logic_apps");
         for (wf, body) in [
-            // nested inside a scope, the way Send-Kyriba-files calls it
+            // nested inside a scope, the way Send-Globex-files calls it
             (
                 "Calls-Function",
                 r#"{"definition":{"actions":{

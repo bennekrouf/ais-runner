@@ -3,7 +3,7 @@
 //!
 //! The existing `setup_manager::check_setup` only scans `connections.json`.
 //! In practice missing-key errors more often come from the workflows
-//! themselves — an HTTP action's `uri` template uses `@{parameters('Jde_Url')}`,
+//! themselves — an HTTP action's `uri` template uses `@{parameters('Erp_Url')}`,
 //! a SQL action's `connectionString` resolves through an `@appsetting('X')`,
 //! a Service Bus queue name is a literal `@appsetting('Y')` — and when one of
 //! those keys is absent the runtime spits a generic "param NULL" error
@@ -27,7 +27,7 @@ pub struct MissingSetting {
     pub key: String,
     /// Every workflow / file that references this key, sorted alphabetically
     /// so the report is stable across runs. Workflow entries are bare names
-    /// (e.g. `Verify-Ignite-Trade`); root-level files are surfaced with their
+    /// (e.g. `Verify-Acme-Trade`); root-level files are surfaced with their
     /// filename (`connections.json`, `parameters.json`).
     pub referenced_by: Vec<String>,
 }
@@ -182,10 +182,10 @@ mod tests {
     #[test]
     fn returns_empty_when_every_key_is_defined() {
         let tmp = make_project(
-            &[("Jde_Url", "https://jde")],
+            &[("Erp_Url", "https://erp")],
             &[(
                 "Wf",
-                r#"{"definition":{"actions":{"H":{"type":"Http","inputs":{"uri":"@{appsetting('Jde_Url')}"}}}}}"#,
+                r#"{"definition":{"actions":{"H":{"type":"Http","inputs":{"uri":"@{appsetting('Erp_Url')}"}}}}}"#,
             )],
             None,
         );
@@ -199,13 +199,13 @@ mod tests {
             &[], // no values
             &[(
                 "Wf",
-                r#"{"definition":{"actions":{"H":{"type":"Http","inputs":{"uri":"@{appsetting('Jde_Url')}"}}}}}"#,
+                r#"{"definition":{"actions":{"H":{"type":"Http","inputs":{"uri":"@{appsetting('Erp_Url')}"}}}}}"#,
             )],
             None,
         );
         let r = scan(tmp.path().to_str().unwrap());
         assert_eq!(r.len(), 1);
-        assert_eq!(r[0].key, "Jde_Url");
+        assert_eq!(r[0].key, "Erp_Url");
         assert_eq!(r[0].referenced_by, vec!["Wf".to_string()]);
     }
 

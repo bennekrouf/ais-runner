@@ -5,7 +5,7 @@
 //! lines — keeping it separate avoids drowning the actual logic on scroll.
 //!
 //! Fixtures are deliberately shaped like the real workflows this session
-//! touched (Check-Kyriba-File-Sla, Rcv-Event-Pivot, Send-Kyriba-files) rather
+//! touched (Check-Globex-File-Sla, Rcv-Event-Pivot, Send-Globex-files) rather
 //! than synthetic minimal JSON, so a change that breaks analysis on an actual
 //! production shape fails here first.
 
@@ -62,7 +62,7 @@ fn http_request_trigger() {
 
 #[test]
 fn recurrence_trigger_formats_schedule() {
-    // Check-Kyriba-File-Sla's real trigger shape.
+    // Check-Globex-File-Sla's real trigger shape.
     let a = analyse(&wf_triggered(
         serde_json::json!({
             "Recurrence_hourly": { "type": "Recurrence", "recurrence": { "frequency": "Hour", "interval": 1 } }
@@ -93,13 +93,13 @@ fn recurrence_trigger_defaults_interval_to_one_when_absent() {
 
 #[test]
 fn service_bus_trigger_records_queue_as_input() {
-    // Check-Ignite-Payment-File's real trigger.
+    // Check-Acme-Payment-File's real trigger.
     let a = analyse(&wf_triggered(
         serde_json::json!({
             "When_messages_are_available": {
                 "type": "ServiceProvider",
                 "inputs": {
-                    "parameters": { "queueName": "ais.ignite.kyriba.payment" },
+                    "parameters": { "queueName": "ais.acme.globex.payment" },
                     "serviceProviderConfiguration": {
                         "serviceProviderId": "/serviceProviders/serviceBus",
                         "operationId": "peekLockQueueMessagesV2"
@@ -112,23 +112,23 @@ fn service_bus_trigger_records_queue_as_input() {
     assert_eq!(
         a.trigger,
         TriggerKind::ServiceBus {
-            queue: "ais.ignite.kyriba.payment".into()
+            queue: "ais.acme.globex.payment".into()
         }
     );
-    assert_eq!(a.input_queues, vec!["ais.ignite.kyriba.payment"]);
+    assert_eq!(a.input_queues, vec!["ais.acme.globex.payment"]);
     // Must not also appear as an output — a trigger only ever consumes.
     assert!(a.output_queues.is_empty());
 }
 
 #[test]
 fn blob_trigger_uses_path_and_records_as_input() {
-    // Check-Ignite-Cashflow-File's real trigger.
+    // Check-Acme-Cashflow-File's real trigger.
     let a = analyse(&wf_triggered(
         serde_json::json!({
             "When_a_cashflow_blob_is_added": {
                 "type": "ServiceProvider",
                 "inputs": {
-                    "parameters": { "path": "kyriba-reports" },
+                    "parameters": { "path": "globex-reports" },
                     "serviceProviderConfiguration": {
                         "serviceProviderId": "/serviceProviders/AzureBlob",
                         "operationId": "whenABlobIsAddedOrModified"
@@ -141,10 +141,10 @@ fn blob_trigger_uses_path_and_records_as_input() {
     assert_eq!(
         a.trigger,
         TriggerKind::Blob {
-            container: "kyriba-reports".into()
+            container: "globex-reports".into()
         }
     );
-    assert_eq!(a.input_blobs, vec!["kyriba-reports"]);
+    assert_eq!(a.input_blobs, vec!["globex-reports"]);
 }
 
 #[test]
@@ -319,16 +319,16 @@ fn apiconnection_get_without_trailing_messages_is_input() {
 fn upload_is_output_read_is_input() {
     let a = analyse(&wf(serde_json::json!({
         "Upload": { "type": "ServiceProvider", "inputs": {
-            "parameters": { "containerName": "kyriba-archive" },
+            "parameters": { "containerName": "globex-archive" },
             "serviceProviderConfiguration": { "serviceProviderId": "/serviceProviders/AzureBlob", "operationId": "uploadBlob" }
         }},
         "Read": { "type": "ServiceProvider", "inputs": {
-            "parameters": { "containerName": "kyriba-reports" },
+            "parameters": { "containerName": "globex-reports" },
             "serviceProviderConfiguration": { "serviceProviderId": "/serviceProviders/AzureBlob", "operationId": "readBlob" }
         }}
     })));
-    assert_eq!(a.output_blobs, vec!["kyriba-archive"]);
-    assert_eq!(a.input_blobs, vec!["kyriba-reports"]);
+    assert_eq!(a.output_blobs, vec!["globex-archive"]);
+    assert_eq!(a.input_blobs, vec!["globex-reports"]);
 }
 
 #[test]
@@ -351,11 +351,11 @@ fn delete_is_classified_as_input_not_output() {
 fn list_blobs_is_input() {
     let a = analyse(&wf(serde_json::json!({
         "List": { "type": "ServiceProvider", "inputs": {
-            "parameters": { "containerName": "kyriba-reports" },
+            "parameters": { "containerName": "globex-reports" },
             "serviceProviderConfiguration": { "serviceProviderId": "/serviceProviders/AzureBlob", "operationId": "listBlobs" }
         }}
     })));
-    assert_eq!(a.input_blobs, vec!["kyriba-reports"]);
+    assert_eq!(a.input_blobs, vec!["globex-reports"]);
 }
 
 #[test]
@@ -495,7 +495,7 @@ fn http_url_field_is_an_accepted_alias_for_uri() {
 #[test]
 fn http_dynamic_uri_expression_is_not_reported_as_a_host() {
     let a = analyse(&wf(serde_json::json!({
-        "Call": { "type": "Http", "inputs": { "uri": "@parameters('DabIgniteUrl')" } }
+        "Call": { "type": "Http", "inputs": { "uri": "@parameters('AcmeUrl')" } }
     })));
     assert!(a.http_calls.is_empty());
 }
@@ -530,7 +530,7 @@ fn actions_nested_inside_if_true_branch_are_found() {
 
 #[test]
 fn actions_nested_inside_if_else_branch_are_found() {
-    // Check-Ignite-Payment-File's error path lives entirely in an else branch.
+    // Check-Acme-Payment-File's error path lives entirely in an else branch.
     let a = analyse(&wf(serde_json::json!({
         "Check": {
             "type": "If",
@@ -555,13 +555,13 @@ fn actions_nested_inside_foreach_are_found() {
             "type": "Foreach",
             "actions": {
                 "Upload": { "type": "ServiceProvider", "inputs": {
-                    "parameters": { "containerName": "kyriba-archive" },
+                    "parameters": { "containerName": "globex-archive" },
                     "serviceProviderConfiguration": { "serviceProviderId": "/serviceProviders/AzureBlob", "operationId": "uploadBlob" }
                 }}
             }
         }
     })));
-    assert_eq!(a.output_blobs, vec!["kyriba-archive"]);
+    assert_eq!(a.output_blobs, vec!["globex-archive"]);
 }
 
 #[test]
@@ -605,7 +605,7 @@ fn actions_nested_inside_switch_default_are_found() {
 
 #[test]
 fn deeply_nested_if_inside_foreach_inside_scope_is_found() {
-    // Mirrors Check-Ignite-Payment-File's real nesting depth: Scope -> Foreach
+    // Mirrors Check-Acme-Payment-File's real nesting depth: Scope -> Foreach
     // -> If -> action. Confirms recursion doesn't stop after one level.
     let a = analyse(&wf(serde_json::json!({
         "Scope1": { "type": "Scope", "actions": {

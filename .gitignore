@@ -10,6 +10,10 @@ installer/dist/
 
 # Secrets / config
 local.settings.json
+# ...except the sample project's, which is a committed fixture: a test reads it,
+# and tests/no_tenant_secrets.rs scans it on every run so it cannot quietly grow
+# a real connection string the way it did between May and September 2026.
+!test/logic-apps/local.settings.json
 .env
 .env.*
 

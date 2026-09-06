@@ -1234,7 +1234,7 @@ mod definition_scan_tests {
         // caller no longer posts the card; it moved into the callee
         fixture(
             &la,
-            "Check-Ignite-Payment-File",
+            "Check-Acme-Payment-File",
             r#"{"definition":{"actions":{
             "Scope_Processing":{"type":"Scope","actions":{
                 "Verify":{"type":"If","actions":{"Fail":{"type":"Terminate"}},
@@ -1242,14 +1242,14 @@ mod definition_scan_tests {
         );
         fixture(
             &la,
-            "Send-Kyriba-files",
+            "Send-Globex-files",
             r#"{"definition":{"actions":{
             "Scope_Processing":{"type":"Scope","actions":{
                 "Send_success_notification":{"type":"ServiceProvider"}}}}}}"#,
         );
 
         let root = tmp.to_string_lossy().into_owned();
-        let names = definition_action_names(&root, "Check-Ignite-Payment-File").unwrap();
+        let names = definition_action_names(&root, "Check-Acme-Payment-File").unwrap();
         assert!(
             names.contains("Send_message_to_queue"),
             "must see into else-branches"
@@ -1259,7 +1259,7 @@ mod definition_scan_tests {
 
         assert_eq!(
             workflows_containing_action(&root, "Send_success_notification"),
-            vec!["Send-Kyriba-files".to_string()]
+            vec!["Send-Globex-files".to_string()]
         );
 
         // absent workflow.json must be indistinguishable from "cannot tell"

@@ -47,3 +47,16 @@ pub mod workflow_analysis;
 pub mod workflow_auth;
 pub mod workflow_outline;
 pub mod workflows;
+
+/// A real Logic Apps project to exercise the workspace-level tests against,
+/// taken from `AIS_SAMPLE_WORKSPACE`. `None` when unset or absent, and those
+/// tests then skip.
+///
+/// They used to hardcode one developer's home directory, which meant they ran
+/// on exactly one machine, never in CI, and named a client's repository in the
+/// source of a public tool.
+#[cfg(test)]
+pub fn sample_workspace() -> Option<std::path::PathBuf> {
+    let p = std::path::PathBuf::from(std::env::var_os("AIS_SAMPLE_WORKSPACE")?);
+    p.is_dir().then_some(p)
+}

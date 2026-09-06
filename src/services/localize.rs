@@ -265,8 +265,8 @@ mod localize_e2e {
         // connections.json: MSI blob (mappable), MSI sql (mappable), MSI keyvault (NOT mappable)
         std::fs::write(dir.join("connections.json"), serde_json::to_string_pretty(&json!({
             "serviceProviderConnections": {
-                "IgniteBlob": { "displayName": "blob", "parameterSetName": "ManagedServiceIdentity",
-                    "parameterValues": { "blobStorageEndpoint": "@appsetting('IgniteBlob_blobStorageEndpoint')" },
+                "AcmeBlob": { "displayName": "blob", "parameterSetName": "ManagedServiceIdentity",
+                    "parameterValues": { "blobStorageEndpoint": "@appsetting('AcmeBlob_blobStorageEndpoint')" },
                     "serviceProvider": { "id": "/serviceProviders/AzureBlob" } },
                 "ais-sql":    { "displayName": "sql",  "parameterSetName": "ManagedServiceIdentity",
                     "parameterValues": { "serverName": "@appsetting('ais-sql_serverName')" },
@@ -295,7 +295,7 @@ mod localize_e2e {
         let r = localize(base);
 
         // MSI blob + sql localized; keyvault can't be and is flagged.
-        assert!(r.msi_localized.contains(&"IgniteBlob".to_string()));
+        assert!(r.msi_localized.contains(&"AcmeBlob".to_string()));
         assert!(r.msi_localized.contains(&"ais-sql".to_string()));
         assert_eq!(r.msi_unresolved, vec!["vault".to_string()]);
 
@@ -322,7 +322,7 @@ mod localize_e2e {
         );
         let conn: serde_json::Value = serde_json::from_str(&on_disk).unwrap();
         assert_eq!(
-            conn["serviceProviderConnections"]["IgniteBlob"]["parameterSetName"],
+            conn["serviceProviderConnections"]["AcmeBlob"]["parameterSetName"],
             "ManagedServiceIdentity"
         );
         assert_eq!(

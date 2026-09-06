@@ -381,10 +381,10 @@ mod tests {
     #[test]
     fn detects_base64_consumer() {
         let (w, raw) = wf(
-            "ais.event.ignite",
+            "ais.event.acme",
             "@decodeBase64(triggerBody()?['contentData']?['$content'])",
         );
-        let enc = encoding_from_workflow(&w, &raw, "ais.event.ignite", "Get-AddressBook").unwrap();
+        let enc = encoding_from_workflow(&w, &raw, "ais.event.acme", "Get-AddressBook").unwrap();
         assert_eq!(
             enc,
             QueueEncoding::Base64Wrapped {
@@ -396,8 +396,8 @@ mod tests {
 
     #[test]
     fn detects_raw_json_consumer() {
-        let (w, raw) = wf("ais.ignite.counterparty", "@json(item()['contentData'])");
-        let enc = encoding_from_workflow(&w, &raw, "ais.ignite.counterparty", "Pivot-Cp").unwrap();
+        let (w, raw) = wf("ais.acme.counterparty", "@json(item()['contentData'])");
+        let enc = encoding_from_workflow(&w, &raw, "ais.acme.counterparty", "Pivot-Cp").unwrap();
         assert_eq!(
             enc,
             QueueEncoding::RawJson {
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn skips_workflow_on_other_queue() {
         let (w, raw) = wf("some.other.queue", "@json(item()['contentData'])");
-        assert!(encoding_from_workflow(&w, &raw, "ais.event.ignite", "X").is_none());
+        assert!(encoding_from_workflow(&w, &raw, "ais.event.acme", "X").is_none());
     }
 
     #[test]
@@ -437,9 +437,9 @@ mod tests {
                 "body": [
                     { "type": "TextBlock", "text": "[DEV] ❌ Integration Error",
                       "color": "Attention" },
-                    { "type": "TextBlock", "text": "Send-Http-Get-Ignite-AddressBook" },
+                    { "type": "TextBlock", "text": "Send-Http-Get-Acme-AddressBook" },
                     { "type": "FactSet", "facts": [
-                        { "title": "Error:", "value": "5xx from JDE" }
+                        { "title": "Error:", "value": "5xx from ERP" }
                     ] }
                 ],
                 "actions": [ { "type": "Action.OpenUrl", "title": "Link to Logs" } ]
@@ -449,7 +449,7 @@ mod tests {
         let p = adaptive_card_preview(&body).unwrap();
         assert_eq!(p.accent, "Attention");
         assert_eq!(p.lines.len(), 2);
-        assert_eq!(p.facts, vec!["Error: 5xx from JDE"]);
+        assert_eq!(p.facts, vec!["Error: 5xx from ERP"]);
         assert_eq!(p.actions, vec!["Link to Logs"]);
     }
 

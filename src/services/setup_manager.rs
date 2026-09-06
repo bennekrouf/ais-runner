@@ -258,7 +258,7 @@ pub fn patch_connections_for_local(raw: &str) -> String {
         if is_msi && provider_id == "/serviceProviders/AzureBlob" {
             // All local blob connections must share the SAME connection key
             // (AzureWebJobsStorage).  If each connection uses its own key
-            // (IgniteBlob_connectionString, KyribaBlob_connectionString, …)
+            // (AcmeBlob_connectionString, GlobexBlob_connectionString, …)
             // the Functions runtime registers a separate ListenerFactoryContext
             // per key and, because they all resolve to the same Azurite account,
             // the DI container ends up with services.Count=N, instances.Count=0
@@ -567,8 +567,8 @@ fn local_sql_connection(database: &str) -> String {
 
 /// Returns a sensible local-dev default for a known key pattern, or empty string.
 ///
-/// Rules discovered by comparing a working project (ais_platform) against a broken one
-/// (ais_tom_platform) and tracing every func-startup validation failure:
+/// Rules discovered by comparing a working project against a broken one and
+/// tracing every func-startup validation failure:
 ///
 /// 1. `*_blobStorageEndpoint` → Azurite blob endpoint
 /// 2. `azureFunction_*_appKey` → `"placeholder"` (empty string causes functionConnections parse error)
@@ -584,7 +584,7 @@ pub fn smart_default(key: &str) -> String {
     match key {
         // ── Blob endpoints ────────────────────────────────────────────────────
         // Matched by suffix, as rule 1 above says. These were once four named
-        // arms — AzureBlob, IgniteBlob, KyribaBlob, VentriksBlob — every one
+        // arms — AzureBlob, AcmeBlob, GlobexBlob, InitechBlob — every one
         // returning the same value. Naming them bought nothing, hardcoded one
         // customer's connection names into a tool meant to be generic, and
         // silently failed for a project whose blob connection is called
@@ -935,21 +935,21 @@ mod tests {
 
     const MSI_CONNECTIONS: &str = r#"{
         "serviceProviderConnections": {
-            "IgniteBlob": {
-                "displayName": "IgniteBlob",
+            "AcmeBlob": {
+                "displayName": "AcmeBlob",
                 "parameterSetName": "ManagedServiceIdentity",
                 "parameterValues": {
                     "authProvider": { "Type": "ManagedServiceIdentity" },
-                    "blobStorageEndpoint": "@appsetting('IgniteBlob_blobStorageEndpoint')"
+                    "blobStorageEndpoint": "@appsetting('AcmeBlob_blobStorageEndpoint')"
                 },
                 "serviceProvider": { "id": "/serviceProviders/AzureBlob" }
             },
-            "KyribaBlob": {
-                "displayName": "KyribaBlob",
+            "GlobexBlob": {
+                "displayName": "GlobexBlob",
                 "parameterSetName": "ManagedServiceIdentity",
                 "parameterValues": {
                     "authProvider": { "Type": "ManagedServiceIdentity" },
-                    "blobStorageEndpoint": "@appsetting('KyribaBlob_blobStorageEndpoint')"
+                    "blobStorageEndpoint": "@appsetting('GlobexBlob_blobStorageEndpoint')"
                 },
                 "serviceProvider": { "id": "/serviceProviders/AzureBlob" }
             },
@@ -970,27 +970,27 @@ mod tests {
         let patched = patch_connections_for_local(MSI_CONNECTIONS);
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
 
-        // IgniteBlob: switched to connectionString pointing at AzureWebJobsStorage
-        let ignite = &v["serviceProviderConnections"]["IgniteBlob"];
-        assert_eq!(ignite["parameterSetName"], "connectionString");
+        // AcmeBlob: switched to connectionString pointing at AzureWebJobsStorage
+        let acme = &v["serviceProviderConnections"]["AcmeBlob"];
+        assert_eq!(acme["parameterSetName"], "connectionString");
         assert_eq!(
-            ignite["parameterValues"]["connectionString"],
+            acme["parameterValues"]["connectionString"],
             "@appsetting('AzureWebJobsStorage')"
         );
         assert!(
-            ignite["parameterValues"]["authProvider"].is_null(),
+            acme["parameterValues"]["authProvider"].is_null(),
             "authProvider should be removed"
         );
         assert!(
-            ignite["parameterValues"]["blobStorageEndpoint"].is_null(),
+            acme["parameterValues"]["blobStorageEndpoint"].is_null(),
             "blobStorageEndpoint should be removed"
         );
 
-        // KyribaBlob: also points at AzureWebJobsStorage (same key avoids ListenerFactoryContext clash)
-        let kyriba = &v["serviceProviderConnections"]["KyribaBlob"];
-        assert_eq!(kyriba["parameterSetName"], "connectionString");
+        // GlobexBlob: also points at AzureWebJobsStorage (same key avoids ListenerFactoryContext clash)
+        let globex = &v["serviceProviderConnections"]["GlobexBlob"];
+        assert_eq!(globex["parameterSetName"], "connectionString");
         assert_eq!(
-            kyriba["parameterValues"]["connectionString"],
+            globex["parameterValues"]["connectionString"],
             "@appsetting('AzureWebJobsStorage')"
         );
     }
@@ -1021,8 +1021,8 @@ mod tests {
     fn patch_idempotent_on_already_connection_string() {
         let already_cs = r#"{
             "serviceProviderConnections": {
-                "IgniteBlob": {
-                    "displayName": "IgniteBlob",
+                "AcmeBlob": {
+                    "displayName": "AcmeBlob",
                     "parameterSetName": "connectionString",
                     "parameterValues": {
                         "connectionString": "@appsetting('AzureWebJobsStorage')"
@@ -1034,7 +1034,7 @@ mod tests {
         let patched = patch_connections_for_local(already_cs);
         let v: serde_json::Value = serde_json::from_str(&patched).unwrap();
         assert_eq!(
-            v["serviceProviderConnections"]["IgniteBlob"]["parameterSetName"],
+            v["serviceProviderConnections"]["AcmeBlob"]["parameterSetName"],
             "connectionString"
         );
     }
@@ -1121,16 +1121,16 @@ mod sql_msi_local_tests {
         // channel is indistinguishable from one routing correctly.
         assert_eq!(smart_default("teams:groupId"), "local-teams-group");
         assert_eq!(
-            smart_default("teams:channel:kyriba:alerts"),
-            "local-channel-kyriba-alerts"
+            smart_default("teams:channel:globex:alerts"),
+            "local-channel-globex-alerts"
         );
         assert_eq!(
-            smart_default("teams:channel:ventriks:notifications"),
-            "local-channel-ventriks-notifications"
+            smart_default("teams:channel:initech:notifications"),
+            "local-channel-initech-notifications"
         );
         assert_ne!(
-            smart_default("teams:channel:kyriba:alerts"),
-            smart_default("teams:channel:kyriba:notifications")
+            smart_default("teams:channel:globex:alerts"),
+            smart_default("teams:channel:globex:notifications")
         );
     }
 }

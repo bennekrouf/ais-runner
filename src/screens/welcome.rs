@@ -285,7 +285,7 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
                     }
                 } else {
                     div { id: "welcome-pick",
-                        p { "Choose the root folder of your ais_platform repo" }
+                        p { "Choose the root folder of your Logic Apps project" }
                         button {
                             class: "btn-pick-folder",
                             onclick: move |_| {

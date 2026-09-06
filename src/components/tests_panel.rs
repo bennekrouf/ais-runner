@@ -1336,12 +1336,12 @@ mod tests {
     #[test]
     fn project_root_steps_out_of_the_logic_apps_folder() {
         assert_eq!(
-            project_root_of("/repo/ais_tom_platform/logic_apps"),
-            PathBuf::from("/repo/ais_tom_platform")
+            project_root_of("/repo/alpha_extra_platform/logic_apps"),
+            PathBuf::from("/repo/alpha_extra_platform")
         );
         assert_eq!(
-            project_root_of("/repo/ais_tom_platform/logic-apps"),
-            PathBuf::from("/repo/ais_tom_platform")
+            project_root_of("/repo/alpha_extra_platform/logic-apps"),
+            PathBuf::from("/repo/alpha_extra_platform")
         );
     }
 

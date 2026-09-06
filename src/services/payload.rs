@@ -191,8 +191,8 @@ fn parse_ref_path(expr: &str) -> Option<Vec<String>> {
 /// Overlay domain-correct values for well-known platform fields, wherever they
 /// appear in the sample. Schema-shape + name heuristics produce values that are
 /// structurally fine but rejected downstream — e.g. `"CompanyId": "TEST-001"`
-/// where JDE's `where ABALP1 = <id>` lookup needs a number, or
-/// `"resourceURI": "text"` which gets concatenated onto the Ignite base URL.
+/// where ERP's `where ABALP1 = <id>` lookup needs a number, or
+/// `"resourceURI": "text"` which gets concatenated onto the Acme base URL.
 ///
 /// Only exact field-name matches are touched, and only when the current value
 /// is a placeholder string — a value injected by `apply_branch_literals` or
@@ -204,14 +204,14 @@ fn apply_domain_overrides(sample: &mut Value) {
 
     fn override_for(key: &str, module: &str) -> Option<Value> {
         Some(match key {
-            // Numeric entity keys — JDE/Ignite reject string IDs
+            // Numeric entity keys — ERP/Acme reject string IDs
             "CompanyId" => json!(90001),
             "StrategyId" => json!(50000001),
             "TankId" => json!(70001),
             "CounterpartyId" => json!(90001),
-            // Ignite HTTP call building blocks
+            // Acme HTTP call building blocks
             "resourceURI" => json!(format!("/api/{module}/search")),
-            "endpoint" => json!("https://ignite.example.test"),
+            "endpoint" => json!("https://acme.example.test"),
             "protocol" => json!("HTTP"),
             "method" => json!("POST"),
             // Correlation fields — UUID-shaped so runs are traceable
@@ -371,7 +371,7 @@ fn sample_object_by_name(name: &str) -> Value {
         // CloudEvent envelope — used as the main event carrier in this platform
         "cloudevent" => json!({
             "specversion": "1.0",
-            "type": "com.oryx.event",
+            "type": "com.partner.event",
             "source": "manual",
             "id": "TEST-001",
             "time": "2026-01-01T00:00:00Z",
@@ -405,12 +405,12 @@ fn sample_object_by_name(name: &str) -> Value {
         // ais.workflow.error — the standard error envelope produced by AIS-GenericCatch
         // and consumed by AIS-Error-Teams-Notif (CA03).
         "ais.workflow.error" => json!({
-            "action": "Upload_to_Kyriba",
+            "action": "Upload_to_Globex",
             "message": "The service provider action failed with error code 'EmptyFile'",
             "messageDetails": "",
             "workflowStack": [
                 {
-                    "name": "Send-Kyriba-files-broadcast",
+                    "name": "Send-Globex-files-broadcast",
                     "identifier": "TEST-RUN-001",
                     "startTime": "2026-01-01T10:00:00Z",
                     "input": { "name": "payments/test.txt" }
@@ -509,7 +509,7 @@ fn sample_named(name: &str, schema: &Value) -> Value {
     } else if n == "source" {
         "manual"
     } else if n == "type" {
-        "com.oryx.event"
+        "com.partner.event"
     } else if n == "specversion" {
         "1.0"
     } else if n.contains("schema") {
@@ -602,7 +602,8 @@ mod branch_literal_tests {
 
     #[test]
     fn parse_ref_path_extracts_bracket_segments_only() {
-        let expr = "@body('Parse_JSON_ais.event.ignite')?['data']?['msg']?['content']?['event']?['module']";
+        let expr =
+            "@body('Parse_JSON_ais.event.acme')?['data']?['msg']?['content']?['event']?['module']";
         assert_eq!(
             parse_ref_path(expr),
             Some(vec![
@@ -622,12 +623,12 @@ mod branch_literal_tests {
 
     #[test]
     fn if_equals_overwrites_placeholder_module() {
-        // Mirrors Send-Http-Get-Ignite-AddressBook's Companies branch.
+        // Mirrors Send-Http-Get-Acme-AddressBook's Companies branch.
         let actions = json!({
             "Module_=_Companies": {
                 "type": "If",
                 "expression": { "and": [ { "equals": [
-                    "@body('Parse_JSON_ais.event.ignite')?['data']?['msg']?['content']?['event']?['module']",
+                    "@body('Parse_JSON_ais.event.acme')?['data']?['msg']?['content']?['event']?['module']",
                     "Companies"
                 ] } ] },
                 "actions": {}
@@ -704,7 +705,7 @@ mod branch_literal_tests {
         apply_domain_overrides(&mut sample);
         let obj = &sample["data"]["msg"]["content"]["object"];
         assert_eq!(obj["resourceURI"], "/api/Companies/search");
-        assert_eq!(obj["endpoint"], "https://ignite.example.test");
+        assert_eq!(obj["endpoint"], "https://acme.example.test");
         assert_eq!(obj["CompanyId"], 90001);
         assert_eq!(obj["StrategyId"], 50000001);
         assert_eq!(

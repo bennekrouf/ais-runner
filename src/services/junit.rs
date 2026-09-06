@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn renders_counts_and_marks_each_status() {
         let suites = vec![SuiteReport {
-            scenario: "Ignite invoice".into(),
+            scenario: "Acme invoice".into(),
             steps: vec![
                 step(0, "drain q", StepStatus::Ok, "drained 0"),
                 step(1, "send to q", StepStatus::Failed, "entity not found"),
@@ -202,7 +202,7 @@ mod tests {
         assert!(xml.contains(r#"<failure message="entity not found""#));
         assert!(xml.contains("<skipped"));
         // A passing step is a self-closing testcase with no child element.
-        assert!(xml.contains(r#"name="01. drain q" classname="Ignite invoice" time="0.500"/>"#));
+        assert!(xml.contains(r#"name="01. drain q" classname="Acme invoice" time="0.500"/>"#));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //!
 //! The contract is a serializable snapshot of every external HTTP dependency
 //! that the Logic Apps workspace touches. It is **environment-agnostic** — no
-//! JDE/SAP/Komgo-specific fields, just generic HTTP descriptors.
+//! ERP/SAP/Komgo-specific fields, just generic HTTP descriptors.
 //!
 //! Cached under `<workspace>/.ais-cache/mock-contract.json` — not committed.
 

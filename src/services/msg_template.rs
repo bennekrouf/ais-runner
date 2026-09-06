@@ -400,23 +400,30 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+    use crate::services::sample_workspace;
 
-    /// Guards the real ttom template against the filenames it must handle.
-    /// Skipped when the platform repo isn't checked out beside ais-runner.
+    /// Guards a real message template against the filenames it must handle.
+    /// Opt-in: point `AIS_SAMPLE_WORKSPACE` at a real Logic Apps project to
+    /// run this against one. Skipped otherwise, so a clean checkout and CI
+    /// both pass. It used to hardcode one developer's home directory, which
+    /// meant it ran on exactly one machine and named the client's repo.
     #[test]
-    fn ttom_kyriba_template_renders_real_filenames() {
-        let root = Path::new("/Users/mb/code/oryx/ais_tom_platform");
+    fn a_real_template_renders_real_filenames() {
+        let Some(root) = sample_workspace() else {
+            eprintln!("skipped: set AIS_SAMPLE_WORKSPACE to run it");
+            return;
+        };
         if !root.join(TEMPLATE_DIR).is_dir() {
-            eprintln!("skipped: ttom repo not present");
+            eprintln!("skipped: no message templates in AIS_SAMPLE_WORKSPACE");
             return;
         }
-        let (templates, errors) = discover(root);
+        let (templates, errors) = discover(&root);
         assert!(errors.is_empty(), "template errors: {errors:?}");
 
         let t = templates
             .iter()
-            .find(|t| t.name == "Ignite Kyriba event")
-            .expect("Ignite Kyriba event template");
+            .find(|t| t.name == "Acme Globex event")
+            .expect("Acme Globex event template");
         assert_eq!(t.queue, "ais.apim.event");
 
         let ctx = RenderContext {
@@ -426,18 +433,18 @@ mod integration_tests {
 
         for (file, flow) in [
             (
-                "ORYX.NC4.IMPORT.20260804101545.PY_TRANSFER.PY_MT101.NULL.NULL.xlsx",
+                "PARTNER.NC4.IMPORT.20260804101545.PY_TRANSFER.PY_MT101.NULL.NULL.xlsx",
                 "PY_TRANSFER",
             ),
             (
-                "ORYX.NC4.IMPORT.20260731124240.CA_FLOW.CF_INTEGRATION.NULL.NULL.xlsx",
+                "PARTNER.NC4.IMPORT.20260731124240.CA_FLOW.CF_INTEGRATION.NULL.NULL.xlsx",
                 "CA_FLOW",
             ),
         ] {
             assert!(t.matches(file), "should match {file}");
             let v: Value = serde_json::from_str(&t.render(file, &ctx).unwrap()).unwrap();
-            assert_eq!(v["event"]["module"], "Kyriba");
-            assert_eq!(v["event"]["source"], "IGNITE");
+            assert_eq!(v["event"]["module"], "Globex");
+            assert_eq!(v["event"]["source"], "ACME");
             assert_eq!(v["event"]["environment"], "DEV");
             assert_eq!(v["object"]["resourceURI"], file);
             assert_eq!(v["object"]["composite-keys"][0]["value"], file);
@@ -449,10 +456,10 @@ mod integration_tests {
 
         // The 2026-07-28 incident: a space inside the filename. It must still
         // match, so the operator gets the button instead of hand-writing JSON.
-        let spaced = "ORYX.NC4.IMPORT.20260728141444.CA_FLOW. CF_INTEGRATION.NULL.NULL.xlsx";
+        let spaced = "PARTNER.NC4.IMPORT.20260728141444.CA_FLOW. CF_INTEGRATION.NULL.NULL.xlsx";
         assert!(t.matches(spaced), "spaced filename should still match");
 
-        // Non-Kyriba blobs in the same container must not offer this template.
+        // Non-Globex blobs in the same container must not offer this template.
         assert!(!t.matches("cashflow_20260726.xlsx"));
         assert!(!t.matches("sla/last-received.txt"));
     }

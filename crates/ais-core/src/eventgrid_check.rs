@@ -537,10 +537,10 @@ mod overlap_tests {
     fn allow_list_inside_a_deny_list_is_an_overlap() {
         let subs = vec![
             sub(
-                "ais-event-ignite",
+                "ais-event-acme",
                 "ais.pivot.event",
                 vec![
-                    (SOURCE, "StringIn", vec!["IGNITE"]),
+                    (SOURCE, "StringIn", vec!["ACME"]),
                     (
                         MODULE,
                         "StringIn",
@@ -549,10 +549,10 @@ mod overlap_tests {
                 ],
             ),
             sub(
-                "ais-pivot-event-ignite",
+                "ais-pivot-event-acme",
                 "ais.pivot.event",
                 vec![
-                    (SOURCE, "StringIn", vec!["IGNITE"]),
+                    (SOURCE, "StringIn", vec!["ACME"]),
                     (MODULE, "StringNotIn", vec!["SnapShot"]),
                 ],
             ),
@@ -568,7 +568,7 @@ mod overlap_tests {
     fn deny_list_covering_the_allow_list_is_disjoint() {
         let subs = vec![
             sub(
-                "ais-event-ignite",
+                "ais-event-acme",
                 "ais.pivot.event",
                 vec![(
                     MODULE,
@@ -577,7 +577,7 @@ mod overlap_tests {
                 )],
             ),
             sub(
-                "ais-pivot-event-ignite",
+                "ais-pivot-event-acme",
                 "ais.pivot.event",
                 vec![(
                     MODULE,

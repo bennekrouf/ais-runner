@@ -45,7 +45,7 @@ pub struct ReleaseArtifact {
     pub created_on: String,
     pub build_number: String,
     pub build_id: String, // internal numeric ID used for az pipelines release create
-    pub artifact_alias: String, // artifact alias in the definition, e.g. "_Build JDE Connector"
+    pub artifact_alias: String, // artifact alias in the definition, e.g. "_Build ERP Connector"
     pub branch: String,
     pub commit: String,
     pub environments: Vec<ReleaseEnvStatus>,
@@ -433,7 +433,7 @@ pub fn trigger_build(
 }
 
 /// Creates a new release targeting a specific build artifact version.
-/// `artifact_alias` is the alias from the release definition (e.g. "_Build JDE Connector").
+/// `artifact_alias` is the alias from the release definition (e.g. "_Build ERP Connector").
 /// `build_id` is the internal numeric build ID from the artifact's `version.id`.
 /// Returns the new release name (e.g. "Release-44").
 pub fn create_release(

@@ -405,9 +405,9 @@ fn read_blob_trigger_info_when_blob_is_added_or_modified() {
                 "When_a_blob_is_added_or_updated": {
                     "type": "ServiceProvider",
                     "inputs": {
-                        "parameters": { "path": "kyriba-input" },
+                        "parameters": { "path": "globex-input" },
                         "serviceProviderConfiguration": {
-                            "connectionName": "IgniteBlob",
+                            "connectionName": "AcmeBlob",
                             "operationId": "whenABlobIsAddedOrModified",
                             "serviceProviderId": "/serviceProviders/AzureBlob"
                         }
@@ -420,21 +420,25 @@ fn read_blob_trigger_info_when_blob_is_added_or_modified() {
     let info = read_blob_trigger_info(json);
     assert!(info.is_some(), "should detect blob trigger");
     let (container, conn) = info.unwrap();
-    assert_eq!(container, "kyriba-input");
-    assert_eq!(conn, "IgniteBlob");
+    assert_eq!(container, "globex-input");
+    assert_eq!(conn, "AcmeBlob");
 }
 
 #[test]
-fn extract_all_blob_containers_kyriba_send() {
-    let json = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../oryx/ais_tom_platform/logic_apps/Send-Kyriba-files-broadcast/workflow.json"
-    ));
-    // Skip gracefully if the oryx repo is not alongside ais-runner
-    let Ok(json) = json else { return };
+fn extract_all_blob_containers_globex_send() {
+    // Opt-in against a real workspace; skipped otherwise. This used to reach
+    // out of the repo into a sibling checkout of the client's project.
+    let Some(root) = crate::services::sample_workspace() else {
+        return;
+    };
+    let Ok(json) =
+        std::fs::read_to_string(root.join("logic_apps/Send-Globex-files-broadcast/workflow.json"))
+    else {
+        return;
+    };
 
     let containers = extract_all_blob_containers(&json);
-    for expected in &["kyriba-input", "input", "kyriba-archive"] {
+    for expected in &["globex-input", "input", "globex-archive"] {
         assert!(
             containers.contains(&expected.to_string()),
             "expected container '{}' in {:?}",
@@ -448,23 +452,23 @@ fn extract_all_blob_containers_kyriba_send() {
 //
 // Prerequisites (run manually, skip in CI):
 //   azurite --silent &   (or use the ais-runner ⟳ Reset button)
-//   func start           (in the logic-apps directory for Send-Kyriba-files-broadcast)
-//   Create containers: kyriba-input, input, kyriba-archive in Azurite
+//   func start           (in the logic-apps directory for Send-Globex-files-broadcast)
+//   Create containers: globex-input, input, globex-archive in Azurite
 //
 // Run with:  cargo test blob_trigger_emulator -- --ignored
 
 #[tokio::test]
-#[ignore = "requires Azurite on :10000 and func start running with Send-Kyriba-files-broadcast"]
+#[ignore = "requires Azurite on :10000 and func start running with Send-Globex-files-broadcast"]
 async fn blob_trigger_emulator() {
     use crate::services::azurite_client;
 
-    // Upload a test file to kyriba-input
-    let content = b"ORYX test payload";
-    azurite_client::upload_blob_bytes_sync("kyriba-input", "payments/test.txt", content.to_vec())
-        .expect("upload to kyriba-input failed — is Azurite running?");
+    // Upload a test file to globex-input
+    let content = b"PARTNER test payload";
+    azurite_client::upload_blob_bytes_sync("globex-input", "payments/test.txt", content.to_vec())
+        .expect("upload to globex-input failed — is Azurite running?");
 
     // Poll run history for up to 60 s (blob trigger polls every ~30 s)
-    let workflow = "Send-Kyriba-files-broadcast";
+    let workflow = "Send-Globex-files-broadcast";
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;

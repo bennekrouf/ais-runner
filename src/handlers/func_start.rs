@@ -117,7 +117,7 @@ pub fn handle_start(
             //     There is no AAD to authenticate against locally, and the
             //     tenant/clientId/secret parameters resolve through
             //     @appsetting() keys that a local checkout does not have, so
-            //     every Ignite/JDE call fails with "The required OAuth
+            //     every Acme/ERP call fails with "The required OAuth
             //     authentication property 'tenant' is missing" before it can
             //     reach the stub. Snapshotted and restored like connections.json.
             match crate::services::workflow_auth::patch_all(std::path::Path::new(&d)) {
@@ -131,7 +131,7 @@ pub fn handle_start(
                 ),
                 Ok(_) => {}
                 Err(e) => push(
-                    format!("  ⚠ Could not strip OAuth from workflows ({e}) — Ignite/JDE calls will fail locally"),
+                    format!("  ⚠ Could not strip OAuth from workflows ({e}) — Acme/ERP calls will fail locally"),
                     LogLevel::Warn,
                 ),
             }
