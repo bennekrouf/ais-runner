@@ -618,6 +618,39 @@ jobs:
           EOF
           cat release/latest.json
 
+      # ── Release notes feed ─────────────────────────────────────────────────
+      # CHANGELOG.md is the only place a release note is written. This turns it
+      # into the feed the website renders at /apps/ais-runner/releases, and
+      # ships it beside the builds rather than on the source host — the same
+      # reason latest.json moved off GitHub: an installed copy, and the public
+      # download page, must not depend on this repository staying readable.
+      #
+      # --version/--date stamp a section still headed `[Unreleased]`, so cutting
+      # a release is never blocked on having edited the heading first.
+      - name: Generate releases.json from CHANGELOG.md
+        env:
+          TAG: ${{ needs.prepare.outputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # latest/ is synced with --delete, so whatever is in release/ IS the
+          # published feed. A generation failure must therefore still leave a
+          # file behind: without one, this release would silently erase the
+          # site's entire release history. Fall back to the copy already
+          # published, and only then to an empty feed — which the site rejects
+          # in favour of its own snapshot rather than rendering a blank page.
+          if ! python3 scripts/changelog_to_json.py \
+                 --json \
+                 --version "${TAG#v}" \
+                 --date "$(date -u +%Y-%m-%d)" \
+                 > release/releases.json; then
+            echo "::warning::Could not build releases.json from CHANGELOG.md — keeping the published feed."
+            curl -fsS "https://mayorana.ch/downloads/ais-runner/latest/releases.json" \
+                 -o release/releases.json \
+              || echo '{"name":"ais-runner","releases":[]}' > release/releases.json
+          fi
+          python3 -c "import json; d=json.load(open('release/releases.json')); print(len(d['releases']), 'releases, newest', d['releases'][0]['version'] if d['releases'] else 'none')"
+
       # ── Publish the signed artifacts to mayorana.ch ────────────────────────
       # The binaries are the product and no longer ride on the public GitHub
       # Release. nginx on the VPS serves them straight off disk from
@@ -704,7 +737,21 @@ jobs:
           set -euo pipefail
           BUY="${BUY_URL:-https://mayorana.ch/en/apps}"
 
-          cat > notes.md <<EOF
+          # What shipped, from CHANGELOG.md. A release cut without an entry is
+          # not an error — it just leads with the download section instead.
+          CHANGES=$(python3 scripts/changelog_to_json.py \
+            --notes \
+            --version "${TAG#v}" \
+            --date "$(date -u +%Y-%m-%d)" || true)
+
+          : > notes.md
+          if [ -n "$CHANGES" ]; then
+            printf "## What's new in %s\n\n%s\n\n" "$TAG" "$CHANGES" >> notes.md
+          fi
+
+          cat >> notes.md <<EOF
+          Every version, with its notes: **[mayorana.ch/en/apps/ais-runner/releases](https://mayorana.ch/en/apps/ais-runner/releases)**
+
           ## Download
 
           Free for individuals — grab a signed build at **[$BUY]($BUY)**:
@@ -731,4 +778,5 @@ jobs:
           gh release create "$TAG" \
             --title "ais-runner $TAG" \
             --notes-file notes.md \
-            release/latest.json
+            release/latest.json \
+            release/releases.json

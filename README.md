@@ -36,6 +36,14 @@ sudo ./setup-linux.sh && ./ais-runner
 
 ---
 
+## What's new
+
+Every version and what changed in it: [Release notes](https://mayorana.ch/en/apps/ais-runner/releases).
+The notes are written in [`CHANGELOG.md`](CHANGELOG.md) and published from there — to that page, to
+`releases.json` beside the builds, and to the GitHub Release body.
+
+---
+
 ## What it does
 
 ### Workflows
