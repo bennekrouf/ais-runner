@@ -1,6 +1,6 @@
 // The module tree lives in `src/lib.rs` so the headless runner
 // (`src/bin/ais-test.rs`) shares one copy of the service layer.
-use ais_runner::{screens, services, update_check, utils};
+use ais_runner::{notice, screens, services, update_check, utils};
 
 use dioxus::desktop::LogicalSize;
 use dioxus::prelude::*;
@@ -496,6 +496,19 @@ fn AppWindow(initial: Option<String>) -> Element {
     };
 
     // ── Auto-update check ──────────────────────────────────────────────────
+    // ── Notice from mayorana.ch ────────────────────────────────────────────
+    // A message to the people running this build (see notice.rs). Same
+    // posture as the update check: delayed, best-effort, silent on failure.
+    let mut mayorana_notice = use_signal(|| Option::<notice::Notice>::None);
+    use_coroutine(
+        move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            if let Some(n) = notice::fetch().await {
+                mayorana_notice.set(Some(n));
+            }
+        },
+    );
+
     let mut update_info = use_signal(|| Option::<update_check::UpdateInfo>::None);
     let mut update_dismissed = use_signal(|| false);
     use_coroutine(
@@ -528,6 +541,35 @@ fn AppWindow(initial: Option<String>) -> Element {
                     class: "update-banner-dismiss",
                     onclick: move |_| update_dismissed.set(true),
                     "×"
+                }
+            }
+        }
+
+        // Notice from mayorana.ch — shown until dismissed, then remembered.
+        if let Some(n) = mayorana_notice.read().clone() {
+            {
+                let id = n.id.clone();
+                let link_text = n.link_text.clone().unwrap_or_else(|| "Open".to_string());
+                rsx! {
+                    div { class: "update-banner notice-banner",
+                        span { class: "update-banner-text", "{n.text}" }
+                        if let Some(url) = n.url.clone() {
+                            a {
+                                class: "update-banner-link",
+                                href: "{url}",
+                                target: "_blank",
+                                "{link_text}"
+                            }
+                        }
+                        button {
+                            class: "update-banner-dismiss",
+                            onclick: move |_| {
+                                notice::dismiss(&id);
+                                mayorana_notice.set(None);
+                            },
+                            "×"
+                        }
+                    }
                 }
             }
         }
