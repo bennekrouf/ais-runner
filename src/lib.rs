@@ -7,6 +7,7 @@
 
 pub mod components;
 pub mod handlers;
+pub mod notice;
 pub mod screens;
 pub mod services;
 pub mod update_check;
