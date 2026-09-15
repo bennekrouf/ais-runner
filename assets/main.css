@@ -2530,9 +2530,9 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
 }
 .settings-cfg-val:focus { outline: none; border-color: var(--blue); }
 
-/* App-wide preferences row. Same two-column geometry as .settings-azure-cfg
-   so the labels line up down the panel, but a separate block because the
-   values it holds are global rather than per-workspace. */
+/* Checkbox preference rows. Same two-column geometry as .settings-azure-cfg
+   so the labels line up down the panel, but separate blocks: one for the
+   app-wide preferences, one for this workspace's local-run switches. */
 .settings-prefs {
     display: grid;
     grid-template-columns: 180px 1fr;

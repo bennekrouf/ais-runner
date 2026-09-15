@@ -83,6 +83,10 @@ pub fn handle_start(
         return;
     }
 
+    // Per-workspace opt-out, keyed like every other workspace setting by the
+    // project dir rather than func's cwd.
+    let strip_oauth = crate::services::config::load().strips_workflow_oauth(&dir);
+
     // ── Everything else runs in a single spawn so we can await spawn_blocking ─
     spawn(async move {
         let mut push = make_push(log_lines);
@@ -120,7 +124,21 @@ pub fn handle_start(
             //     every Acme/ERP call fails with "The required OAuth
             //     authentication property 'tenant' is missing" before it can
             //     reach the stub. Snapshotted and restored like connections.json.
-            match crate::services::workflow_auth::patch_all(std::path::Path::new(&d)) {
+            //     Settings → "Workflow OAuth" turns this off for projects whose
+            //     local.settings.json carries real OAuth parameters.
+            //     Restoring is never gated: a patch left by an earlier session
+            //     still goes back on stop, whatever the setting says now.
+            let stripped = if strip_oauth {
+                crate::services::workflow_auth::patch_all(std::path::Path::new(&d))
+            } else {
+                push(
+                    "  ℹ OAuth stripping is off for this workspace — workflows keep ActiveDirectoryOAuth, \
+                     so their tenant/clientId/secret parameters must resolve locally".into(),
+                    LogLevel::Info,
+                );
+                Ok(Vec::new())
+            };
+            match stripped {
                 Ok(names) if !names.is_empty() => push(
                     format!(
                         "  ✓ Removed ActiveDirectoryOAuth from {} workflow(s) for local run — restored on stop: {}",
