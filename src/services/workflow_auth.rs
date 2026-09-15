@@ -178,10 +178,13 @@ pub fn patch_all(logic_apps_dir: &Path) -> std::io::Result<Vec<String>> {
             continue;
         }
         cache_dir::ensure(logic_apps_dir, &cache_dir(logic_apps_dir))?;
-        let backup = backup_path(logic_apps_dir, &name);
-        if !backup.exists() {
-            std::fs::write(&backup, &raw)?;
-        }
+        // Always the file as it is now. It still carries OAuth, so it is not
+        // our patch — `strip` is a fixed point — which makes it the pristine
+        // copy by definition. An older snapshot left by a session that never
+        // restored describes a file that no longer exists: keeping it meant
+        // `restore` saw `strip(old) != strip(new)`, called the file foreign,
+        // and left the working tree stripped for good.
+        std::fs::write(backup_path(logic_apps_dir, &name), &raw)?;
         std::fs::write(&wf, stripped)?;
         register(logic_apps_dir);
         patched.push(name);
@@ -435,6 +438,39 @@ mod tests {
             backup_path(&ws, "W").exists(),
             "snapshot kept — we still have not restored it"
         );
+    }
+
+    /// A crash leaves a snapshot behind; the developer checks the files out
+    /// and pulls. The next start used to keep the *old* snapshot and strip the
+    /// new file, so stop compared against the wrong original, called every
+    /// pulled workflow foreign, and left them stripped in the working tree.
+    #[test]
+    fn a_stale_snapshot_is_replaced_by_the_current_file() {
+        let _g = serialised();
+        let tmp = workspace();
+        let ws = tmp.path().to_path_buf();
+        std::fs::create_dir_all(ws.join("W")).unwrap();
+        let wf = ws.join("W/workflow.json");
+        std::fs::write(&wf, WF).unwrap();
+        patch_all(&ws).unwrap();
+        patched_dirs().lock().unwrap().remove(&ws);
+
+        let pulled = WF.replace("Execute_Strategy_stored_procedure", "Pulled_From_Main");
+        std::fs::write(&wf, &pulled).unwrap();
+
+        assert_eq!(patch_all(&ws).unwrap(), ["W"]);
+        assert!(!std::fs::read_to_string(&wf).unwrap().contains(OAUTH));
+        assert_eq!(
+            std::fs::read_to_string(backup_path(&ws, "W")).unwrap(),
+            pulled,
+            "snapshot is the file we actually patched"
+        );
+
+        let report = restore(&ws);
+        assert_eq!(report.restored, 1);
+        assert!(report.foreign.is_empty());
+        assert_eq!(std::fs::read_to_string(&wf).unwrap(), pulled);
+        assert!(!backup_path(&ws, "W").exists());
     }
 
     /// One unreadable snapshot used to abort the whole pass with `?`, leaving
