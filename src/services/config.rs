@@ -46,6 +46,13 @@ pub struct AppConfig {
     /// written before this field existed.
     #[serde(default = "default_true")]
     pub notifications_enabled: bool,
+    /// Workspaces (keyed by logic_apps_dir) that opted out of stripping
+    /// `ActiveDirectoryOAuth` from workflow.json on func start — see
+    /// `services::workflow_auth`. Stored as the exceptions so that stripping
+    /// stays the default for every workspace, including ones opened before
+    /// this setting existed.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub keep_workflow_oauth: HashSet<String>,
 }
 
 fn default_true() -> bool {
@@ -60,6 +67,7 @@ impl Default for AppConfig {
             graph_prefs: HashMap::new(),
             last_payloads: HashMap::new(),
             notifications_enabled: true,
+            keep_workflow_oauth: HashSet::new(),
         }
     }
 }
@@ -85,6 +93,19 @@ impl AppConfig {
 
     pub fn set_graph_prefs(&mut self, dir: String, prefs: GraphPrefs) {
         self.graph_prefs.insert(dir, prefs);
+    }
+
+    /// Whether func start should strip OAuth from this workspace's workflows.
+    pub fn strips_workflow_oauth(&self, dir: &str) -> bool {
+        !self.keep_workflow_oauth.contains(dir)
+    }
+
+    pub fn set_strips_workflow_oauth(&mut self, dir: String, on: bool) {
+        if on {
+            self.keep_workflow_oauth.remove(&dir);
+        } else {
+            self.keep_workflow_oauth.insert(dir);
+        }
     }
 
     pub fn get_last_payload(&self, dir: &str, workflow: &str) -> Option<String> {
@@ -177,5 +198,27 @@ mod tests {
         cfg.notifications_enabled = false;
         let back: AppConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
         assert!(!back.notifications_enabled);
+    }
+
+    #[test]
+    fn oauth_stripping_is_on_unless_a_workspace_opts_out() {
+        let older = r#"{ "recent_dirs": [], "workspace_links": {} }"#;
+        let mut cfg: AppConfig = serde_json::from_str(older).unwrap();
+        assert!(
+            cfg.strips_workflow_oauth("/a"),
+            "existing configs keep stripping"
+        );
+
+        cfg.set_strips_workflow_oauth("/a".into(), false);
+        let mut back: AppConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert!(!back.strips_workflow_oauth("/a"));
+        assert!(
+            back.strips_workflow_oauth("/b"),
+            "the opt-out is per workspace"
+        );
+
+        back.set_strips_workflow_oauth("/a".into(), true);
+        assert!(back.strips_workflow_oauth("/a"));
     }
 }
