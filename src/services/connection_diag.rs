@@ -115,8 +115,23 @@ pub fn scan_startup_risks(logic_apps_dir: &str) -> Vec<(String, Vec<String>)> {
     risks
 }
 
-/// For a given workflow, return the names of service-provider connections it uses
-/// whose appsetting endpoints are empty in local.settings.json.
+/// The settings a function connection reads when invoked locally: its
+/// `triggerUrl` and the key under `authentication`.
+///
+/// `function.id` is deliberately left out. Locally the runtime calls the
+/// function through `triggerUrl`; the resource id — usually interpolated from
+/// subscription, resource group and site-name settings — is never resolved,
+/// so blank values there break nothing (func_start already mutes the
+/// runtime's parse complaint about it as harmless).
+pub fn function_connection_keys(connection: &Value) -> Vec<String> {
+    let mut keys = Vec::new();
+    collect_appsetting_refs(&connection["triggerUrl"], &mut keys);
+    collect_appsetting_refs(&connection["authentication"], &mut keys);
+    keys
+}
+
+/// For a given workflow, return the names of service-provider and function
+/// connections it uses whose appsetting endpoints are empty in local.settings.json.
 /// Returns pairs of (connection_name, empty_appsetting_key).
 pub fn missing_endpoints_for_workflow(
     logic_apps_dir: &str,
@@ -182,7 +197,23 @@ pub fn missing_endpoints_for_workflow(
             }
         }
     }
+
+    // A function action names its connection the same way (`connectionName`),
+    // and an empty triggerUrl or key fails that call just as surely.
+    if let Some(functions) = conn["functionConnections"].as_object() {
+        for (name, function) in functions {
+            if !used_connections.contains(name) {
+                continue;
+            }
+            for key in function_connection_keys(function) {
+                if settings["Values"][&key].as_str().unwrap_or("").is_empty() {
+                    missing.push((name.clone(), key));
+                }
+            }
+        }
+    }
     missing.sort();
+    missing.dedup();
     missing
 }
 

@@ -22,6 +22,10 @@ pub enum SetupStatus {
         blank: Vec<String>,
         /// Referenced by connections.json with no local.settings.json entry at all.
         absent: Vec<String>,
+        /// Workflows whose connections need one of the keys above. Empty when
+        /// only runtime-wide keys or TODO placeholders are at fault — those
+        /// don't belong to any one workflow.
+        needed_by: Vec<String>,
     },
     Ready,
 }
@@ -69,33 +73,15 @@ pub fn check_setup(dir: &str) -> SetupStatus {
     }
 
     // Which settings actually matter is a question with an answer: a key is
-    // needed when connections.json interpolates it, or when the Logic Apps
-    // runtime reads it directly. The rule here used to be a case-sensitive
-    // substring guess ("KEY", "CONNECTION", "SUBSCRIPTION", "siteName"), which
-    // reported WORKFLOWS_SUBSCRIPTION_ID while staying silent about a blank
-    // keyVault_VaultUri that connections.json genuinely depends on — so the
-    // banner's count bore no relation to what would actually break at runtime.
-    let conn_path = p.join("connections.json");
-    let referenced: Vec<String> = if conn_path.exists() {
-        let conn_text = fs::read_to_string(&conn_path).unwrap_or_default();
-        let conn_json: serde_json::Value = serde_json::from_str(&conn_text).unwrap_or_default();
-        // Scan for both @appsetting('key') and @{appsetting('key')} forms.
-        let conn_str = conn_json.to_string();
-        let mut refs: Vec<String> = Vec::new();
-        for cap in regex::Regex::new(r"@\{?appsetting\('([^']+)'\)\}?")
-            .unwrap()
-            .captures_iter(&conn_str)
-        {
-            let key = cap[1].to_string();
-            if !refs.contains(&key) {
-                refs.push(key);
-            }
-        }
-        refs
-    } else {
-        Vec::new()
-    };
-
+    // needed when a connection some workflow actually calls interpolates it,
+    // or when the Logic Apps runtime reads it directly. connections.json alone
+    // is not that answer — projects deployed from a shared template declare
+    // connections (an Event Grid publisher, a Key Vault) that no workflow here
+    // uses, and their blank endpoints broke nothing yet headed the banner.
+    // A blank key on a connection that is called only breaks that workflow's
+    // run, and the per-run readiness gate stops it there; this check names
+    // the workflows so the warning says what is actually at stake.
+    let referenced = connection_keys_in_use(&p);
     // Named, not counted: a bare count sends the user hunting through the whole
     // file for which settings the banner means.
     let mut blank: Vec<String> = Vec::new();
@@ -106,7 +92,7 @@ pub fn check_setup(dir: &str) -> SetupStatus {
                 // counts whether or not anything references it yet.
                 let is_missing = s.contains("TODO")
                     || (s.is_empty()
-                        && (referenced.contains(key)
+                        && (referenced.contains_key(key)
                             || RUNTIME_REQUIRED_KEYS.contains(&key.as_str())));
                 if is_missing {
                     blank.push(key.clone());
@@ -118,17 +104,117 @@ pub fn check_setup(dir: &str) -> SetupStatus {
 
     // Referenced by connections.json with no local.settings.json entry at all.
     let mut absent: Vec<String> = referenced
-        .iter()
+        .keys()
         .filter(|k| vals.is_none_or(|v| !v.contains_key(k.as_str())))
         .cloned()
         .collect();
     absent.sort();
 
+    let mut needed_by: Vec<String> = blank
+        .iter()
+        .chain(&absent)
+        .filter_map(|k| referenced.get(k))
+        .flatten()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    needed_by.sort_by_key(|w| w.to_lowercase());
+
     if !blank.is_empty() || !absent.is_empty() {
-        return SetupStatus::NeedsConfiguration { blank, absent };
+        return SetupStatus::NeedsConfiguration {
+            blank,
+            absent,
+            needed_by,
+        };
     }
 
     SetupStatus::Ready
+}
+
+/// Every `@appsetting` key used by a connection that some workflow calls,
+/// mapped to the workflows that call it.
+///
+/// A workflow names its connection under `connectionName` (service provider
+/// and function actions), `referenceName` (managed API actions) or
+/// `connection` (API Management actions); the name is matched against every
+/// section of connections.json.
+fn connection_keys_in_use(logic_apps_dir: &std::path::Path) -> HashMap<String, Vec<String>> {
+    let conn: serde_json::Value = fs::read_to_string(logic_apps_dir.join("connections.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    let Some(sections) = conn.as_object() else {
+        return HashMap::new();
+    };
+
+    let mut callers: HashMap<String, Vec<String>> = HashMap::new();
+    for entry in fs::read_dir(logic_apps_dir).into_iter().flatten().flatten() {
+        let Ok(text) = fs::read_to_string(entry.path().join("workflow.json")) else {
+            continue;
+        };
+        let Ok(wf) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let workflow = entry.file_name().to_string_lossy().into_owned();
+        let mut names = Vec::new();
+        collect_connection_names(&wf, &mut names);
+        names.sort();
+        names.dedup();
+        for name in names {
+            callers.entry(name).or_default().push(workflow.clone());
+        }
+    }
+
+    let re = regex::Regex::new(r"@\{?appsetting\('([^']+)'\)\}?").unwrap();
+    let mut keys: HashMap<String, Vec<String>> = HashMap::new();
+    for (section_name, section) in sections {
+        let Some(section) = section.as_object() else {
+            continue;
+        };
+        for (name, body) in section {
+            let Some(workflows) = callers.get(name) else {
+                continue;
+            };
+            let used_keys: Vec<String> = if section_name == "functionConnections" {
+                crate::services::connection_diag::function_connection_keys(body)
+            } else {
+                // Scan for both @appsetting('key') and @{appsetting('key')} forms.
+                re.captures_iter(&body.to_string())
+                    .map(|cap| cap[1].to_string())
+                    .collect()
+            };
+            for key in used_keys {
+                let users = keys.entry(key).or_default();
+                for w in workflows {
+                    if !users.contains(w) {
+                        users.push(w.clone());
+                    }
+                }
+            }
+        }
+    }
+    keys
+}
+
+fn collect_connection_names(node: &serde_json::Value, out: &mut Vec<String>) {
+    match node {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                match (k.as_str(), v) {
+                    (
+                        "connectionName" | "referenceName" | "connection",
+                        serde_json::Value::String(s),
+                    ) => out.push(s.clone()),
+                    _ => collect_connection_names(v, out),
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            items.iter().for_each(|v| collect_connection_names(v, out))
+        }
+        _ => {}
+    }
 }
 
 /// Render a key list for a one-line banner. Shows every key while the list is
@@ -140,6 +226,16 @@ pub fn summarize_keys(keys: &[String]) -> String {
         keys.join(", ")
     } else {
         format!("{}, +{} more", keys[..SHOWN].join(", "), keys.len() - SHOWN)
+    }
+}
+
+/// The " · used by …" tail for a settings warning, naming the workflows that
+/// would fail without them. Empty when no single workflow owns the problem.
+pub fn used_by_suffix(workflows: &[String]) -> String {
+    if workflows.is_empty() {
+        String::new()
+    } else {
+        format!(" · used by {}", summarize_keys(workflows))
     }
 }
 
@@ -758,6 +854,26 @@ mod tests {
         tmp
     }
 
+    /// Add a workflow whose actions call `connections` by name.
+    fn calls(tmp: &tempfile::TempDir, workflow: &str, connections: &[&str]) {
+        let actions: serde_json::Map<String, serde_json::Value> = connections
+            .iter()
+            .map(|c| {
+                (
+                    format!("use_{c}"),
+                    serde_json::json!({ "inputs": { "serviceProviderConfiguration": { "connectionName": c } } }),
+                )
+            })
+            .collect();
+        let dir = tmp.path().join(workflow);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(
+            dir.join("workflow.json"),
+            serde_json::json!({ "definition": { "actions": actions } }).to_string(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn blank_settings_are_named_not_just_counted() {
         let tmp = project(
@@ -771,12 +887,18 @@ mod tests {
         );
 
         match check_setup(tmp.path().to_str().unwrap()) {
-            SetupStatus::NeedsConfiguration { blank, absent } => {
+            SetupStatus::NeedsConfiguration {
+                blank,
+                absent,
+                needed_by,
+            } => {
                 assert_eq!(
                     blank,
                     vec!["WEBSITE_SITE_NAME", "WORKFLOWS_SUBSCRIPTION_ID"]
                 );
                 assert!(absent.is_empty());
+                // Runtime-wide keys don't belong to any one workflow.
+                assert!(needed_by.is_empty());
             }
             other => panic!("expected NeedsConfiguration, got {:?}", other),
         }
@@ -802,9 +924,16 @@ mod tests {
             ],
             Some(conns),
         );
+        let wf = tmp.path().join("notify");
+        std::fs::create_dir(&wf).unwrap();
+        std::fs::write(
+            wf.join("workflow.json"),
+            r#"{"definition":{"actions":{"post":{"inputs":{"host":{"connection":{"referenceName":"teams"}}}}}}}"#,
+        )
+        .unwrap();
 
         match check_setup(tmp.path().to_str().unwrap()) {
-            SetupStatus::NeedsConfiguration { blank, absent } => {
+            SetupStatus::NeedsConfiguration { blank, absent, .. } => {
                 assert_eq!(blank, vec!["WORKFLOWS_SUBSCRIPTION_ID"]);
                 // Referenced by connections.json, no entry in Values at all.
                 assert_eq!(absent, vec!["Teams_connectionUrl"]);
@@ -834,9 +963,10 @@ mod tests {
             ],
             Some(conns),
         );
+        calls(&tmp, "orders", &["kv", "sb"]);
 
         match check_setup(tmp.path().to_str().unwrap()) {
-            SetupStatus::NeedsConfiguration { blank, absent } => {
+            SetupStatus::NeedsConfiguration { blank, absent, .. } => {
                 assert_eq!(
                     blank,
                     vec!["keyVault_VaultUri", "serviceBus_fullyQualifiedNamespace"]
@@ -865,6 +995,94 @@ mod tests {
             check_setup(tmp.path().to_str().unwrap()),
             SetupStatus::Ready
         ));
+    }
+
+    #[test]
+    fn a_connection_no_workflow_calls_is_not_reported() {
+        // The case that prompted this: connections.json declares an Event Grid
+        // publisher and a Key Vault from the shared template, no workflow uses
+        // either, and their blank endpoints used to head the banner.
+        let conns = r#"{
+            "serviceProviderConnections": {
+                "eventGridPublisher": { "parameterValues": { "topicEndpoint": "@appsetting('eventGridPublisher_topicEndpoint')" } },
+                "keyVault": { "parameterValues": { "VaultUri": "@appsetting('keyVault_VaultUri')" } }
+            }
+        }"#;
+        let tmp = project(
+            &[
+                ("eventGridPublisher_topicEndpoint", ""),
+                ("WEBSITE_SITE_NAME", "ais-tom"),
+                ("WORKFLOWS_SUBSCRIPTION_ID", "sub-1"),
+                ("WORKFLOWS_RESOURCE_GROUP_NAME", "rg-1"),
+                ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
+            ],
+            Some(conns),
+        );
+        calls(&tmp, "unrelated", &["somethingElse"]);
+        assert_eq!(
+            check_setup(tmp.path().to_str().unwrap()),
+            SetupStatus::Ready
+        );
+    }
+
+    /// A function connection shaped like a real project's,
+    /// called from Rcv-Http-Extract, with the given trigger URL.
+    fn function_project(trigger_url: &str) -> tempfile::TempDir {
+        let conns = r#"{
+            "functionConnections": {
+                "ExtractorFromLc": {
+                    "authentication": { "type": "QueryString", "name": "Code", "value": "@appsetting('azureFunction_ExtractorFromLc_appKey')" },
+                    "function": { "id": "/subscriptions/@appsetting('AI_SUBSCRIPTION_ID')/resourceGroups/@appsetting('AI_RESOURCE_GROUP_NAME')/providers/Microsoft.Web/sites/@appsetting('AI_azureFunctions_siteName')/functions/x" },
+                    "triggerUrl": "@appsetting('azureFunction_ExtractorFromLc_triggerUrl')"
+                }
+            }
+        }"#;
+        let tmp = project(
+            &[
+                ("AI_SUBSCRIPTION_ID", ""),
+                ("AI_RESOURCE_GROUP_NAME", ""),
+                ("AI_azureFunctions_siteName", ""),
+                ("azureFunction_ExtractorFromLc_triggerUrl", trigger_url),
+                ("azureFunction_ExtractorFromLc_appKey", "placeholder"),
+                ("WEBSITE_SITE_NAME", "ais-tom"),
+                ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
+            ],
+            Some(conns),
+        );
+        let wf = tmp.path().join("Rcv-Http-Extract");
+        std::fs::create_dir(&wf).unwrap();
+        std::fs::write(
+            wf.join("workflow.json"),
+            r#"{"definition":{"actions":{"extract":{"type":"Function","inputs":{"function":{"connectionName":"ExtractorFromLc"}}}}}}"#,
+        )
+        .unwrap();
+        calls(&tmp, "Other-Workflow", &[]);
+        tmp
+    }
+
+    #[test]
+    fn a_function_connections_resource_id_settings_are_not_needed_locally() {
+        // The AI_* keys only build function.id, which the local runtime never
+        // resolves — it calls triggerUrl. They used to head the banner anyway.
+        let tmp = function_project("http://localhost:7072/api/ExtractorFromLc");
+        assert_eq!(
+            check_setup(tmp.path().to_str().unwrap()),
+            SetupStatus::Ready
+        );
+    }
+
+    #[test]
+    fn a_blank_trigger_url_names_the_workflow_that_calls_it() {
+        let tmp = function_project("");
+        match check_setup(tmp.path().to_str().unwrap()) {
+            SetupStatus::NeedsConfiguration {
+                blank, needed_by, ..
+            } => {
+                assert_eq!(blank, vec!["azureFunction_ExtractorFromLc_triggerUrl"]);
+                assert_eq!(needed_by, vec!["Rcv-Http-Extract"]);
+            }
+            other => panic!("expected NeedsConfiguration, got {:?}", other),
+        }
     }
 
     #[test]

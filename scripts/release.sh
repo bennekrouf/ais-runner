@@ -12,12 +12,16 @@
 #   ./scripts/release.sh --minor    # bump minor  (0.3.1 → 0.4.0)
 #   ./scripts/release.sh --major    # bump major  (0.3.1 → 1.0.0)
 #   ./scripts/release.sh --dry-run  # show what would happen, don't do it
+#   ./scripts/release.sh --no-notes # release with nothing in CHANGELOG.md (build-only)
+#
+# Flags combine, e.g. `./scripts/release.sh --minor --dry-run`.
 
 set -euo pipefail
 
 CARGO="Cargo.toml"
 FORMULA="${FORMULA_PATH:-$HOME/code/homebrew-aisrunner/Formula/aisrunner.rb}"
 DRY_RUN=false
+ALLOW_NO_NOTES=false
 
 CARGO_VERSION=$(grep '^version' "$CARGO" | head -1 | sed 's/version = "\(.*\)"/\1/')
 
@@ -30,17 +34,21 @@ CURRENT="${LATEST_TAG:-$CARGO_VERSION}"
 IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
 
 # ── Compute target version ────────────────────────────────────────────────────
-case "${1:-}" in
-    --dry-run)            DRY_RUN=true; NEW="$MAJOR.$MINOR.$((PATCH + 1))" ;;
-    --patch|"")           NEW="$MAJOR.$MINOR.$((PATCH + 1))" ;;
-    --minor)              NEW="$MAJOR.$((MINOR + 1)).0" ;;
-    --major)              NEW="$((MAJOR + 1)).0.0" ;;
-    [0-9]*.[0-9]*.[0-9]*) NEW="$1" ;;
-    *)
-        echo "Usage: $0 [--patch|--minor|--major|--dry-run|<version>]"
-        exit 1
-        ;;
-esac
+NEW="$MAJOR.$MINOR.$((PATCH + 1))"
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run)            DRY_RUN=true ;;
+        --no-notes)           ALLOW_NO_NOTES=true ;;
+        --patch)              NEW="$MAJOR.$MINOR.$((PATCH + 1))" ;;
+        --minor)              NEW="$MAJOR.$((MINOR + 1)).0" ;;
+        --major)              NEW="$((MAJOR + 1)).0.0" ;;
+        [0-9]*.[0-9]*.[0-9]*) NEW="$arg" ;;
+        *)
+            echo "Usage: $0 [--patch|--minor|--major|<version>] [--dry-run] [--no-notes]"
+            exit 1
+            ;;
+    esac
+done
 
 TAG="v$NEW"
 
@@ -91,8 +99,9 @@ echo ""
 # ── Release notes ─────────────────────────────────────────────────────────────
 # CHANGELOG.md is what the GitHub Release body and the public releases page are
 # both built from, so a release with nothing written in it ships a version
-# number and no explanation. Warn, don't block: a build-only release is a real
-# thing and the entry can also be written after the fact.
+# number and no explanation. This used to be a warning, and 0.5.51–0.5.54 all
+# went out past it with no notes. Now it blocks; a build-only release is still
+# a real thing, and --no-notes says so explicitly.
 CHANGELOG="CHANGELOG.md"
 NOTES_STATE="missing"
 if [[ -f "$CHANGELOG" ]]; then
@@ -106,7 +115,16 @@ fi
 case "$NOTES_STATE" in
     dated)      echo "  Release notes: CHANGELOG.md already has a [$NEW] section" ;;
     unreleased) echo "  Release notes: [Unreleased] → [$NEW] (dated $(date +%F))" ;;
-    missing)    echo "  ⚠️  Release notes: nothing under [Unreleased] — $TAG will ship with no notes" ;;
+    missing)
+        if $ALLOW_NO_NOTES; then
+            echo "  ⚠️  Release notes: none — $TAG ships with no notes (--no-notes)"
+        else
+            echo "  ❌ Release notes: nothing under [Unreleased] in $CHANGELOG"
+            echo "     Add the entry (## [Unreleased] + ### Added/Changed/Fixed/Removed),"
+            echo "     or pass --no-notes for a build-only release."
+            $DRY_RUN || exit 1
+        fi
+        ;;
 esac
 echo ""
 

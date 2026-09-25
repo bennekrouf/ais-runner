@@ -306,13 +306,15 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                     setup_manager::SetupStatus::NeedsConfiguration {
                         ref blank,
                         ref absent,
+                        ref needed_by,
                     } => {
                         if !blank.is_empty() {
                             push_log(
                                 format!(
-                                    "⚠ {} setting(s) need a value: {}",
+                                    "⚠ {} setting(s) need a value: {}{}",
                                     blank.len(),
-                                    setup_manager::summarize_keys(blank)
+                                    setup_manager::summarize_keys(blank),
+                                    setup_manager::used_by_suffix(needed_by)
                                 ),
                                 LogLevel::Warn,
                             );

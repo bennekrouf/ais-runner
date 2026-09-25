@@ -1,0 +1,63 @@
+name: Release notes
+
+# Every PR that changes the app says what changed, in CHANGELOG.md under
+# `## [Unreleased]`. That section is what release.sh stamps with the next
+# version and what the public releases page on mayorana.ch is built from, so a
+# note missing here is a version on that page with nothing written under it.
+#
+# Written now, while the change is fresh, rather than at release time. A PR
+# with no user-visible change (tests, refactors, CI, docs) takes the
+# `no-notes` label instead.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+concurrency:
+  group: release-notes-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check CHANGELOG.md [Unreleased]
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          NO_NOTES: ${{ contains(github.event.pull_request.labels.*.name, 'no-notes') }}
+        run: |
+          if [[ "$NO_NOTES" == "true" ]]; then
+            echo "Labelled no-notes — skipping."
+            exit 0
+          fi
+
+          # Files that never reach a user: nothing to announce when only these move.
+          APP_FILES=$(git diff --name-only "$BASE"..."$HEAD" \
+            | grep -vE '^(\.github/|\.githooks/|scripts/|docs/|tests/|testdata/|homebrew/)|\.md$|^(LICENSE|\.gitignore)$' \
+            || true)
+          if [[ -z "$APP_FILES" ]]; then
+            echo "No app files changed — no note needed."
+            exit 0
+          fi
+
+          ADDED=$(git diff "$BASE"..."$HEAD" -- CHANGELOG.md | grep -cE '^\+\s*- ' || true)
+          UNRELEASED=$(awk '/^## \[[Uu]nreleased\]/{f=1;next} /^## /{f=0} f && /^- /{n++} END{print n+0}' CHANGELOG.md)
+          if [[ "$ADDED" -gt 0 && "$UNRELEASED" -gt 0 ]]; then
+            echo "CHANGELOG.md has $UNRELEASED note(s) under [Unreleased]."
+            exit 0
+          fi
+
+          echo "::error file=CHANGELOG.md::This PR changes the app but adds no release note."
+          echo "Changed app files:"
+          echo "$APP_FILES" | sed 's/^/  /'
+          echo
+          echo "Add a bullet under '## [Unreleased]' in CHANGELOG.md (create the heading"
+          echo "above the latest version if it is not there), under ### Added, Changed,"
+          echo "Fixed or Removed. Write it for someone using the app, not for a reviewer."
+          echo
+          echo "No user-visible change? Add the 'no-notes' label to this PR instead."
+          exit 1

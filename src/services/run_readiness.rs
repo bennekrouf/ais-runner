@@ -31,6 +31,9 @@ use crate::services::{connection_diag, connections_local, setup_manager, workflo
 /// machine. Kept on a fixed port so rewritten settings stay stable.
 pub const MOCK_BASE_URL: &str = "http://127.0.0.1:7079";
 
+/// The project's Java function host, started on :7072 by `handlers::java`.
+pub const LOCAL_FUNCTIONS_BASE_URL: &str = "http://localhost:7072";
+
 /// The local-readiness verdict for a single workflow.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RunReadiness {
@@ -156,6 +159,22 @@ fn local_target_in(value: &str, database: Option<&str>) -> String {
     }
 }
 
+/// The local Java function host's URL for a deployed function's trigger URL.
+///
+/// The path (`/api/<Function>`) is the same on both hosts, so only the origin
+/// changes; the query is dropped because it carries the deployed function's
+/// `code=` key, which the local anonymous-auth host neither needs nor should see.
+pub fn local_function_url(value: &str) -> String {
+    let after_scheme = value.split_once("://").map_or(value, |(_, rest)| rest);
+    let path = after_scheme
+        .find('/')
+        .map_or("", |i| &after_scheme[i..])
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("");
+    format!("{LOCAL_FUNCTIONS_BASE_URL}{path}")
+}
+
 /// Inspect one workflow's connections against the current on-disk config.
 pub fn check(logic_apps_dir: &str, workflow: &str) -> RunReadiness {
     let mut auto_fixable = Vec::new();
@@ -238,6 +257,17 @@ fn cloud_pointing_for(logic_apps_dir: &str, workflow: &str) -> Vec<(String, Stri
             }
         }
     }
+    // A function connection's triggerUrl still aimed at the deployed function
+    // app would send the run to the cloud; its target is the local Java host.
+    let mut trigger_urls: Vec<String> = Vec::new();
+    if let Some(functions) = conn["functionConnections"].as_object() {
+        for (name, function) in functions {
+            if used.contains(name) {
+                collect_appsetting_refs(&function["triggerUrl"], &mut trigger_urls);
+            }
+        }
+    }
+    keys.extend(trigger_urls.iter().cloned());
 
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -247,7 +277,11 @@ fn cloud_pointing_for(logic_apps_dir: &str, workflow: &str) -> Vec<(String, Stri
         }
         let val = settings["Values"][&key].as_str().unwrap_or("");
         if is_cloud_value(val) {
-            let target = local_target_for(&key, val, &settings);
+            let target = if trigger_urls.contains(&key) {
+                local_function_url(val)
+            } else {
+                local_target_for(&key, val, &settings)
+            };
             out.push((key, val.to_string(), target));
         }
     }
@@ -503,6 +537,112 @@ mod tests {
         assert!(
             smart_default_in("sqlServerAIS_connectionString", &named, Some("aisdev"))
                 .contains("Database=explicit;")
+        );
+    }
+
+    /// A project whose `Extract` workflow calls the `extractor` function
+    /// connection. `settings` are the `Values` entries.
+    fn function_project(settings: &[(&str, &str)]) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("connections.json"),
+            r#"{ "functionConnections": { "extractor": {
+                "authentication": { "type": "QueryString", "name": "Code", "value": "@appsetting('azureFunction_Extractor_appKey')" },
+                "function": { "id": "/subscriptions/@appsetting('AI_SUBSCRIPTION_ID')/resourceGroups/rg/providers/Microsoft.Web/sites/s/functions/Extractor" },
+                "triggerUrl": "@appsetting('azureFunction_Extractor_triggerUrl')"
+            } } }"#,
+        )
+        .unwrap();
+        let values: serde_json::Map<String, serde_json::Value> = settings
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+            .collect();
+        std::fs::write(
+            tmp.path().join("local.settings.json"),
+            serde_json::json!({ "Values": values }).to_string(),
+        )
+        .unwrap();
+        let wf = tmp.path().join("Extract");
+        std::fs::create_dir(&wf).unwrap();
+        std::fs::write(
+            wf.join("workflow.json"),
+            r#"{"definition":{"actions":{"call":{"type":"Function","inputs":{"function":{"connectionName":"extractor"}}}}}}"#,
+        )
+        .unwrap();
+        tmp
+    }
+
+    #[test]
+    fn a_blank_function_trigger_url_and_key_are_filled_with_the_local_host() {
+        let tmp = function_project(&[
+            ("azureFunction_Extractor_triggerUrl", ""),
+            ("azureFunction_Extractor_appKey", ""),
+            ("AI_SUBSCRIPTION_ID", ""),
+        ]);
+        let r = check(tmp.path().to_str().unwrap(), "Extract");
+        let mut fixable = r.auto_fixable.clone();
+        fixable.sort();
+        assert_eq!(
+            fixable,
+            vec![
+                (
+                    "extractor".into(),
+                    "azureFunction_Extractor_appKey".into(),
+                    "placeholder".into()
+                ),
+                (
+                    "extractor".into(),
+                    "azureFunction_Extractor_triggerUrl".into(),
+                    "http://localhost:7072/api/Extractor".into()
+                ),
+            ]
+        );
+        // function.id is never resolved locally, so its blank settings don't block.
+        assert!(r.blocking_settings.is_empty());
+    }
+
+    #[test]
+    fn a_configured_function_connection_is_ready() {
+        let tmp = function_project(&[
+            (
+                "azureFunction_Extractor_triggerUrl",
+                "http://localhost:7072/api/Extractor",
+            ),
+            ("azureFunction_Extractor_appKey", "placeholder"),
+            ("AI_SUBSCRIPTION_ID", ""),
+        ]);
+        assert!(check(tmp.path().to_str().unwrap(), "Extract").is_ready());
+    }
+
+    #[test]
+    fn a_deployed_function_trigger_url_is_redirected_to_the_local_host() {
+        let tmp = function_project(&[
+            (
+                "azureFunction_Extractor_triggerUrl",
+                "https://func-example.azurewebsites.net/api/Extractor?code=secret",
+            ),
+            ("azureFunction_Extractor_appKey", "secret"),
+        ]);
+        let r = check(tmp.path().to_str().unwrap(), "Extract");
+        assert_eq!(
+            r.cloud_pointing,
+            vec![(
+                "azureFunction_Extractor_triggerUrl".into(),
+                "https://func-example.azurewebsites.net/api/Extractor?code=secret".into(),
+                "http://localhost:7072/api/Extractor".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn local_function_url_keeps_the_path_and_drops_the_key() {
+        assert_eq!(
+            local_function_url("https://func-example.azurewebsites.net/api/Convert?code=abc"),
+            "http://localhost:7072/api/Convert"
+        );
+        assert_eq!(
+            local_function_url("https://func-example.azurewebsites.net"),
+            "http://localhost:7072"
         );
     }
 }

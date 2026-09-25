@@ -1479,11 +1479,15 @@ fn setup_banner(
         // they need different fixes, so they keep their own buttons. Each row
         // names the keys: "3 settings require attention" on its own left the
         // user grepping local.settings.json to find out which three.
-        setup_manager::SetupStatus::NeedsConfiguration { blank, absent } => rsx! {
+        setup_manager::SetupStatus::NeedsConfiguration {
+            blank,
+            absent,
+            needed_by,
+        } => rsx! {
             div { class: "setup-banner setup-banner-stack",
                 if !blank.is_empty() {
                     div { class: "setup-banner-row",
-                        span { "⚠ {blank.len()} setting(s) need a value: {setup_manager::summarize_keys(&blank)}" }
+                        span { "⚠ {blank.len()} setting(s) need a value: {setup_manager::summarize_keys(&blank)}{setup_manager::used_by_suffix(&needed_by)}" }
                         // Auto-detect needs a subscription and resource group to search,
                         // which is exactly what the workspace link holds — so an unlinked
                         // workspace used to get this banner with no Azure route out of it.
@@ -1518,7 +1522,7 @@ fn setup_banner(
                 }
                 if !absent.is_empty() {
                     div { class: "setup-banner-row",
-                        span { "⚠ {absent.len()} key(s) referenced in connections.json are missing from local.settings.json: {setup_manager::summarize_keys(&absent)}" }
+                        span { "⚠ {absent.len()} key(s) referenced in connections.json are missing from local.settings.json: {setup_manager::summarize_keys(&absent)}{setup_manager::used_by_suffix(&needed_by)}" }
                         button {
                             class: "setup-banner-btn",
                             style: "background: var(--blue); margin-right: 8px;",
