@@ -85,8 +85,6 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
     // `link` borrows app_cfg, so the checkbox has an initial state.
     let notifications_default = app_cfg.notifications_enabled;
     let mut notifications_enabled = use_signal(|| notifications_default);
-    let strip_oauth_default = app_cfg.strips_workflow_oauth(&props.logic_apps_dir);
-    let mut strip_oauth = use_signal(|| strip_oauth_default);
 
     // Note: the writes below use `entry(..).or_default()`, not `get_mut`. They
     // used to skip silently when the workspace had no link yet — so on an
@@ -604,36 +602,6 @@ pub fn SettingsEditor(props: SettingsEditorProps) -> Element {
                         },
                     }
                     " Desktop notification when a run finishes, fails, or times out"
-                }
-            }
-
-            // ── Local run (this workspace) ──────────────────────────────
-            // Same row geometry as Preferences, but its own block: this flag is
-            // per-workspace, and filing it under the app-wide one would suggest
-            // turning it off here turns it off for every project.
-            div { class: "settings-prefs",
-                label { class: "settings-cfg-label", "Workflow OAuth" }
-                label {
-                    class: "settings-cfg-check",
-                    title: "ActiveDirectoryOAuth blocks can't authenticate locally and fail with \
-                            \"property 'tenant' is missing\". When on, they are removed from \
-                            workflow.json while func runs and put back on stop. Turn off if this \
-                            project's local.settings.json has real OAuth parameters.",
-                    input {
-                        r#type: "checkbox",
-                        checked: *strip_oauth.read(),
-                        onchange: {
-                            let dir = logic_apps_dir.clone();
-                            move |_| {
-                                let on = !*strip_oauth.read();
-                                strip_oauth.set(on);
-                                let mut cfg = config::load();
-                                cfg.set_strips_workflow_oauth(dir.clone(), on);
-                                config::save(&cfg);
-                            }
-                        },
-                    }
-                    " Strip ActiveDirectoryOAuth from workflows while func runs (applies on next start)"
                 }
             }
 
