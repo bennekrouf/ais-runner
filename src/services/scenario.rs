@@ -774,7 +774,7 @@ fn required_services(scenario: &Scenario, ctx: &RunContext) -> Vec<(&'static str
     }
     if func {
         needed.push((
-            "Logic Apps runtime (func)",
+            FUNC_SERVICE,
             "127.0.0.1:7071".to_string(),
             "Start func from the toolbar — no workflow can run without it.".to_string(),
         ));
@@ -833,23 +833,55 @@ fn host_port(endpoint: &str, default_port: u16) -> String {
     }
 }
 
+const FUNC_SERVICE: &str = "Logic Apps runtime (func)";
+
+fn missing_services(scenario: &Scenario, ctx: &RunContext) -> Vec<(&'static str, String, String)> {
+    required_services(scenario, ctx)
+        .into_iter()
+        .filter(|(_, addr, _)| {
+            !addr
+                .to_socket_addrs()
+                .ok()
+                .and_then(|mut a| a.next())
+                .is_some_and(|a| {
+                    std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_millis(700))
+                        .is_ok()
+                })
+        })
+        .collect()
+}
+
 /// Services the scenario needs that are not accepting connections.
 pub fn unavailable_services(scenario: &Scenario, ctx: &RunContext) -> Vec<String> {
-    let mut down = Vec::new();
-    for (label, addr, hint) in required_services(scenario, ctx) {
-        let reachable = addr
-            .to_socket_addrs()
-            .ok()
-            .and_then(|mut a| a.next())
-            .is_some_and(|a| {
-                std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_millis(700))
-                    .is_ok()
-            });
-        if !reachable {
-            down.push(format!("{label} is not reachable on {addr} — {hint}"));
-        }
+    missing_services(scenario, ctx)
+        .into_iter()
+        .map(|(label, addr, hint)| format!("{label} is not reachable on {addr} — {hint}"))
+        .collect()
+}
+
+/// Only func may be started for the user: it binds its Service Bus listeners and
+/// run-history storage at startup, so it has to come up after everything else.
+fn only_func_missing(missing: &[(&'static str, String, String)]) -> bool {
+    !missing.is_empty() && missing.iter().all(|(label, ..)| *label == FUNC_SERVICE)
+}
+
+async fn autostart_func(scenario: &Scenario, ctx: &RunContext) -> Option<StepResult> {
+    ctx.restart_func.as_ref()?;
+    if !only_func_missing(&missing_services(scenario, ctx)) {
+        return None;
     }
-    down
+    let started = std::time::Instant::now();
+    let (status, detail) = match restart_func_now(ctx, default_func_restart_timeout()).await {
+        Ok(detail) => (StepStatus::Ok, detail),
+        Err(detail) => (StepStatus::Failed, detail),
+    };
+    Some(StepResult {
+        index: 0,
+        label: "start func".to_string(),
+        status,
+        detail,
+        elapsed_ms: started.elapsed().as_millis(),
+    })
 }
 
 /// Assertions that can never pass, found before any setup runs.
@@ -916,6 +948,15 @@ pub async fn run(
     let mut aborted = false;
     let mut stopped = false;
 
+    if let Some(started) = autostart_func(scenario, ctx).await {
+        let failed = started.status == StepStatus::Failed;
+        on_step(started.clone());
+        results.push(started);
+        if failed {
+            return results;
+        }
+    }
+
     // Fail before any container, queue or database is touched.
     let down = unavailable_services(scenario, ctx);
     if !down.is_empty() {
@@ -931,7 +972,8 @@ pub async fn run(
             elapsed_ms: 0,
         };
         on_step(result.clone());
-        return vec![result];
+        results.push(result);
+        return results;
     }
 
     let stale = stale_assertions(scenario, &ctx.project_root.to_string_lossy());
@@ -948,7 +990,8 @@ pub async fn run(
             elapsed_ms: 0,
         };
         on_step(result.clone());
-        return vec![result];
+        results.push(result);
+        return results;
     }
 
     for (index, step) in scenario.steps.iter().enumerate() {
@@ -3666,5 +3709,42 @@ mod service_gate_tests {
             results[0].detail
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn func_is_started_only_when_it_is_the_last_thing_missing() {
+        let svc = |label: &'static str| (label, String::new(), String::new());
+        assert!(only_func_missing(&[svc(FUNC_SERVICE)]));
+        assert!(!only_func_missing(&[]));
+        // func started ahead of the emulator would attach no Service Bus listeners
+        assert!(!only_func_missing(&[
+            svc(FUNC_SERVICE),
+            svc("Service Bus emulator")
+        ]));
+        assert!(!only_func_missing(&[svc("Azurite (table)")]));
+    }
+
+    #[tokio::test]
+    async fn func_is_not_started_outside_the_tests_view() {
+        let scenario = Scenario {
+            name: "no-callback".into(),
+            description: String::new(),
+            vars: Default::default(),
+            steps: vec![Step::WaitForRun {
+                workflow: "W".into(),
+                timeout_ms: 1,
+                expect_status: "Succeeded".into(),
+            }],
+            source: PathBuf::new(),
+        };
+        let ctx = RunContext {
+            sb_host: "127.0.0.1".to_string(),
+            cosmos_endpoint: "https://127.0.0.1:9".to_string(),
+            cosmos_key: String::new(),
+            project_root: PathBuf::from("/nonexistent"),
+            restart_func: None,
+            cancel: CancelFlag::default(),
+        };
+        assert!(autostart_func(&scenario, &ctx).await.is_none());
     }
 }
