@@ -1,38 +1,29 @@
-//! Strip `ActiveDirectoryOAuth` from workflow HTTP actions for local runs.
+//! Put back workflow.json files that older versions of ais-runner edited.
 //!
-//! Workflows that call Acme/ERP authenticate with:
-//!
-//! ```json
-//! "authentication": {
-//!     "type": "ActiveDirectoryOAuth",
-//!     "tenant": "@{parameters('PartnerTenantId')}",
-//!     "clientId": "@{parameters('AcmeClientId')}",
-//!     "secret": "@{parameters('AcmeSecret')}"
-//! }
-//! ```
-//!
-//! None of that can work locally. The parameters resolve through
-//! `@appsetting()`, and those keys are absent from `local.settings.json` — so
-//! the action fails before it ever reaches the stub:
+//! Up to v0.5.51 func start rewrote every `*/workflow.json` in the workspace,
+//! deleting the `"authentication": { … "ActiveDirectoryOAuth" … }` block from
+//! HTTP actions because it cannot work locally: the tenant/clientId/secret
+//! parameters resolve through `@appsetting()` keys a local checkout does not
+//! have, so the action failed with
 //!
 //! ```text
 //! Execute_Strategy_stored_procedure  Failed
 //!   The required OAuth authentication property 'tenant' is missing.
 //! ```
 //!
-//! Filling the keys in is worse, not better: with real values the runtime
-//! would fetch a real token from AAD (a network call, and a live secret
-//! sitting in a developer's working tree) purely to send an `Authorization`
-//! header that a localhost stub discards. With fake values the token request
-//! fails and the action still dies.
+//! It no longer does. A tool that silently edits source files costs more than
+//! the error it prevents: the rewrites landed in `git status` next to real
+//! work, survived any session that did not shut down cleanly, and once a
+//! snapshot went stale the files stayed stripped for good. Diagnosing that
+//! error is [`crate::services::run_explain`]'s job, and fixing it belongs to
+//! whoever owns the workspace's parameters.
 //!
-//! So the block is removed while func runs. Same contract as
-//! [`crate::services::connections_snapshot`]: snapshot the pristine file
-//! first, restore it on stop, and detect "already patched" through the
-//! patch's own idempotence rather than a marker.
-//!
-//! The edit is textual, not a JSON round-trip. Re-serializing would reindent
-//! whole files and bury the developer in a diff they never made.
+//! What remains here is the cleanup half. Workspaces are still full of files
+//! an older build stripped, with snapshots under `.ais-cache/workflows`, so
+//! [`restore`] and [`heal_stale_patch`] stay: opening a project puts those
+//! files back. Nothing in this module writes a `workflow.json` that it is not
+//! restoring from a snapshot, and [`strip`] is kept only to recognise the
+//! patch an older build wrote.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -54,6 +45,10 @@ fn cache_dir(logic_apps_dir: &Path) -> PathBuf {
     cache_dir::root(logic_apps_dir).join(CACHE_SUBDIR)
 }
 
+/// Test-only since the patcher went: `restore` walks the snapshot directory
+/// and derives each workflow name from the file it found, rather than looking
+/// a path up by name.
+#[cfg(test)]
 fn backup_path(logic_apps_dir: &Path, workflow: &str) -> PathBuf {
     cache_dir(logic_apps_dir).join(format!("{workflow}.workflow.json.original"))
 }
@@ -80,8 +75,9 @@ fn object_value_at(raw: &str, from: usize) -> Option<usize> {
 
 /// Remove every `"authentication": { … "ActiveDirectoryOAuth" … }` member.
 ///
-/// Returns the text unchanged when there is nothing to strip, so
-/// `strip(x) == x` doubles as the "already patched" test.
+/// Not used to edit anything any more: [`restore`] compares a snapshot's
+/// `strip` against the file on disk to tell "this is the patch an older build
+/// wrote, and mine to put back" from "someone's own work, hands off".
 pub fn strip(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let bytes = raw.as_bytes();
@@ -153,46 +149,6 @@ pub fn strip(raw: &str) -> String {
     out
 }
 
-/// Patch every `*/workflow.json` under `logic_apps_dir`, snapshotting first.
-/// Returns the workflow names that changed.
-pub fn patch_all(logic_apps_dir: &Path) -> std::io::Result<Vec<String>> {
-    let mut patched = Vec::new();
-    let Ok(entries) = std::fs::read_dir(logic_apps_dir) else {
-        return Ok(patched);
-    };
-    for entry in entries.flatten() {
-        let wf = entry.path().join("workflow.json");
-        if !wf.is_file() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_string();
-        let raw = std::fs::read_to_string(&wf)?;
-        let stripped = strip(&raw);
-        if stripped == raw {
-            // Either nothing to strip, or already stripped by an earlier run
-            // that exited without restoring — re-register the latter so this
-            // session's teardown still puts it back.
-            if backup_path(logic_apps_dir, &name).exists() {
-                register(logic_apps_dir);
-            }
-            continue;
-        }
-        cache_dir::ensure(logic_apps_dir, &cache_dir(logic_apps_dir))?;
-        // Always the file as it is now. It still carries OAuth, so it is not
-        // our patch — `strip` is a fixed point — which makes it the pristine
-        // copy by definition. An older snapshot left by a session that never
-        // restored describes a file that no longer exists: keeping it meant
-        // `restore` saw `strip(old) != strip(new)`, called the file foreign,
-        // and left the working tree stripped for good.
-        std::fs::write(backup_path(logic_apps_dir, &name), &raw)?;
-        std::fs::write(&wf, stripped)?;
-        register(logic_apps_dir);
-        patched.push(name);
-    }
-    patched.sort();
-    Ok(patched)
-}
-
 fn register(logic_apps_dir: &Path) {
     if let Ok(mut dirs) = patched_dirs().lock() {
         dirs.insert(logic_apps_dir.to_path_buf());
@@ -255,7 +211,7 @@ pub fn restore(logic_apps_dir: &Path) -> RestoreReport {
         match current.as_deref() {
             // Already the way the developer had it.
             Some(c) if c == original => {}
-            // Byte-for-byte what `patch_all` would have written from this
+            // Byte-for-byte what an older build would have written from this
             // snapshot, so it is ours and ours alone to put back. Comparing
             // against `strip(original)` rather than testing the file for
             // "looks patched" is the whole point: a file with no OAuth block
@@ -353,6 +309,19 @@ mod tests {
         tempfile::tempdir().unwrap()
     }
 
+    /// Leave a workspace in the state an ais-runner up to v0.5.51 left it in:
+    /// `workflow.json` stripped, the pristine copy in `.ais-cache/workflows`.
+    /// This module no longer produces that state, but every workspace one of
+    /// those builds touched is still in it, which is what `restore` and
+    /// `heal_stale_patch` exist to undo.
+    fn legacy_patch(ws: &Path, name: &str, contents: &str) {
+        let dir = ws.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        cache_dir::ensure(ws, &cache_dir(ws)).unwrap();
+        std::fs::write(backup_path(ws, name), contents).unwrap();
+        std::fs::write(dir.join("workflow.json"), strip(contents)).unwrap();
+    }
+
     /// The exact scenario that motivated this function: a patched workflow
     /// with no live ais-runner process — func not listening, nothing in the
     /// registry (fresh test process). Opening the project must put it back.
@@ -361,15 +330,9 @@ mod tests {
         let _g = serialised();
         let tmp = workspace();
         let ws = tmp.path().to_path_buf();
-        let wf_dir = ws.join("Send-Http-Get-Acme-AddressBook");
-        std::fs::create_dir_all(&wf_dir).unwrap();
-        let wf = wf_dir.join("workflow.json");
-        std::fs::write(&wf, WF).unwrap();
-
-        patch_all(&ws).unwrap();
+        legacy_patch(&ws, "Send-Http-Get-Acme-AddressBook", WF);
+        let wf = ws.join("Send-Http-Get-Acme-AddressBook/workflow.json");
         assert!(!std::fs::read_to_string(&wf).unwrap().contains(OAUTH));
-        // simulate a crash: nothing registered for this dir in this process
-        patched_dirs().lock().unwrap().remove(&ws);
 
         assert_eq!(heal_stale_patch_with(&ws, false).restored, 1);
         assert_eq!(std::fs::read_to_string(&wf).unwrap(), WF);
@@ -383,10 +346,7 @@ mod tests {
         let _g = serialised();
         let tmp = workspace();
         let ws = tmp.path().to_path_buf();
-        std::fs::create_dir_all(ws.join("W")).unwrap();
-        std::fs::write(ws.join("W/workflow.json"), WF).unwrap();
-        patch_all(&ws).unwrap();
-        patched_dirs().lock().unwrap().remove(&ws);
+        legacy_patch(&ws, "W", WF);
 
         let report = heal_stale_patch_with(&ws, true);
         assert!(report.is_quiet());
@@ -417,11 +377,8 @@ mod tests {
         let _g = serialised();
         let tmp = workspace();
         let ws = tmp.path().to_path_buf();
-        std::fs::create_dir_all(ws.join("W")).unwrap();
+        legacy_patch(&ws, "W", WF);
         let wf = ws.join("W/workflow.json");
-        std::fs::write(&wf, WF).unwrap();
-        patch_all(&ws).unwrap();
-        patched_dirs().lock().unwrap().remove(&ws);
 
         let theirs = WF.replace("Execute_Strategy_stored_procedure", "Renamed_By_Hand");
         std::fs::write(&wf, &theirs).unwrap();
@@ -440,39 +397,6 @@ mod tests {
         );
     }
 
-    /// A crash leaves a snapshot behind; the developer checks the files out
-    /// and pulls. The next start used to keep the *old* snapshot and strip the
-    /// new file, so stop compared against the wrong original, called every
-    /// pulled workflow foreign, and left them stripped in the working tree.
-    #[test]
-    fn a_stale_snapshot_is_replaced_by_the_current_file() {
-        let _g = serialised();
-        let tmp = workspace();
-        let ws = tmp.path().to_path_buf();
-        std::fs::create_dir_all(ws.join("W")).unwrap();
-        let wf = ws.join("W/workflow.json");
-        std::fs::write(&wf, WF).unwrap();
-        patch_all(&ws).unwrap();
-        patched_dirs().lock().unwrap().remove(&ws);
-
-        let pulled = WF.replace("Execute_Strategy_stored_procedure", "Pulled_From_Main");
-        std::fs::write(&wf, &pulled).unwrap();
-
-        assert_eq!(patch_all(&ws).unwrap(), ["W"]);
-        assert!(!std::fs::read_to_string(&wf).unwrap().contains(OAUTH));
-        assert_eq!(
-            std::fs::read_to_string(backup_path(&ws, "W")).unwrap(),
-            pulled,
-            "snapshot is the file we actually patched"
-        );
-
-        let report = restore(&ws);
-        assert_eq!(report.restored, 1);
-        assert!(report.foreign.is_empty());
-        assert_eq!(std::fs::read_to_string(&wf).unwrap(), pulled);
-        assert!(!backup_path(&ws, "W").exists());
-    }
-
     /// One unreadable snapshot used to abort the whole pass with `?`, leaving
     /// every later workflow stranded in its patched state.
     #[test]
@@ -481,10 +405,8 @@ mod tests {
         let tmp = workspace();
         let ws = tmp.path().to_path_buf();
         for name in ["A", "B"] {
-            std::fs::create_dir_all(ws.join(name)).unwrap();
-            std::fs::write(ws.join(name).join("workflow.json"), WF).unwrap();
+            legacy_patch(&ws, name, WF);
         }
-        patch_all(&ws).unwrap();
         // A's snapshot becomes unreadable: a directory where a file should be.
         std::fs::remove_file(backup_path(&ws, "A")).unwrap();
         std::fs::create_dir(backup_path(&ws, "A")).unwrap();
@@ -603,32 +525,31 @@ mod tests {
         serde_json::from_str::<serde_json::Value>(&out).expect("valid JSON");
     }
 
+    /// The regression this module was reduced for: a project ais-runner has
+    /// never patched must come back from a full open/run/stop cycle with its
+    /// workflows byte-for-byte unchanged — no rewrite, no snapshot, no
+    /// `.ais-cache/workflows` to clean up later.
     #[test]
-    fn a_run_leaves_the_working_tree_clean() {
+    fn a_workspace_we_never_patched_is_left_completely_alone() {
         let _g = serialised();
-        let ws = std::env::temp_dir().join(format!(
-            "ais-wfauth-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let wf_dir = ws.join("Send-Http-Get-Acme-AddressBook");
-        std::fs::create_dir_all(&wf_dir).unwrap();
-        let wf = wf_dir.join("workflow.json");
+        let tmp = workspace();
+        let ws = tmp.path().to_path_buf();
+        std::fs::create_dir_all(ws.join("W")).unwrap();
+        let wf = ws.join("W/workflow.json");
         std::fs::write(&wf, WF).unwrap();
 
-        let patched = patch_all(&ws).unwrap();
-        assert_eq!(patched, vec!["Send-Http-Get-Acme-AddressBook".to_string()]);
-        assert!(!std::fs::read_to_string(&wf).unwrap().contains(OAUTH));
+        assert!(heal_stale_patch_with(&ws, false).is_quiet());
+        assert!(restore(&ws).is_quiet());
+        assert_eq!(restore_all(), 0);
 
-        // a second start must not snapshot the patched file over the original
-        assert!(patch_all(&ws).unwrap().is_empty());
-
-        assert_eq!(restore(&ws).restored, 1);
-        assert_eq!(std::fs::read_to_string(&wf).unwrap(), WF);
-
-        std::fs::remove_dir_all(&ws).ok();
+        assert_eq!(
+            std::fs::read_to_string(&wf).unwrap(),
+            WF,
+            "workflow.json is exactly as the developer wrote it"
+        );
+        assert!(
+            !cache_dir(&ws).exists(),
+            "no snapshot directory was created either"
+        );
     }
 }
