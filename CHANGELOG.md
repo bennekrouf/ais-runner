@@ -15,6 +15,50 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [0.5.54] - 2026-09-25
+
+### Removed
+
+- AIS Runner no longer edits `workflow.json`. Since 0.5.43, starting `func`
+  stripped `ActiveDirectoryOAuth` blocks from HTTP actions and put them back on
+  stop; those edits showed up in `git status` next to real work and could
+  outlive a session that did not shut down cleanly. Workflows that use
+  `ActiveDirectoryOAuth` are now left as they are, and the start log names how
+  many there are and why their calls fail locally when the tenant, client id
+  and secret parameters do not resolve. Opening a project still puts back any
+  `workflow.json` an older version stripped, so upgrading leaves no patched
+  files behind.
+- The per-workspace "Workflow OAuth" setting added in 0.5.53, which only
+  existed to turn that stripping off.
+
+## [0.5.53] - 2026-09-15
+
+### Added
+
+- A per-workspace "Workflow OAuth" setting under Settings, for projects whose
+  `local.settings.json` carries real OAuth parameters. Turning it off keeps
+  `ActiveDirectoryOAuth` in workflows while `func` runs.
+
+## [0.5.52] - 2026-09-15
+
+### Fixed
+
+- Workflows pulled or checked out after a session that did not shut down
+  cleanly could be left with their OAuth blocks stripped for good. The app
+  compared them against an outdated snapshot, decided they were not its own
+  edit, and would not restore them. The snapshot is now always taken from the
+  file as it is when `func` starts.
+
+## [0.5.51] - 2026-09-14
+
+### Added
+
+- A banner at startup for occasional messages from us, such as a request for
+  feedback. It is fetched once from mayorana.ch, stays until you dismiss it and
+  is not shown again after that. If the notice cannot be fetched, no banner
+  appears and startup is not slowed. Setting `DISABLE_UPDATE_CHECK` turns it off
+  along with the update check.
+
 ## [0.5.50] - 2026-09-08
 
 ### Changed
