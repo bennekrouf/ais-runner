@@ -15,6 +15,17 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Changed
+
+- Running a scenario from the Tests view now starts `func` when it is the only
+  service the scenario needs that is down, instead of failing with "Logic Apps
+  runtime (func) is not reachable". The run shows it as a first "start func"
+  step. `func` is not started if Azurite or the Service Bus emulator is also
+  down: started before them, it would attach no queue listeners, so the check
+  still reports every missing service as before.
+
 ## [0.5.54] - 2026-09-25
 
 ### Removed
