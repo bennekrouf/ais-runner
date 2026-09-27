@@ -8,8 +8,9 @@ on:
   # ── Manual trigger from the GitHub Actions UI ──────────────────────────────
   # Go to Actions → Release → Run workflow → enter version (e.g. 0.3.2)
   # Leave empty to auto-bump the patch version.
-  # This bumps Cargo.toml, commits, tags, and pushes — then the normal
-  # build/release/homebrew pipeline runs exactly as if you'd pushed a tag.
+  # This bumps Cargo.toml + Cargo.lock, stamps CHANGELOG.md, commits, tags and
+  # pushes — then builds that tag in this same run, exactly as if you had
+  # pushed it (a tag pushed with GITHUB_TOKEN does not start a second run).
   workflow_dispatch:
     inputs:
       version:
@@ -28,19 +29,22 @@ permissions:
   contents: write
 
 jobs:
-  # ── When triggered via workflow_dispatch: bump version and create the tag ──
+  # ── Resolve the tag every job builds; on workflow_dispatch, create it ───
+  # Runs on tag pushes too, so every later job reads one output instead of
+  # each re-deriving the tag (a branch name, on workflow_dispatch).
   prepare:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.bump.outputs.tag }}
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        if: github.event_name == 'workflow_dispatch'
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Bump version and tag
+        if: github.event_name == 'workflow_dispatch'
         id: bump
         env:
           VERSION_INPUT: ${{ inputs.version }}
@@ -67,8 +71,17 @@ jobs:
           echo "Bumping $CURRENT → $NEW (tag: $TAG)"
 
           sed -i "s/^version = \"$CURRENT\"/version = \"$NEW\"/" Cargo.toml
+          # Refresh Cargo.lock with the manifest, or CI's `cargo test --locked`
+          # fails on master after the release. release.sh does the same.
+          cargo metadata --format-version 1 --quiet > /dev/null
+          # Stamp the notes with the version they ship in, as release.sh does:
+          # left as [Unreleased], they would be published again, under the
+          # next version, by the release after this one.
+          if grep -qE '^## \[[Uu]nreleased\]' CHANGELOG.md; then
+            sed -i "s/^## \[[Uu]nreleased\].*$/## [$NEW] - $(date -u +%F)/" CHANGELOG.md
+          fi
 
-          git add Cargo.toml
+          git add Cargo.toml Cargo.lock CHANGELOG.md
           git commit -m "chore: release $TAG"
           git tag "$TAG"
           git push origin HEAD
@@ -76,9 +89,14 @@ jobs:
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve tag
+        id: tag
+        env:
+          BUMPED: ${{ steps.bump.outputs.tag }}
+        run: echo "tag=${BUMPED:-$GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
   build-mac:
     needs: [prepare]
-    if: always() && !failure() && !cancelled()
     runs-on: macos-latest  # arm64 (Apple Silicon)
     env:
       SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
@@ -87,7 +105,12 @@ jobs:
       APP_STORE_ISSUER_ID:  ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
 
     steps:
+      # The tag, not the triggering ref: on workflow_dispatch that ref is the
+      # commit before the version bump, and the binary would report the old
+      # version.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -205,7 +228,8 @@ jobs:
         run: |
           set -euo pipefail
           BIN=target/aarch64-apple-darwin/release/ais-runner
-          VER="${GITHUB_REF_NAME#v}"
+          VER="${{ needs.prepare.outputs.tag }}"
+          VER="${VER#v}"
           APP="dist/AIS Runner.app"
 
           # 1. Construct the .app bundle around the cargo-built binary.
@@ -283,11 +307,15 @@ jobs:
 
   build-windows:
     needs: [prepare]
-    if: always() && !failure() && !cancelled()
     runs-on: windows-latest
 
     steps:
+      # The tag, not the triggering ref: on workflow_dispatch that ref is the
+      # commit before the version bump, and the binary would report the old
+      # version.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -383,7 +411,7 @@ jobs:
             "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
           ) | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $iscc) { Write-Error "ISCC.exe not found" }
-          $version = "${{ needs.prepare.outputs.tag || github.ref_name }}".TrimStart("v")
+          $version = "${{ needs.prepare.outputs.tag }}".TrimStart("v")
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           & $iscc /DMyAppVersion=$version installer\installer.iss
 
@@ -454,15 +482,22 @@ jobs:
 
   build-linux:
     needs: [prepare]
-    if: always() && !failure() && !cancelled()
-    runs-on: ubuntu-latest
+    # The oldest supported runner, on purpose: the binary requires the glibc
+    # (and OpenSSL) it was built against or newer. Built on ubuntu-latest it
+    # needed glibc 2.39 and would not start on Ubuntu 22.04 or Debian 12.
+    runs-on: ubuntu-22.04
 
     # x86_64 only — cross-compiling GTK/WebKit for ARM64 Linux requires a full
     # ARM64 sysroot which is impractical on ubuntu-latest runners.
     # macOS Apple Silicon users are covered by the build-mac job (aarch64-apple-darwin).
 
     steps:
+      # The tag, not the triggering ref: on workflow_dispatch that ref is the
+      # commit before the version bump, and the binary would report the old
+      # version.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -484,6 +519,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libxdo-dev \
+            libssl-dev \
             pkg-config
 
       - name: Build
@@ -545,13 +581,16 @@ jobs:
     needs: [prepare, build-mac, build-windows, build-linux]
     # Publish whatever built: one platform failing must not withhold the
     # others. A run with no artifacts at all is caught below.
-    if: always() && !cancelled()
+    if: always() && !cancelled() && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
+      # The tag, so the notes below come from the CHANGELOG.md it stamped.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -581,7 +620,7 @@ jobs:
       # base (Settings → Secrets and variables → Actions → Variables).
       - name: Flatten artifacts + generate latest.json
         env:
-          TAG:      ${{ needs.prepare.outputs.tag || github.ref_name }}
+          TAG:      ${{ needs.prepare.outputs.tag }}
           DL_BASE:  ${{ vars.DOWNLOAD_BASE_URL }}
         run: |
           set -euo pipefail
@@ -629,7 +668,7 @@ jobs:
       # a release is never blocked on having edited the heading first.
       - name: Generate releases.json from CHANGELOG.md
         env:
-          TAG: ${{ needs.prepare.outputs.tag || github.ref_name }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
 
@@ -671,7 +710,7 @@ jobs:
           SSH_KNOWN: ${{ secrets.DIST_SSH_KNOWN_HOSTS }}
           DEST_ROOT: ${{ vars.DIST_DEST_ROOT }}
           OWNER:     ${{ github.repository_owner }}
-          TAG:       ${{ needs.prepare.outputs.tag || github.ref_name }}
+          TAG:       ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
 
@@ -731,7 +770,7 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG:      ${{ needs.prepare.outputs.tag || github.ref_name }}
+          TAG:      ${{ needs.prepare.outputs.tag }}
           BUY_URL:  ${{ vars.DOWNLOAD_PAGE_URL }}
         run: |
           set -euo pipefail

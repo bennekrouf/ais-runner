@@ -15,6 +15,16 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Fixed
+
+- The Linux build now starts on Ubuntu 22.04, Debian 12 and other
+  distributions older than Ubuntu 24.04, where it stopped at launch with
+  "version GLIBC_2.39 not found". It is now built on Ubuntu 22.04, so it runs
+  there and on anything newer. The same goes for the `ais-test` runner used
+  in CI pipelines.
+
 ## [0.5.55] - 2026-09-25
 
 ### Changed
