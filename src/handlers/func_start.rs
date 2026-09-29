@@ -213,6 +213,31 @@ pub fn handle_start(
                 }
             }
 
+            // 2b. Settings still pointing at the cloud → their local target.
+            //     Project open only reports these; the rewrite happens here,
+            //     right before the runtime reads the file.
+            match crate::services::localize::redirect_cloud_settings(&d) {
+                Ok(keys) if !keys.is_empty() => push(
+                    format!("  ✅ Pointed {} cloud setting(s) at local: {}", keys.len(), keys.join(", ")),
+                    LogLevel::Ok,
+                ),
+                Ok(_) => {}
+                Err(e) => push(format!("  ⚠ Could not redirect cloud settings: {e}"), LogLevel::Warn),
+            }
+
+            // 2c. Empty settings with a local answer (emulator endpoints, the SQL
+            //     server, the database the scenarios create). Done here rather
+            //     than on project open so opening a workspace writes nothing;
+            //     read after step 2 so keys the MSI patch introduced are covered.
+            match setup_manager::fill_local_defaults(&d) {
+                Ok(filled) if !filled.is_empty() => push(
+                    format!("  ✅ Filled {} local setting(s): {}", filled.len(), filled.join(", ")),
+                    LogLevel::Ok,
+                ),
+                Ok(_) => {}
+                Err(e) => push(format!("  ⚠ Could not fill local settings: {e}"), LogLevel::Warn),
+            }
+
             // 3. Settings with known safe defaults — stub silently, warn about the rest
             let risks = connection_diag::scan_startup_risks(&d);
             if !risks.is_empty() {

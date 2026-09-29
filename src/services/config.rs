@@ -46,6 +46,11 @@ pub struct AppConfig {
     /// written before this field existed.
     #[serde(default = "default_true")]
     pub notifications_enabled: bool,
+    /// Unset settings the user dismissed the toolbar warning for, keyed by
+    /// logic_apps_dir. Stored as the key list so the warning comes back when
+    /// a different setting goes missing.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub dismissed_setup: HashMap<String, Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -60,6 +65,7 @@ impl Default for AppConfig {
             graph_prefs: HashMap::new(),
             last_payloads: HashMap::new(),
             notifications_enabled: true,
+            dismissed_setup: HashMap::new(),
         }
     }
 }
