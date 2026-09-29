@@ -13,20 +13,18 @@
 //!     the matching emulator (blob→Azurite, ServiceBus→emulator, SQL/Cosmos→
 //!     their emulators). Providers with no local equivalent are reported.
 //!   * `local.settings.json` — setting values that point at the cloud
-//!     (`*.database.windows.net`, a non-local https endpoint, …) are rewritten
-//!     to their local target, and the connection-string keys the patch now
-//!     references are stubbed with local defaults.
+//!     (`*.database.windows.net`, a non-local https endpoint, …) are reported;
+//!     `func start` rewrites them to their local target, and fills empty keys
+//!     with local defaults, when the runtime actually needs them.
 //!
 //! This runs on the loading screen, on every project open — so it is
-//! **read-only with respect to `connections.json`**. That file is committed
-//! and cloud-facing; patching it here would leave a dirty working tree the
-//! moment a project is opened, even if the user never starts anything. The
-//! MSI analysis is done on an in-memory patch, and `func start` applies the
-//! real one (bracketed by `connections_snapshot` save/restore) when the
-//! runtime actually needs it.
-//!
-//! `local.settings.json` *is* written here — it is gitignored, so stubbing
-//! local defaults into it costs the user nothing.
+//! **read-only**. `connections.json` is committed and cloud-facing; patching
+//! it here would leave a dirty working tree the moment a project is opened,
+//! even if the user never starts anything. The MSI analysis is done on an
+//! in-memory patch, and `func start` applies the real one (bracketed by
+//! `connections_snapshot` save/restore) when the runtime actually needs it.
+//! `local.settings.json` is left alone too, for the same reason: opening a
+//! project should not change its files.
 
 use std::collections::HashMap;
 
@@ -38,12 +36,9 @@ pub struct LocalizeReport {
     pub msi_localized: Vec<String>,
     /// MSI connections whose provider has no local equivalent — need attention.
     pub msi_unresolved: Vec<String>,
-    /// local.settings.json keys whose cloud value was rewritten to a local one.
-    pub settings_localized: Vec<String>,
-    /// Connection-string keys stubbed with a local default because they were empty.
-    pub keys_stubbed: Vec<String>,
-    /// Non-fatal problems.
-    pub errors: Vec<String>,
+    /// local.settings.json keys whose value points at the cloud. `func start`
+    /// rewrites them to a local target; this pass only reports them.
+    pub settings_to_redirect: Vec<String>,
 }
 
 impl LocalizeReport {
@@ -51,8 +46,7 @@ impl LocalizeReport {
     pub fn all_local(&self) -> bool {
         self.msi_localized.is_empty()
             && self.msi_unresolved.is_empty()
-            && self.settings_localized.is_empty()
-            && self.keys_stubbed.is_empty()
+            && self.settings_to_redirect.is_empty()
     }
 }
 
@@ -76,29 +70,47 @@ fn msi_connections(conn: &serde_json::Value) -> HashMap<String, String> {
     out
 }
 
-/// Every `@appsetting('key')` referenced anywhere under connections.json.
-fn referenced_keys(conn: &serde_json::Value) -> Vec<String> {
-    let mut out = Vec::new();
-    collect(conn, &mut out);
-    out.sort();
-    out.dedup();
-    return out;
-
-    fn collect(v: &serde_json::Value, out: &mut Vec<String>) {
-        match v {
-            serde_json::Value::String(s) => {
-                if let Some(k) = s
-                    .strip_prefix("@appsetting('")
-                    .and_then(|s| s.strip_suffix("')"))
-                {
-                    out.push(k.to_string());
+/// Settings whose value points at the cloud, mapped to the local value they
+/// should hold instead.
+fn cloud_redirects(logic_apps_dir: &str) -> HashMap<String, String> {
+    let mut updates = HashMap::new();
+    let Ok(text) = crate::services::settings_file::read_local_settings(logic_apps_dir) else {
+        return updates;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return updates;
+    };
+    if let Some(values) = json["Values"].as_object() {
+        for (k, v) in values {
+            // Managed-API connector URLs are routing metadata the runtime
+            // parses (api/connection name), not endpoints to redirect. A
+            // well-formed value here (the user's real APIM URL or the
+            // smart_default placeholder) must be left alone — clobbering it
+            // with the mock URL breaks connector validation.
+            if k.ends_with("_connectionUrl") {
+                continue;
+            }
+            if let Some(s) = v.as_str() {
+                if run_readiness::is_cloud_value(s) {
+                    updates.insert(k.clone(), run_readiness::local_target_for(k, s, &json));
                 }
             }
-            serde_json::Value::Object(m) => m.values().for_each(|x| collect(x, out)),
-            serde_json::Value::Array(a) => a.iter().for_each(|x| collect(x, out)),
-            _ => {}
         }
     }
+    updates
+}
+
+/// Rewrite every cloud-pointing setting in `local.settings.json` to its local
+/// target, returning the keys changed. Called by `func start`, the moment the
+/// runtime is about to read the file — never on project open.
+pub fn redirect_cloud_settings(logic_apps_dir: &str) -> Result<Vec<String>, String> {
+    let updates = cloud_redirects(logic_apps_dir);
+    let mut keys: Vec<String> = updates.keys().cloned().collect();
+    keys.sort();
+    if !updates.is_empty() {
+        setup_manager::apply_settings(logic_apps_dir, updates)?;
+    }
+    Ok(keys)
 }
 
 /// Localize every connection for `logic_apps_dir`. Idempotent — running it when
@@ -133,76 +145,14 @@ pub fn localize(logic_apps_dir: &str) -> LocalizeReport {
         }
         report.msi_localized.sort();
         report.msi_unresolved.sort();
-
-        // Stub any connection-string key the patched file now references but
-        // that is empty/absent in local.settings.json, using local defaults.
-        let settings_dir = logic_apps_dir.to_string();
-        // `*_databaseName` has no standalone default — its value comes from the
-        // scenarios — so it would never pass a smart_default check.
-        let local_db =
-            crate::services::scenario::local_database_name(std::path::Path::new(&settings_dir));
-        let empty_keys: Vec<String> = referenced_keys(&after)
-            .into_iter()
-            .filter(|k| {
-                !setup_manager::smart_default(k).is_empty()
-                    || (local_db.is_some() && k.ends_with("_databaseName"))
-            })
-            .filter(|k| setting_is_empty(&dir, k))
-            .collect();
-        if !empty_keys.is_empty() {
-            if let Err(e) = setup_manager::stub_missing_keys(&settings_dir, &empty_keys) {
-                report.errors.push(format!("stub settings: {e}"));
-            } else {
-                report.keys_stubbed = empty_keys;
-            }
-        }
     }
 
-    // ── local.settings.json: rewrite cloud endpoint values → local ───────
-    let settings_path = dir.join("local.settings.json");
-    if let Ok(text) = std::fs::read_to_string(&settings_path) {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-            let mut updates: HashMap<String, String> = HashMap::new();
-            if let Some(values) = json["Values"].as_object() {
-                for (k, v) in values {
-                    // Managed-API connector URLs are routing metadata the runtime
-                    // parses (api/connection name), not endpoints to redirect. A
-                    // well-formed value here (the user's real APIM URL or the
-                    // smart_default placeholder) must be left alone — clobbering it
-                    // with the mock URL breaks connector validation.
-                    if k.ends_with("_connectionUrl") {
-                        continue;
-                    }
-                    if let Some(s) = v.as_str() {
-                        if run_readiness::is_cloud_value(s) {
-                            updates.insert(k.clone(), run_readiness::local_target_for(k, s, &json));
-                        }
-                    }
-                }
-            }
-            if !updates.is_empty() {
-                report.settings_localized = updates.keys().cloned().collect();
-                report.settings_localized.sort();
-                if let Err(e) = setup_manager::apply_settings(logic_apps_dir, updates) {
-                    report.errors.push(format!("rewrite settings: {e}"));
-                }
-            }
-        }
-    }
+    // ── local.settings.json: cloud endpoint values → local ───────────────
+    // Reported only; `func start` does the rewrite (see `redirect_cloud_settings`).
+    report.settings_to_redirect = cloud_redirects(logic_apps_dir).into_keys().collect();
+    report.settings_to_redirect.sort();
 
     report
-}
-
-/// True when `key` is missing or empty in local.settings.json `Values`.
-fn setting_is_empty(dir: &std::path::Path, key: &str) -> bool {
-    let Ok(text) = std::fs::read_to_string(dir.join("local.settings.json")) else {
-        return true;
-    };
-    let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-    json["Values"][key]
-        .as_str()
-        .map(|s| s.is_empty())
-        .unwrap_or(true)
 }
 
 #[cfg(test)]
@@ -223,21 +173,6 @@ mod tests {
         let msi = msi_connections(&conn);
         assert_eq!(msi.len(), 1);
         assert!(msi.contains_key("blob"));
-    }
-
-    #[test]
-    fn referenced_keys_are_collected_and_deduped() {
-        let conn = json!({
-            "serviceProviderConnections": {
-                "a": { "parameterValues": { "connectionString": "@appsetting('K1')" } },
-                "b": { "parameterValues": { "connectionString": "@appsetting('K1')",
-                                            "endpoint": "@appsetting('K2')" } }
-            }
-        });
-        assert_eq!(
-            referenced_keys(&conn),
-            vec!["K1".to_string(), "K2".to_string()]
-        );
     }
 
     #[test]
@@ -299,8 +234,16 @@ mod localize_e2e {
         assert!(r.msi_localized.contains(&"ais-sql".to_string()));
         assert_eq!(r.msi_unresolved, vec!["vault".to_string()]);
 
-        // The cloud SQL setting was rewritten to the local emulator.
-        assert!(r.settings_localized.contains(&"SomeDb_cs".to_string()));
+        // The cloud SQL setting is reported, not yet rewritten.
+        assert_eq!(r.settings_to_redirect, vec!["SomeDb_cs".to_string()]);
+        let settings_before = std::fs::read_to_string(dir.join("local.settings.json")).unwrap();
+        assert!(settings_before.contains("corp.database.windows.net"));
+
+        // func start does the rewrite, to the local emulator.
+        assert_eq!(
+            redirect_cloud_settings(base).unwrap(),
+            vec!["SomeDb_cs".to_string()]
+        );
         let settings: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.join("local.settings.json")).unwrap(),
         )
@@ -339,9 +282,8 @@ mod localize_e2e {
         let r2 = localize(base);
         assert_eq!(r2.msi_localized, r.msi_localized);
         assert_eq!(r2.msi_unresolved, r.msi_unresolved);
-        // local.settings.json *was* written, so its cloud value is now local
-        // and there is nothing left to redirect.
-        assert!(r2.settings_localized.is_empty());
+        // The rewrite above left nothing to redirect.
+        assert!(r2.settings_to_redirect.is_empty());
     }
 
     #[test]
@@ -373,7 +315,7 @@ mod localize_e2e {
         )
         .unwrap();
 
-        let r = localize(base);
+        let redirected = redirect_cloud_settings(base).unwrap();
 
         let settings: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.join("local.settings.json")).unwrap(),
@@ -382,13 +324,7 @@ mod localize_e2e {
         // Connector URLs left exactly as they were — not rewritten to the mock URL.
         assert_eq!(settings["Values"]["Teams_connectionUrl"], teams);
         assert_eq!(settings["Values"]["LogAnalytics_connectionUrl"], logan);
-        assert!(!r
-            .settings_localized
-            .contains(&"Teams_connectionUrl".to_string()));
-        assert!(!r
-            .settings_localized
-            .contains(&"LogAnalytics_connectionUrl".to_string()));
-        // The genuinely-cloud SQL value was still redirected.
-        assert!(r.settings_localized.contains(&"SomeDb_cs".to_string()));
+        // Only the genuinely-cloud SQL value was redirected.
+        assert_eq!(redirected, vec!["SomeDb_cs".to_string()]);
     }
 }

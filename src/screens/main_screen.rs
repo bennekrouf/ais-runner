@@ -292,6 +292,14 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut setup_status = ctx.setup_status;
     let setup_updates = ctx.setup_updates;
 
+    // Toolbar chip for unset settings: popover state, and the key list the
+    // user last dismissed it for in this workspace.
+    let setup_chip_open = use_signal(|| false);
+    let setup_dismissed = use_signal({
+        let d = dir.clone();
+        move || config::load().dismissed_setup.get(&d).cloned()
+    });
+
     // Load setup status off the GUI thread on first mount.
     use_effect({
         let d = dir.clone();
@@ -641,7 +649,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
         div { id: "app",
 
             // ── Setup banner ──────────────────────────────────────────────
-            {setup_banner(setup_status, &workspace_link, current_view, visited_views, &dir, log_lines, azure_link_open)}
+            {setup_banner(setup_status, &workspace_link, &dir, log_lines)}
 
             // ── Link-to-Azure chooser ─────────────────────────────────────
             if *azure_link_open.read() {
@@ -808,6 +816,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 }
                 {az_login_widget(az_status, active_tenant, workspace_link.as_ref().and_then(|l| l.tenant_id.clone()), &dir)}
                 {env_badge(setup_status, current_env)}
+                {setup_chip(setup_status, &workspace_link, current_view, visited_views, &dir, log_lines, azure_link_open, setup_chip_open, setup_dismissed)}
                 {
                     let dir_s  = dir.clone();
                     let link_s = workspace_link.clone();
@@ -1415,11 +1424,8 @@ fn epoch_now() -> u64 {
 fn setup_banner(
     setup_status: Signal<setup_manager::SetupStatus>,
     workspace_link: &Option<config::WorkspaceLink>,
-    mut current_view: Signal<String>,
-    mut visited_views: Signal<HashSet<String>>,
     dir: &str,
     log_lines: Signal<Vec<LogLine>>,
-    mut azure_link_open: Signal<bool>,
 ) -> Element {
     let dir = dir.to_string();
     let link = workspace_link.clone();
@@ -1475,79 +1481,120 @@ fn setup_banner(
                 }
             }
         },
-        // Blank values and absent keys arrive together and get a row each —
-        // they need different fixes, so they keep their own buttons. Each row
-        // names the keys: "3 settings require attention" on its own left the
-        // user grepping local.settings.json to find out which three.
-        setup_manager::SetupStatus::NeedsConfiguration {
-            blank,
-            absent,
-            needed_by,
-        } => rsx! {
-            div { class: "setup-banner setup-banner-stack",
-                if !blank.is_empty() {
-                    div { class: "setup-banner-row",
-                        span { "⚠ {blank.len()} setting(s) need a value: {setup_manager::summarize_keys(&blank)}{setup_manager::used_by_suffix(&needed_by)}" }
-                        // Auto-detect needs a subscription and resource group to search,
-                        // which is exactly what the workspace link holds — so an unlinked
-                        // workspace used to get this banner with no Azure route out of it.
+        // Unset settings are not a banner: they block only the workflows that
+        // use them, and the run gate stops those at Run. They get the toolbar
+        // chip instead (see `setup_chip`).
+        _ => rsx! {},
+    }
+}
+
+// ── Unset-settings chip ───────────────────────────────────────────────────────
+
+/// Settings with no local default, shown as a toolbar chip rather than a
+/// banner across the window. Nothing is broken until the user runs a workflow
+/// that needs one of them, and the run gate stops that run with its own
+/// explanation — so this only has to be findable, not in the way.
+#[allow(clippy::too_many_arguments)]
+fn setup_chip(
+    setup_status: Signal<setup_manager::SetupStatus>,
+    workspace_link: &Option<config::WorkspaceLink>,
+    mut current_view: Signal<String>,
+    mut visited_views: Signal<HashSet<String>>,
+    dir: &str,
+    log_lines: Signal<Vec<LogLine>>,
+    mut azure_link_open: Signal<bool>,
+    mut open: Signal<bool>,
+    mut dismissed: Signal<Option<Vec<String>>>,
+) -> Element {
+    let setup_manager::SetupStatus::NeedsConfiguration {
+        blank,
+        absent,
+        needed_by,
+    } = setup_status.read().clone()
+    else {
+        return rsx! {};
+    };
+    let mut keys: Vec<String> = blank.iter().chain(&absent).cloned().collect();
+    keys.sort();
+    if dismissed.read().as_ref() == Some(&keys) {
+        return rsx! {};
+    }
+
+    let summary = setup_manager::attention_summary(&blank, &absent, &needed_by);
+    let tip = if needed_by.is_empty() {
+        summary.clone()
+    } else {
+        format!("{summary}\n\nUsed by:\n{}", needed_by.join("\n"))
+    };
+    let label = format!("⚠ {} unset", keys.len());
+    let dir = dir.to_string();
+    let link = workspace_link.clone();
+
+    rsx! {
+        div { class: "setup-chip-wrap",
+            button {
+                class: "setup-chip",
+                title: "{tip}",
+                onclick: move |_| open.set(!open()),
+                "{label}"
+            }
+            if open() {
+                div { class: "setup-chip-pop",
+                    p { class: "setup-chip-summary", "{summary}" }
+                    p { class: "setup-chip-note",
+                        "ais-runner has no local default for these. Other workflows run as usual."
+                    }
+                    div { class: "setup-chip-actions",
+                        button {
+                            class: "btn btn-small setup-chip-primary",
+                            onclick: move |_| {
+                                open.set(false);
+                                visited_views.write().insert("Settings".into());
+                                current_view.set("Settings".into());
+                            },
+                            "Open Settings"
+                        }
                         if link.is_some() {
                             button {
-                                class: "setup-banner-btn",
-                                style: "background: var(--blue); margin-right: 8px;",
+                                class: "setup-chip-link",
+                                title: "Look the values up in the linked Logic App",
                                 onclick: {
-                                    let dir = dir.clone(); let link = link.clone();
-                                    move |_| setup::handle_auto_detect(&dir, setup_status, log_lines, link.clone())
+                                    let dir = dir.clone();
+                                    let link = link.clone();
+                                    move |_| {
+                                        open.set(false);
+                                        setup::handle_auto_detect(&dir, setup_status, log_lines, link.clone());
+                                    }
                                 },
-                                "Auto-Detect from Azure"
+                                "Fill from Azure"
                             }
                         } else {
                             button {
-                                class: "setup-banner-btn",
-                                style: "background: var(--blue); margin-right: 8px;",
+                                class: "setup-chip-link",
                                 title: "Pick this project's Logic App and fill these in from Azure",
-                                onclick: move |_| azure_link_open.set(true),
-                                "🔗 Link to Azure"
+                                onclick: move |_| {
+                                    open.set(false);
+                                    azure_link_open.set(true);
+                                },
+                                "Link to Azure…"
                             }
                         }
                         button {
-                            class: "setup-banner-btn",
+                            class: "setup-chip-link",
+                            title: "Hide until a different setting goes unset",
                             onclick: move |_| {
-                                visited_views.write().insert("Settings".into());
-                                current_view.set("Settings".into());
+                                open.set(false);
+                                let mut cfg = config::load();
+                                cfg.dismissed_setup.insert(dir.clone(), keys.clone());
+                                config::save(&cfg);
+                                dismissed.set(Some(keys.clone()));
                             },
-                            "Configure Manually"
-                        }
-                    }
-                }
-                if !absent.is_empty() {
-                    div { class: "setup-banner-row",
-                        span { "⚠ {absent.len()} key(s) referenced in connections.json are missing from local.settings.json: {setup_manager::summarize_keys(&absent)}{setup_manager::used_by_suffix(&needed_by)}" }
-                        button {
-                            class: "setup-banner-btn",
-                            style: "background: var(--blue); margin-right: 8px;",
-                            onclick: {
-                                let absent = absent.clone(); let dir = dir.clone();
-                                move |_| {
-                                    let _ = setup_manager::stub_missing_keys(&dir, &absent);
-                                    ss.set(setup_manager::check_setup(&dir));
-                                }
-                            },
-                            "Auto-stub Missing Keys"
-                        }
-                        button {
-                            class: "setup-banner-btn",
-                            onclick: move |_| {
-                                visited_views.write().insert("Settings".into());
-                                current_view.set("Settings".into());
-                            },
-                            "Edit Manually"
+                            "Dismiss"
                         }
                     }
                 }
             }
-        },
-        _ => rsx! {},
+        }
     }
 }
 

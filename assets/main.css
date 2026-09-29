@@ -3523,25 +3523,6 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
     color: #f2cc60;
     border-bottom-color: rgba(242, 204, 96, 0.1);
 }
-/* The configuration banner carries one row per problem category (blank values,
-   absent keys), each with its own fix buttons. Stack them: the base
-   .setup-banner is a horizontal flex row, which would otherwise sit the two
-   categories side by side. */
-.setup-banner-stack {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-}
-.setup-banner-row {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-}
-/* Let the message take the slack so both rows' buttons line up on the right,
-   rather than landing wherever each message happens to end. */
-.setup-banner-row > span {
-    flex: 1;
-}
 .setup-banner-btn {
     background: #9a6700;
     color: white;
@@ -3557,6 +3538,47 @@ body.light .btn-warn { background: #fff8c5; color: #9a6700; border-color: #d4a72
     background: #bf8700;
     transform: translateY(-1px);
 }
+
+/* ── UNSET-SETTINGS CHIP (toolbar) ── */
+.setup-chip-wrap { position: relative; flex-shrink: 0; }
+.setup-chip {
+    height: 30px;
+    padding: 0 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg0);
+    color: var(--yellow);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.setup-chip:hover { border-color: var(--yellow); }
+.setup-chip-pop {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 50;
+    width: 340px;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg1);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+    font-size: 12px;
+}
+.setup-chip-summary { margin: 0 0 6px; font-weight: 600; color: var(--text1); overflow-wrap: anywhere; }
+.setup-chip-note    { margin: 0 0 10px; color: var(--text3); }
+.setup-chip-actions { display: flex; align-items: center; gap: 10px; }
+.setup-chip-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--blue);
+    font-size: 12px;
+    cursor: pointer;
+}
+.setup-chip-link:hover { text-decoration: underline; }
 
 @keyframes slideDown {
     from { transform: translateY(-100%); opacity: 0; }

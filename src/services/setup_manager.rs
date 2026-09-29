@@ -100,12 +100,26 @@ pub fn check_setup(dir: &str) -> SetupStatus {
             }
         }
     }
+    // A key with a local answer (the emulator's server, the database the
+    // scenarios create, …) is not the user's problem: `func start` fills it
+    // right before the runtime reads the file. Flagging it on open only asked
+    // the user to type what ais-runner already knew.
+    let local_db = crate::services::scenario::local_database_name(&p);
+    let has_local_default =
+        |k: &str| !smart_default_in(k, &settings, local_db.as_deref()).is_empty();
+    let is_todo = |k: &str| {
+        vals.and_then(|v| v.get(k))
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.contains("TODO"))
+    };
+    blank.retain(|k| is_todo(k) || !has_local_default(k));
     blank.sort();
 
     // Referenced by connections.json with no local.settings.json entry at all.
     let mut absent: Vec<String> = referenced
         .keys()
         .filter(|k| vals.is_none_or(|v| !v.contains_key(k.as_str())))
+        .filter(|k| !has_local_default(k))
         .cloned()
         .collect();
     absent.sort();
@@ -229,14 +243,62 @@ pub fn summarize_keys(keys: &[String]) -> String {
     }
 }
 
-/// The " · used by …" tail for a settings warning, naming the workflows that
-/// would fail without them. Empty when no single workflow owns the problem.
-pub fn used_by_suffix(workflows: &[String]) -> String {
-    if workflows.is_empty() {
-        String::new()
-    } else {
-        format!(" · used by {}", summarize_keys(workflows))
+/// One line saying what a `NeedsConfiguration` status costs the user.
+///
+/// Leads with the effect ("3 workflows can't run") rather than a list of
+/// workflow names: the names are what the tooltip is for, and a run of
+/// them in the header read as noise.
+pub fn attention_summary(blank: &[String], absent: &[String], needed_by: &[String]) -> String {
+    let keys: Vec<String> = blank.iter().chain(absent).cloned().collect();
+    let what = match keys.len() {
+        1 => format!("{} is not set", keys[0]),
+        n => format!("{n} settings are not set: {}", summarize_keys(&keys)),
+    };
+    match needed_by.len() {
+        0 => what,
+        1 => format!("{what} · 1 workflow can't run until then"),
+        n => format!("{what} · {n} workflows can't run until then"),
     }
+}
+
+/// Fill every empty or absent setting a connection references with its local
+/// default, and return the keys written.
+///
+/// Called by `func start`, not on project open: opening a workspace should not
+/// touch its files, and the runtime only reads `local.settings.json` when it
+/// starts. Never overwrites a value the user set, TODO placeholders included.
+pub fn fill_local_defaults(dir: &str) -> Result<Vec<String>, String> {
+    let p = crate::services::workflows::resolve_logic_apps_dir(dir);
+    let text = settings_file::read_local_settings(dir)?;
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let settings: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let conn_text = fs::read_to_string(p.join("connections.json")).unwrap_or_default();
+    let re = regex::Regex::new(r"@\{?appsetting\('([^']+)'\)\}?").unwrap();
+    let mut keys: Vec<String> = re
+        .captures_iter(&conn_text)
+        .map(|c| c[1].to_string())
+        .chain(connection_keys_in_use(&p).into_keys())
+        .collect();
+    keys.sort();
+    keys.dedup();
+
+    let local_db = crate::services::scenario::local_database_name(&p);
+    let updates: HashMap<String, String> = keys
+        .into_iter()
+        .filter(|k| settings["Values"][k].as_str().is_none_or(str::is_empty))
+        .filter_map(|k| {
+            let v = smart_default_in(&k, &settings, local_db.as_deref());
+            (!v.is_empty()).then_some((k, v))
+        })
+        .collect();
+    let mut filled: Vec<String> = updates.keys().cloned().collect();
+    filled.sort();
+    if !updates.is_empty() {
+        apply_settings(dir, updates)?;
+    }
+    Ok(filled)
 }
 
 /// Switch AzureWebJobsStorage from a remote connection string to UseDevelopmentStorage=true.
@@ -722,6 +784,11 @@ pub fn smart_default(key: &str) -> String {
         k if k.to_uppercase().contains("SQL") && k.to_uppercase().contains("CONNECTION") => {
             local_sql_connection("master")
         }
+        // The server half of a server/database pair: always the bundled SQL
+        // emulator locally.
+        k if k.to_uppercase().contains("SQL") && k.ends_with("_serverName") => {
+            format!("localhost,{}", crate::handlers::sql_emulator::SQL_PORT)
+        }
 
         // ── Cosmos DB ───────────────────────────────────────────────────────────
         // Local-only: point at the bundled Cosmos emulator (reachable).
@@ -913,7 +980,8 @@ mod tests {
             "managedApiConnections": {
                 "teams": {
                     "connection": { "id": "/subscriptions/@appsetting('WORKFLOWS_SUBSCRIPTION_ID')/x" },
-                    "connectionRuntimeUrl": "@appsetting('Teams_connectionUrl')"
+                    "connectionRuntimeUrl": "@appsetting('Teams_connectionUrl')",
+                    "parameterValues": { "tenant": "@appsetting('Teams_tenantId')" }
                 }
             }
         }"#;
@@ -936,7 +1004,9 @@ mod tests {
             SetupStatus::NeedsConfiguration { blank, absent, .. } => {
                 assert_eq!(blank, vec!["WORKFLOWS_SUBSCRIPTION_ID"]);
                 // Referenced by connections.json, no entry in Values at all.
-                assert_eq!(absent, vec!["Teams_connectionUrl"]);
+                // Teams_connectionUrl is absent too, but has a local default
+                // that func start fills, so it is not the user's to set.
+                assert_eq!(absent, vec!["Teams_tenantId"]);
             }
             other => panic!("expected both categories, got {:?}", other),
         }
@@ -1025,6 +1095,101 @@ mod tests {
         );
     }
 
+    /// A SQL connection named by server and database, as a project that
+    /// authenticates with managed identity in Azure carries it.
+    fn sql_project(database: &str) -> tempfile::TempDir {
+        let conns = r#"{
+            "serviceProviderConnections": {
+                "sqlAIS": { "parameterValues": {
+                    "serverName": "@appsetting('sqlServerAIS_serverName')",
+                    "databaseName": "@appsetting('sqlServerAIS_databaseName')"
+                } }
+            }
+        }"#;
+        let tmp = project(
+            &[
+                ("sqlServerAIS_serverName", ""),
+                ("sqlServerAIS_databaseName", database),
+                ("WEBSITE_SITE_NAME", "ais-tom"),
+                ("WORKFLOWS_SUBSCRIPTION_ID", "sub-1"),
+                ("WORKFLOWS_RESOURCE_GROUP_NAME", "rg-1"),
+                ("AzureWebJobsStorage", "UseDevelopmentStorage=true"),
+            ],
+            Some(conns),
+        );
+        calls(&tmp, "AIS-GenericLock", &["sqlAIS"]);
+        tmp
+    }
+
+    #[test]
+    fn a_blank_key_with_a_local_default_is_not_reported() {
+        // The SQL server is always the bundled emulator locally, so asking
+        // the user for it on every open was a question with one answer.
+        let tmp = sql_project("aisdev");
+        assert_eq!(
+            check_setup(tmp.path().to_str().unwrap()),
+            SetupStatus::Ready
+        );
+    }
+
+    #[test]
+    fn a_blank_key_with_no_local_default_is_still_reported() {
+        let tmp = sql_project("");
+        match check_setup(tmp.path().to_str().unwrap()) {
+            SetupStatus::NeedsConfiguration {
+                blank, needed_by, ..
+            } => {
+                assert_eq!(blank, vec!["sqlServerAIS_databaseName"]);
+                assert_eq!(needed_by, vec!["AIS-GenericLock"]);
+            }
+            other => panic!("expected NeedsConfiguration, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn checking_setup_writes_nothing() {
+        let tmp = sql_project("aisdev");
+        let path = tmp.path().join("local.settings.json");
+        let before = std::fs::read_to_string(&path).unwrap();
+        check_setup(tmp.path().to_str().unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn fill_local_defaults_writes_only_empty_keys_it_has_an_answer_for() {
+        let tmp = sql_project("");
+        let dir = tmp.path().to_str().unwrap();
+        let filled = fill_local_defaults(dir).unwrap();
+        assert_eq!(filled, vec!["sqlServerAIS_serverName"]);
+
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(tmp.path().join("local.settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings["Values"]["sqlServerAIS_serverName"],
+            "localhost,1433"
+        );
+        // No scenario creates a database, so there is nothing to put here.
+        assert_eq!(settings["Values"]["sqlServerAIS_databaseName"], "");
+        // Idempotent: a second start has nothing left to fill.
+        assert!(fill_local_defaults(dir).unwrap().is_empty());
+    }
+
+    #[test]
+    fn attention_summary_leads_with_the_effect() {
+        let keys = vec!["a_databaseName".to_string(), "a_serverName".to_string()];
+        let wfs: Vec<String> = (0..12).map(|i| format!("wf{i}")).collect();
+        assert_eq!(
+            attention_summary(&keys, &[], &wfs),
+            "2 settings are not set: a_databaseName, a_serverName · 12 workflows can't run until then"
+        );
+        assert_eq!(
+            attention_summary(&keys[..1], &[], &[]),
+            "a_databaseName is not set"
+        );
+    }
+
     /// A function connection shaped like a real project's,
     /// called from Rcv-Http-Extract, with the given trigger URL.
     fn function_project(trigger_url: &str) -> tempfile::TempDir {
@@ -1072,17 +1237,24 @@ mod tests {
     }
 
     #[test]
-    fn a_blank_trigger_url_names_the_workflow_that_calls_it() {
+    fn a_blank_trigger_url_is_filled_at_func_start_not_reported() {
+        // The local function host's URL follows from the key name, so an empty
+        // triggerUrl is ais-runner's to fill, not the user's.
         let tmp = function_project("");
-        match check_setup(tmp.path().to_str().unwrap()) {
-            SetupStatus::NeedsConfiguration {
-                blank, needed_by, ..
-            } => {
-                assert_eq!(blank, vec!["azureFunction_ExtractorFromLc_triggerUrl"]);
-                assert_eq!(needed_by, vec!["Rcv-Http-Extract"]);
-            }
-            other => panic!("expected NeedsConfiguration, got {:?}", other),
-        }
+        let dir = tmp.path().to_str().unwrap();
+        assert_eq!(check_setup(dir), SetupStatus::Ready);
+        assert_eq!(
+            fill_local_defaults(dir).unwrap(),
+            vec!["azureFunction_ExtractorFromLc_triggerUrl"]
+        );
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(tmp.path().join("local.settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings["Values"]["azureFunction_ExtractorFromLc_triggerUrl"],
+            "http://localhost:7072/api/ExtractorFromLc"
+        );
     }
 
     #[test]

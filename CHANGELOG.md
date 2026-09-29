@@ -15,6 +15,27 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Changed
+
+- Opening a project no longer puts a "setting(s) need a value" banner across
+  the top of the window. Settings AIS Runner can answer itself locally, such
+  as the SQL server name (always the bundled SQL emulator) or a function's
+  trigger URL, are no longer flagged at all: they are filled in
+  `local.settings.json` when func starts, and the log lists what was filled.
+- Opening a project no longer changes `local.settings.json`, except to undo
+  changes from an earlier run that didn't shut down cleanly. Filling empty
+  settings and pointing settings that still aim at Azure (a
+  `*.database.windows.net` server, for example) at the local emulators now
+  happen when func starts. On open, the log only lists which settings will be
+  pointed at local.
+- Settings AIS Runner has no local value for now show as a small "⚠ N unset"
+  chip in the toolbar. It says how many workflows can't run until they are
+  set; hover it for their names. Click it to open Settings, fill the values
+  from Azure, or dismiss it. A dismissed chip stays hidden for that project
+  until a different setting goes unset.
+
 ## [0.5.56] - 2026-09-27
 
 ### Fixed

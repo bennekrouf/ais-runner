@@ -153,22 +153,12 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                             LogLevel::Success,
                         );
                     }
-                    if !report.settings_localized.is_empty() {
+                    if !report.settings_to_redirect.is_empty() {
                         push_log(
                             format!(
-                                "🔧 Redirected {} cloud endpoint(s) → local: {}",
-                                report.settings_localized.len(),
-                                report.settings_localized.join(", ")
-                            ),
-                            LogLevel::Success,
-                        );
-                    }
-                    if !report.keys_stubbed.is_empty() {
-                        push_log(
-                            format!(
-                                "🔧 Filled {} local default(s): {}",
-                                report.keys_stubbed.len(),
-                                report.keys_stubbed.join(", ")
+                                "ℹ {} setting(s) point at the cloud and will be pointed at local when func starts: {}",
+                                report.settings_to_redirect.len(),
+                                report.settings_to_redirect.join(", ")
                             ),
                             LogLevel::Info,
                         );
@@ -178,9 +168,6 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                             format!("⚠ '{}' uses Managed Identity with no local emulator — it will fail locally; point it at a local target or the mock server.", name),
                             LogLevel::Warn,
                         );
-                    }
-                    for e in &report.errors {
-                        push_log(format!("⚠ localize: {}", e), LogLevel::Warn);
                     }
                 }
 
@@ -308,24 +295,13 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
                         ref absent,
                         ref needed_by,
                     } => {
-                        if !blank.is_empty() {
-                            push_log(
-                                format!(
-                                    "⚠ {} setting(s) need a value: {}{}",
-                                    blank.len(),
-                                    setup_manager::summarize_keys(blank),
-                                    setup_manager::used_by_suffix(needed_by)
-                                ),
-                                LogLevel::Warn,
-                            );
-                        }
-                        if !absent.is_empty() {
-                            push_log(
-                                format!("⚠ {} key(s) in connections.json are missing from local.settings.json: {}",
-                                    absent.len(), setup_manager::summarize_keys(absent)),
-                                LogLevel::Warn,
-                            );
-                        }
+                        push_log(
+                            format!(
+                                "⚠ {}",
+                                setup_manager::attention_summary(blank, absent, needed_by)
+                            ),
+                            LogLevel::Warn,
+                        );
                     }
                 }
 
