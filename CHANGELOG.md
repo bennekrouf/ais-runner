@@ -15,7 +15,7 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
-## [Unreleased]
+## [0.5.58] - 2026-10-01
 
 ### Fixed
 
