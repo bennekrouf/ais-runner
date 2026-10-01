@@ -1782,7 +1782,7 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
             // runs every POLL_INTERVAL until the timeout expires.
             let unwinnable = stateless_run_history_error(&ctx.project_root, workflow);
 
-            let detail = poll_until(*timeout_ms, &ctx.cancel, || async {
+            let check = || async {
                 match latest_terminal_run(workflow, floor, &claimed).await {
                     Some((run_name, status)) if status == *expect_status => {
                         *winner.borrow_mut() = Some(run_name.clone());
@@ -1838,8 +1838,40 @@ async fn exec(step: &Step, ctx: &RunContext, state: &mut RunState) -> Result<Str
                         Ok(_) => Ok((false, "no terminal run yet".to_string())),
                     },
                 }
-            })
-            .await?;
+            };
+
+            let mut outcome = poll_until(*timeout_ms, &ctx.cancel, &check).await;
+            // A timeout with messages still sitting in the trigger queue means the
+            // runtime stopped consuming it, not that the workflow is slow: say so,
+            // and give func one restart before giving up.
+            if let Err(timed_out) = &outcome {
+                if timed_out.starts_with("timed out") {
+                    if let Some((queue, waiting)) = unconsumed_trigger_messages(ctx, workflow).await
+                    {
+                        let stuck = format!("{waiting} message(s) waiting unconsumed in '{queue}'");
+                        outcome = if ctx.restart_func.is_none() {
+                            Err(format!(
+                                "{timed_out} — {stuck}: func is not consuming that queue; restart func"
+                            ))
+                        } else {
+                            match restart_func_now(ctx, default_func_restart_timeout()).await {
+                                Ok(_) => poll_until(*timeout_ms, &ctx.cancel, &check)
+                                    .await
+                                    .map(|d| format!("{d} (func restarted first: {stuck})"))
+                                    .map_err(|e| {
+                                        format!(
+                                            "{e} — {stuck}, still unconsumed after restarting func"
+                                        )
+                                    }),
+                                Err(e) => Err(format!(
+                                    "{timed_out} — {stuck}; restarting func failed: {e}"
+                                )),
+                            }
+                        };
+                    }
+                }
+            }
+            let detail = outcome?;
 
             if let Some(name) = winner.into_inner() {
                 // Remembered so a following `expect_action` inspects this exact
@@ -2227,6 +2259,19 @@ async fn latest_terminal_run(
         .filter(|r| started_at_or_after(r.properties.start_time.as_deref(), floor))
         .max_by_key(|r| r.properties.start_time.clone())
         .map(|r| (r.name.clone(), r.properties.status.clone()))
+}
+
+/// The trigger queue of `workflow` and how many messages sit in it, when it is
+/// Service Bus-triggered and that queue is not empty.
+async fn unconsumed_trigger_messages(ctx: &RunContext, workflow: &str) -> Option<(String, usize)> {
+    let dir = workflows::resolve_logic_apps_dir_at(&ctx.project_root);
+    let (_, queue) =
+        crate::services::sb_check::trigger_queue_for(&dir.to_string_lossy(), workflow)?;
+    let waiting =
+        crate::services::sb_amqp::peek_amqp_messages(&host_only(&ctx.sb_host), &queue, 10)
+            .await
+            .ok()?;
+    (!waiting.is_empty()).then(|| (queue, waiting.len()))
 }
 
 /// Why `wait for run` can never succeed for this workflow, if it cannot.
@@ -3795,5 +3840,31 @@ mod service_gate_tests {
             cancel: CancelFlag::default(),
         };
         assert!(autostart_func(&scenario, &ctx).await.is_none());
+    }
+
+    /// Only a queue-triggered workflow can be "not consuming": anything else must
+    /// never reach the broker, let alone restart func.
+    #[tokio::test]
+    async fn a_workflow_without_a_trigger_queue_is_never_reported_as_stuck() {
+        let root = std::env::temp_dir().join(format!("ais-stuck-{}", std::process::id()));
+        let wf = root.join("logic_apps").join("Http-Only");
+        std::fs::create_dir_all(&wf).unwrap();
+        std::fs::write(
+            wf.join("workflow.json"),
+            r#"{"definition":{"triggers":{"manual":{"type":"Request","kind":"Http"}},"actions":{}},"kind":"Stateful"}"#,
+        )
+        .unwrap();
+        let ctx = RunContext {
+            sb_host: "127.0.0.1".to_string(),
+            cosmos_endpoint: "https://127.0.0.1:9".to_string(),
+            cosmos_key: String::new(),
+            project_root: root.clone(),
+            restart_func: None,
+            cancel: CancelFlag::default(),
+        };
+        assert!(unconsumed_trigger_messages(&ctx, "Http-Only")
+            .await
+            .is_none());
+        std::fs::remove_dir_all(&root).ok();
     }
 }
