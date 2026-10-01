@@ -15,6 +15,16 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Fixed
+
+- Running a scenario from the Tests view now runs the file as it is on disk
+  at that moment. Before, a scenario edited in your editor after the Tests
+  view was opened still ran its old version until the list was reloaded, with
+  nothing on screen to say so. A scenario file that has since been deleted or
+  no longer parses now stops the run with that error instead.
+
 ## [0.5.57] - 2026-09-29
 
 ### Changed

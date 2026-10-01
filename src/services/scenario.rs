@@ -582,6 +582,15 @@ pub fn load(path: &Path) -> Result<Scenario, String> {
     Ok(scenario)
 }
 
+/// Re-read a listed scenario from its file, so a run never replays a version
+/// edited on disk since the Tests view loaded the list.
+pub fn reload(scenario: &Scenario) -> Result<Scenario, String> {
+    if scenario.source.as_os_str().is_empty() {
+        return Ok(scenario.clone());
+    }
+    load(&scenario.source).map_err(|e| format!("{}: {e}", scenario.source.display()))
+}
+
 pub fn scenario_dir(project_root: &Path) -> PathBuf {
     project_root.join(SCENARIO_DIR)
 }
@@ -2691,6 +2700,43 @@ mod tests {
     }
 
     #[test]
+    fn reload_runs_the_file_as_it_is_now_not_as_it_was_listed() {
+        let dir = std::env::temp_dir().join(format!("ais-runner-reload-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.json");
+        let write = |ms: u64| {
+            std::fs::write(
+                &path,
+                format!(r#"{{"name":"s","steps":[{{"action":"sleep","ms":{ms}}}]}}"#),
+            )
+            .unwrap()
+        };
+
+        write(1);
+        let listed = load(&path).unwrap();
+        write(2);
+        let fresh = reload(&listed).unwrap();
+        assert!(matches!(fresh.steps[0], Step::Sleep { ms: 2 }));
+        assert_eq!(fresh.source, path);
+
+        std::fs::remove_file(&path).unwrap();
+        let err = reload(&listed).unwrap_err();
+        assert!(err.contains("s.json"), "{err}");
+
+        // Recorded but never saved: nothing on disk to re-read.
+        let unsaved = Scenario {
+            source: PathBuf::new(),
+            ..listed
+        };
+        assert!(matches!(
+            reload(&unsaved).unwrap().steps[0],
+            Step::Sleep { ms: 1 }
+        ));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn discover_recurses_into_subfolders_and_groups_by_them() {
         let root = std::env::temp_dir().join(format!("ais-grp-{}", std::process::id()));
         let scenarios = scenario_dir(&root);
@@ -3404,7 +3450,10 @@ mod stale_assertion_tests {
     use super::*;
 
     fn workspace() -> std::path::PathBuf {
-        let tmp = std::env::temp_dir().join(format!("ais-runner-stale-{}", std::process::id()));
+        // One dir per call: tests run in parallel and each deletes its own at the end.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!("ais-runner-stale-{}-{n}", std::process::id()));
         let la = tmp.join("logic_apps");
         for (wf, body) in [
             (

@@ -964,6 +964,17 @@ async fn run_one(
     // Clear previous results so a rerun never shows a mix of two runs.
     results.write().insert(key.clone(), Vec::new());
 
+    let scenario_item = match scenario::reload(&scenario_item) {
+        Ok(fresh) => fresh,
+        Err(e) => {
+            status.set(Some((
+                format!("❌ {key}: could not re-read scenario — {e}"),
+                true,
+            )));
+            return None;
+        }
+    };
+
     let queues = scenario::queues_to_create(&scenario_item);
     if !queues.is_empty() {
         status.set(Some((
