@@ -15,6 +15,18 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Changed
+
+- When a `wait_for_run` step times out on a Service Bus-triggered workflow and
+  messages are still sitting in its trigger queue, the step now says so
+  ("N message(s) waiting unconsumed in '<queue>'") instead of only "no
+  terminal run yet". From the Tests view it also restarts `func` once and
+  waits again, since a runtime that stopped consuming a queue does not start
+  again on its own. If the messages are still there after the restart, the
+  step fails saying so.
+
 ## [0.5.58] - 2026-10-01
 
 ### Fixed
