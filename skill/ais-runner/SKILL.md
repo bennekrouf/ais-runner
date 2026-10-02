@@ -84,9 +84,14 @@ Config lives in `~/.config/ais-runner/config.json` (macOS, Linux) or
 3. **Look up the symptom** in `references/troubleshooting.md`, which lists the
    known failure modes with their causes and fixes. Read it before guessing:
    several local-only failures look like workflow bugs and are not.
-4. **Read the project files** that the symptom points at, and fix the cause in
-   the project when it lives there (a missing connection, a setting with no
-   local value, a scenario step).
+4. **Compare what the log names with the project.** Queue names, setting
+   names, endpoints and workflow names in the log should match what
+   `workflow.json`, `connections.json` and `local.settings.json` say. A message
+   sent to `orders-in` while the trigger listens on `orders.in`, or a
+   connection still resolving to `*.windows.net`, explains a "never fires" on
+   its own. If you don't know where the project is, look next to any file the
+   user gave you, or ask. Fix the cause in the project when it lives there (a
+   missing connection, a setting with no local value, a scenario step).
 5. If none of that explains it, it may be an AIS Runner bug. Offer to draft a
    report (below).
 
@@ -110,7 +115,10 @@ endpoint" as a fix.
 ## Reporting a problem to the author
 
 When the problem looks like an AIS Runner bug, or the user wants to send
-feedback, help them write a report they can send. The user sends it, not you:
+feedback, help them write a report they can send. Go through the steps in
+"When something fails" first, step 4 included, even when the user asks
+straight for a report: a report about a cause on their side wastes their time
+and the author's, and finding that cause is more useful to them than a report. The user sends it, not you:
 never create an issue, send an email or submit a form on their behalf.
 
 Their logs and files come from client projects, so they can contain client
