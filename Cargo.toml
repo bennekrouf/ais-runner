@@ -47,6 +47,10 @@ notify-rust = "4"
 ais-core    = { path = "crates/ais-core" }
 
 # Signal handling on exit paths that never unwind — see services::signals.
+# The anonymous install id for usage statistics: 128 random bits. Already
+# in the tree via other crates, so this names a dependency rather than adding one.
+getrandom = "0.3"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

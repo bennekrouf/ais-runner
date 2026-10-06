@@ -10,5 +10,6 @@ pub mod handlers;
 pub mod notice;
 pub mod screens;
 pub mod services;
+pub mod telemetry;
 pub mod update_check;
 pub mod utils;

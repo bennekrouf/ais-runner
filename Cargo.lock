@@ -63,6 +63,7 @@ dependencies = [
  "dirs 5.0.1",
  "fe2o3-amqp",
  "fe2o3-amqp-types",
+ "getrandom 0.3.4",
  "hmac",
  "indexmap 2.14.0",
  "libc",
