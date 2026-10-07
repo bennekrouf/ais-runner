@@ -27,8 +27,8 @@ fn main() {
         res.set_icon("assets/icon.ico");
         res.set("FileDescription", "AIS Runner");
         res.set("ProductName", "AIS Runner");
-        res.set("CompanyName", "Bennekrouf");
-        res.set("LegalCopyright", "© Bennekrouf");
+        res.set("CompanyName", "Mayorana");
+        res.set("LegalCopyright", "© 2026 Mayorana");
         if let Err(e) = res.compile() {
             // Don't hard-fail — the rc.exe/windres dependency isn't always
             // available on every Windows runner. Warn so the gap is visible
