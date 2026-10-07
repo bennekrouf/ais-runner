@@ -232,7 +232,10 @@ pub fn LoadingScreen(props: LoadingScreenProps) -> Element {
 
                 // 3. Check tools
                 push_log("Checking system tools...".to_string(), LogLevel::Info);
-                push_log("  → Probing func...".to_string(), LogLevel::Info);
+                push_log(
+                    "  → Probing func, azurite, az, node, mvn, docker...".to_string(),
+                    LogLevel::Info,
+                );
                 let tool_results = tokio::task::spawn_blocking(system_check::check_tools)
                     .await
                     .unwrap_or_default();

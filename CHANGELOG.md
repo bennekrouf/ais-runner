@@ -15,6 +15,18 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Fixed
+
+- On Windows, opening a project could stay on the "Initializing…" spinner
+  forever. Checking which tools are installed (func, azurite, az, node, mvn,
+  Docker) waited with no time limit, so a tool that never answered — most
+  often Docker Desktop while it is starting or stuck — held the project
+  closed. Each tool now gets 15 seconds and is shown as unavailable if it has
+  not answered by then, with a note when Docker Desktop is not responding. The
+  tools are also checked side by side, so opening a project is quicker.
+
 ## [0.5.62] - 2026-10-07
 
 ### Changed
