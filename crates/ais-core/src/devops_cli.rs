@@ -83,6 +83,217 @@ fn run_cmd(args: &[&str]) -> Result<String, AzError> {
     Ok(stdout)
 }
 
+// ── finding the org and project ───────────────────────────────────────────────
+
+/// Where a detected org/project came from, for the status line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetectedTarget {
+    pub org: String,
+    pub project: Option<String>,
+    pub source: &'static str,
+}
+
+/// Split any Azure DevOps URL into the org URL `az` wants and the project name.
+///
+/// Accepts what people actually paste: a pipelines page
+/// (`https://dev.azure.com/org/My%20Project/_build?definitionId=3`), a repo
+/// clone URL with a user in it, the SSH remote form, the old
+/// `org.visualstudio.com` host, or a bare org name.
+pub fn split_devops_url(input: &str) -> Option<(String, Option<String>)> {
+    let s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let s = s.split(['?', '#']).next().unwrap_or(s);
+
+    // SSH: git@ssh.dev.azure.com:v3/{org}/{project}/{repo}
+    //      {org}@vs-ssh.visualstudio.com:v3/{org}/{project}/{repo}
+    if let Some(idx) = s.find(":v3/") {
+        let mut parts = s[idx + 4..].split('/');
+        let org = parts.next().filter(|o| !o.is_empty())?;
+        let project = parts.next().filter(|p| !p.is_empty()).map(percent_decode);
+        return Some((org_url(&percent_decode(org)), project));
+    }
+
+    let rest = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))
+        .unwrap_or(s);
+    // drop "user@" in clone URLs
+    let rest = match (rest.find('@'), rest.find('/')) {
+        (Some(at), Some(slash)) if at < slash => &rest[at + 1..],
+        (Some(at), None) => &rest[at + 1..],
+        _ => rest,
+    };
+    let mut segs = rest.split('/').filter(|p| !p.is_empty());
+    let host = segs.next()?;
+
+    let (org, tail): (String, Vec<&str>) = if host.eq_ignore_ascii_case("dev.azure.com") {
+        let org = segs.next()?;
+        (percent_decode(org), segs.collect())
+    } else if let Some(org) = host.strip_suffix(".visualstudio.com") {
+        let mut tail: Vec<&str> = segs.collect();
+        // collection segment in old-style URLs
+        if tail.first() == Some(&"DefaultCollection") {
+            tail.remove(0);
+        }
+        (org.to_string(), tail)
+    } else if !host.contains('.') && !host.contains(' ') {
+        // a bare org name, optionally followed by the project
+        (percent_decode(host), segs.collect())
+    } else {
+        return None;
+    };
+
+    // the project is the first segment, unless it's an area like "_build"
+    let project = tail
+        .first()
+        .filter(|p| !p.starts_with('_'))
+        .map(|p| percent_decode(p));
+    Some((org_url(&org), project))
+}
+
+fn org_url(org: &str) -> String {
+    format!("https://dev.azure.com/{}", org)
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(b) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Work out the org and project without asking: the folder's git remote if it
+/// is hosted on Azure DevOps, otherwise the defaults set with
+/// `az devops configure`.
+pub fn detect_target(project_dir: &str) -> Option<DetectedTarget> {
+    if let Some((org, project)) = git_remote(project_dir).and_then(|r| split_devops_url(&r)) {
+        return Some(DetectedTarget {
+            org,
+            project,
+            source: "the folder's git remote",
+        });
+    }
+    let (org, project) = configured_defaults();
+    org.map(|org| DetectedTarget {
+        org,
+        project,
+        source: "your az devops defaults",
+    })
+}
+
+fn git_remote(dir: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let is_ado = url.contains("dev.azure.com") || url.contains("visualstudio.com");
+    is_ado.then_some(url)
+}
+
+/// `az devops configure --list` prints `organization = …` / `project = …`.
+fn configured_defaults() -> (Option<String>, Option<String>) {
+    let Ok(out) = run_cmd(&["devops", "configure", "--list"]) else {
+        return (None, None);
+    };
+    let value = |key: &str| {
+        out.lines()
+            .filter_map(|l| l.split_once('='))
+            .find(|(k, _)| k.trim() == key)
+            .map(|(_, v)| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let org = value("organization").and_then(|o| split_devops_url(&o).map(|(o, _)| o));
+    (org, value("project"))
+}
+
+/// Resource ID `az rest` needs to get a token for Azure DevOps.
+const DEVOPS_RESOURCE: &str = "499b84ac-1321-427f-aa17-267ca6975798";
+
+fn devops_rest(url: &str) -> Result<serde_json::Value, AzError> {
+    let out = run_cmd(&[
+        "rest",
+        "--method",
+        "get",
+        "--resource",
+        DEVOPS_RESOURCE,
+        "--url",
+        url,
+        "-o",
+        "json",
+    ])?;
+    serde_json::from_str(&out).map_err(|e| AzError::Other(format!("parse {}: {}", url, e)))
+}
+
+/// Org URLs of every Azure DevOps organization the signed-in user belongs to.
+/// `az devops` has no command for this, so it asks the profile and accounts
+/// APIs directly.
+pub fn list_organizations() -> Result<Vec<String>, AzError> {
+    let me = devops_rest(
+        "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1",
+    )?;
+    let member_id = me["publicAlias"]
+        .as_str()
+        .or_else(|| me["id"].as_str())
+        .ok_or_else(|| AzError::Other("no member id in Azure DevOps profile".into()))?;
+    let accounts = devops_rest(&format!(
+        "https://app.vssps.visualstudio.com/_apis/accounts?memberId={}&api-version=7.1",
+        member_id
+    ))?;
+    Ok(parse_organizations(&accounts))
+}
+
+fn parse_organizations(accounts: &serde_json::Value) -> Vec<String> {
+    let items = accounts
+        .as_array()
+        .or_else(|| accounts["value"].as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut names: Vec<&str> = items
+        .iter()
+        .filter_map(|a| a["accountName"].as_str())
+        .collect();
+    names.sort_by_key(|n| n.to_lowercase());
+    names.into_iter().map(org_url).collect()
+}
+
+/// Names of the projects the signed-in user can see in `org`.
+pub fn list_projects(org: &str) -> Result<Vec<String>, AzError> {
+    let out = run_cmd(&[
+        "devops", "project", "list", "--org", org, "--top", "500", "-o", "json",
+    ])?;
+    let v: serde_json::Value =
+        serde_json::from_str(&out).map_err(|e| AzError::Other(format!("parse projects: {}", e)))?;
+    let items = v
+        .as_array()
+        .or_else(|| v["value"].as_array())
+        .ok_or_else(|| AzError::Other("unexpected project list shape".into()))?;
+    let mut names: Vec<String> = items
+        .iter()
+        .filter_map(|p| p["name"].as_str().map(str::to_string))
+        .collect();
+    names.sort_by_key(|n| n.to_lowercase());
+    Ok(names)
+}
+
 // ── build pipeline APIs ───────────────────────────────────────────────────────
 
 pub fn list_pipelines(org: &str, project: &str) -> Result<Vec<Pipeline>, AzError> {
@@ -119,6 +330,192 @@ pub fn list_runs(org: &str, project: &str, pipeline_id: u64) -> Result<Vec<Pipel
     ])?;
     serde_json::from_str::<Vec<PipelineRun>>(&out)
         .map_err(|e| AzError::Other(format!("parse runs: {}", e)))
+}
+
+// ── build logs ────────────────────────────────────────────────────────────────
+
+/// An error or warning a build step reported.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepIssue {
+    /// "error" | "warning"
+    pub kind: String,
+    pub message: String,
+}
+
+/// One record of a build's timeline: a stage, phase, job or task (step).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TimelineRecord {
+    pub id: String,
+    pub parent_id: Option<String>,
+    /// "Stage" | "Phase" | "Job" | "Task" | "Checkpoint" …
+    pub kind: String,
+    pub name: String,
+    pub order: u64,
+    pub state: String,
+    pub result: Option<String>,
+    pub log_id: Option<u64>,
+    pub start_time: Option<String>,
+    pub finish_time: Option<String>,
+    pub issues: Vec<StepIssue>,
+}
+
+/// A job and its steps, in the order they ran.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuildJob {
+    pub stage: Option<String>,
+    pub job: TimelineRecord,
+    pub steps: Vec<TimelineRecord>,
+}
+
+/// The steps of a build, grouped by job. Stages, phases and jobs with no
+/// steps (skipped ones) are kept so the reader sees what didn't run.
+pub fn build_timeline(org: &str, project: &str, build_id: u64) -> Result<Vec<BuildJob>, AzError> {
+    let v = devops_rest(&format!(
+        "{}/{}/_apis/build/builds/{}/timeline?api-version=7.1",
+        org.trim_end_matches('/'),
+        percent_encode(project),
+        build_id
+    ))?;
+    Ok(group_timeline(parse_timeline(&v)))
+}
+
+/// The full text of one step's log.
+pub fn build_log(org: &str, project: &str, build_id: u64, log_id: u64) -> Result<String, AzError> {
+    // not JSON, so no `-o json`: `az rest` prints the text as-is
+    run_cmd(&[
+        "rest",
+        "--method",
+        "get",
+        "--resource",
+        DEVOPS_RESOURCE,
+        "--url",
+        &format!(
+            "{}/{}/_apis/build/builds/{}/logs/{}?api-version=7.1",
+            org.trim_end_matches('/'),
+            percent_encode(project),
+            build_id,
+            log_id
+        ),
+    ])
+}
+
+/// Web page of a build, for opening it in the browser.
+pub fn build_web_url(org: &str, project: &str, build_id: u64) -> String {
+    format!(
+        "{}/{}/_build/results?buildId={}&view=logs",
+        org.trim_end_matches('/'),
+        percent_encode(project),
+        build_id
+    )
+}
+
+fn parse_timeline(v: &serde_json::Value) -> Vec<TimelineRecord> {
+    let Some(records) = v["records"].as_array() else {
+        return Vec::new();
+    };
+    let text = |r: &serde_json::Value, k: &str| r[k].as_str().map(str::to_string);
+    records
+        .iter()
+        .map(|r| TimelineRecord {
+            id: text(r, "id").unwrap_or_default(),
+            parent_id: text(r, "parentId"),
+            kind: text(r, "type").unwrap_or_default(),
+            name: text(r, "name").unwrap_or_default(),
+            order: r["order"].as_u64().unwrap_or(u64::MAX),
+            state: text(r, "state").unwrap_or_default(),
+            result: text(r, "result"),
+            log_id: r["log"]["id"].as_u64(),
+            start_time: text(r, "startTime"),
+            finish_time: text(r, "finishTime"),
+            issues: r["issues"]
+                .as_array()
+                .map(|list| {
+                    list.iter()
+                        .map(|i| StepIssue {
+                            kind: text(i, "type").unwrap_or_default(),
+                            message: text(i, "message").unwrap_or_default(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
+fn group_timeline(records: Vec<TimelineRecord>) -> Vec<BuildJob> {
+    use std::collections::HashMap;
+    let by_id: HashMap<&str, &TimelineRecord> =
+        records.iter().map(|r| (r.id.as_str(), r)).collect();
+    let ancestor = |r: &TimelineRecord, kind: &str| -> Option<&TimelineRecord> {
+        let mut cur = r.parent_id.as_deref().and_then(|id| by_id.get(id).copied());
+        while let Some(p) = cur {
+            if p.kind == kind {
+                return Some(p);
+            }
+            cur = p.parent_id.as_deref().and_then(|id| by_id.get(id).copied());
+        }
+        None
+    };
+
+    let mut jobs: Vec<(u64, u64, Option<String>, BuildJob)> = records
+        .iter()
+        .filter(|r| r.kind == "Job")
+        .map(|job| {
+            let stage = ancestor(job, "Stage");
+            let phase_order = ancestor(job, "Phase").map_or(job.order, |p| p.order);
+            let mut steps: Vec<TimelineRecord> = records
+                .iter()
+                .filter(|t| t.kind == "Task" && t.parent_id.as_deref() == Some(job.id.as_str()))
+                .cloned()
+                .collect();
+            steps.sort_by_key(|t| t.order);
+            (
+                stage.map_or(0, |s| s.order),
+                phase_order,
+                job.start_time.clone(),
+                BuildJob {
+                    stage: stage.map(|s| s.name.clone()),
+                    job: job.clone(),
+                    steps,
+                },
+            )
+        })
+        .collect();
+
+    // phases that never got a job (skipped stages) still show up, as empty jobs
+    for phase in records.iter().filter(|r| r.kind == "Phase") {
+        let has_job = records
+            .iter()
+            .any(|r| r.kind == "Job" && r.parent_id.as_deref() == Some(phase.id.as_str()));
+        if !has_job {
+            let stage = ancestor(phase, "Stage");
+            jobs.push((
+                stage.map_or(0, |s| s.order),
+                phase.order,
+                None,
+                BuildJob {
+                    stage: stage.map(|s| s.name.clone()),
+                    job: phase.clone(),
+                    steps: Vec::new(),
+                },
+            ));
+        }
+    }
+
+    // jobs that never started sort after the ones that did
+    jobs.sort_by(|a, b| (a.0, a.1, a.2.is_none(), &a.2).cmp(&(b.0, b.1, b.2.is_none(), &b.2)));
+    jobs.into_iter().map(|(_, _, _, j)| j).collect()
+}
+
+fn percent_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{:02X}", b),
+        })
+        .collect()
 }
 
 // ── classic release pipeline APIs (az pipelines release …) ───────────────────
@@ -514,4 +911,143 @@ pub fn find_release_defs_for_pipeline(
         }
     }
     Ok(matched)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn split(s: &str) -> Option<(String, Option<String>)> {
+        split_devops_url(s)
+    }
+
+    fn both(org: &str, project: &str) -> Option<(String, Option<String>)> {
+        Some((org.to_string(), Some(project.to_string())))
+    }
+
+    #[test]
+    fn splits_a_pipelines_page_url() {
+        assert_eq!(
+            split("https://dev.azure.com/oryxenergies/Trading%20and%20corporate%20applications/_build"),
+            both("https://dev.azure.com/oryxenergies", "Trading and corporate applications")
+        );
+        assert_eq!(
+            split("https://dev.azure.com/acme/Ops/_build/results?buildId=42&view=logs"),
+            both("https://dev.azure.com/acme", "Ops")
+        );
+    }
+
+    #[test]
+    fn org_only_urls_have_no_project() {
+        assert_eq!(
+            split("https://dev.azure.com/acme/"),
+            Some(("https://dev.azure.com/acme".into(), None))
+        );
+        assert_eq!(
+            split("https://dev.azure.com/acme/_settings"),
+            Some(("https://dev.azure.com/acme".into(), None))
+        );
+        assert_eq!(
+            split("acme"),
+            Some(("https://dev.azure.com/acme".into(), None))
+        );
+    }
+
+    #[test]
+    fn splits_git_remotes() {
+        assert_eq!(
+            split("https://acme@dev.azure.com/acme/My%20Proj/_git/repo"),
+            both("https://dev.azure.com/acme", "My Proj")
+        );
+        assert_eq!(
+            split("git@ssh.dev.azure.com:v3/acme/My%20Proj/repo"),
+            both("https://dev.azure.com/acme", "My Proj")
+        );
+        assert_eq!(
+            split("acme@vs-ssh.visualstudio.com:v3/acme/Proj/repo"),
+            both("https://dev.azure.com/acme", "Proj")
+        );
+    }
+
+    #[test]
+    fn splits_old_visualstudio_urls() {
+        assert_eq!(
+            split("https://acme.visualstudio.com/DefaultCollection/Proj/_git/repo"),
+            both("https://dev.azure.com/acme", "Proj")
+        );
+        assert_eq!(
+            split("https://acme.visualstudio.com/Proj/_build"),
+            both("https://dev.azure.com/acme", "Proj")
+        );
+    }
+
+    #[test]
+    fn rejects_other_hosts() {
+        assert_eq!(split("https://github.com/acme/repo"), None);
+        assert_eq!(split(""), None);
+    }
+
+    #[test]
+    fn parses_the_accounts_response() {
+        let v = serde_json::json!({
+            "count": 2,
+            "value": [
+                { "accountName": "zeta", "accountUri": "https://vssps.dev.azure.com:443/zeta/" },
+                { "accountName": "Acme", "accountUri": "https://vssps.dev.azure.com:443/Acme/" }
+            ]
+        });
+        assert_eq!(
+            parse_organizations(&v),
+            vec!["https://dev.azure.com/Acme", "https://dev.azure.com/zeta"]
+        );
+        assert!(parse_organizations(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn groups_a_staged_timeline_into_jobs() {
+        let v = serde_json::json!({ "records": [
+            { "id": "s2", "type": "Stage", "name": "Deploy prd", "order": 2, "result": "skipped" },
+            { "id": "p2", "parentId": "s2", "type": "Phase", "name": "Deploy prd", "order": 1, "result": "skipped" },
+            { "id": "s1", "type": "Stage", "name": "Deploy dev", "order": 1, "result": "failed" },
+            { "id": "p1", "parentId": "s1", "type": "Phase", "name": "Deploy dev", "order": 1 },
+            { "id": "j1", "parentId": "p1", "type": "Job", "name": "Deploy dev",
+              "startTime": "2026-10-06T13:16:55Z", "result": "failed", "log": { "id": 15 } },
+            { "id": "t2", "parentId": "j1", "type": "Task", "name": "Build defs", "order": 6,
+              "result": "failed", "log": { "id": 8 },
+              "issues": [{ "type": "error", "message": "Bash exited with code '1'." }] },
+            { "id": "t1", "parentId": "j1", "type": "Task", "name": "Initialize job", "order": 1,
+              "result": "succeeded", "log": { "id": 3 } },
+            { "id": "c1", "parentId": "s1", "type": "Checkpoint", "name": "Checkpoint" }
+        ]});
+        let jobs = group_timeline(parse_timeline(&v));
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0].stage.as_deref(), Some("Deploy dev"));
+        let names: Vec<&str> = jobs[0].steps.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["Initialize job", "Build defs"]);
+        assert_eq!(jobs[0].steps[1].log_id, Some(8));
+        assert_eq!(
+            jobs[0].steps[1].issues[0].message,
+            "Bash exited with code '1'."
+        );
+        // the skipped stage is still listed, with no steps
+        assert_eq!(jobs[1].stage.as_deref(), Some("Deploy prd"));
+        assert!(jobs[1].steps.is_empty());
+    }
+
+    #[test]
+    fn encodes_project_names_for_urls() {
+        assert_eq!(
+            percent_encode("Trading and corporate applications"),
+            "Trading%20and%20corporate%20applications"
+        );
+        assert_eq!(percent_encode("R&D/Ops"), "R%26D%2FOps");
+    }
+
+    #[test]
+    fn percent_decode_handles_odd_input() {
+        assert_eq!(percent_decode("a%20b%C3%A9"), "a bé");
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%zz"), "%zz");
+        assert_eq!(percent_decode("%é1"), "%é1");
+    }
 }

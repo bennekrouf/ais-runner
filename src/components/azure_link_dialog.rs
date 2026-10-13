@@ -23,6 +23,9 @@ use dioxus::prelude::*;
 /// "pin a tenant" setting is meant to encode. It also makes the toolbar's
 /// mismatch badge meaningful — with nothing pinned it can never fire.
 fn link_and_fill(dir: &str, site: &LogicAppSite) -> Result<String, String> {
+    let mut cfg = config::load();
+    // the DevOps tab's choices aren't about the site: keep them across a relink
+    let prev = cfg.get_link(dir).cloned().unwrap_or_default();
     let link = config::WorkspaceLink {
         subscription_id: site.subscription.clone(),
         resource_group: site.resource_group.clone(),
@@ -31,11 +34,11 @@ fn link_and_fill(dir: &str, site: &LogicAppSite) -> Result<String, String> {
             .filter(|t| !t.is_empty()),
         logic_app_name: Some(site.name.clone()),
         sb_namespace: None,
-        devops_org: None,
-        devops_project: None,
+        devops_org: prev.devops_org,
+        devops_project: prev.devops_project,
+        devops_pipeline_id: prev.devops_pipeline_id,
     };
 
-    let mut cfg = config::load();
     cfg.set_link(dir.to_string(), link.clone());
     config::save(&cfg);
 

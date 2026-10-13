@@ -15,6 +15,36 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Added
+
+- The DevOps tab can show a build's logs. Click the status icon of any run to
+  see its jobs and steps with how long each took. The first failed step opens
+  on its own, with its error messages above its log, so you no longer have to
+  go to Azure DevOps to find out why a build broke. "Open in browser" takes you
+  to the same build on Azure DevOps.
+
+### Changed
+
+- The DevOps tab now finds your organization and project on its own: from the
+  project folder's git remote when it is hosted on Azure DevOps, otherwise from
+  the defaults you set with `az devops configure`. You can also paste any Azure
+  DevOps link straight from your browser — a pipelines page, a build result or
+  a repo URL — and it is split into the organization and project for you,
+  instead of failing because the box expected the organization URL alone. The
+  organization box suggests every organization your Azure account belongs to
+  (and picks it for you when there is only one), and the project box suggests
+  the projects you have access to in that organization.
+- The DevOps tab reopens the build pipeline you last looked at in each
+  project, or the first one the first time, so its recent runs are on screen
+  right away instead of an empty page waiting for you to pick one.
+
+### Fixed
+
+- Linking a project to an Azure Logic App no longer forgets the organization
+  and project you had set in the DevOps tab.
+
 ## [0.5.63] - 2026-10-07
 
 ### Fixed
