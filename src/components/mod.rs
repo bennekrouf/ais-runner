@@ -1,6 +1,7 @@
 pub mod app_config_panel;
 pub mod azure_link_dialog;
 pub mod azure_panel;
+pub mod build_log_dialog;
 pub mod db_panel;
 pub mod devops_panel;
 pub mod env_compare_panel;

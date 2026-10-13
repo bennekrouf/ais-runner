@@ -4562,3 +4562,87 @@ button.update-banner-link {
     font-size: 11px;
     resize: vertical;
 }
+
+/* ── Build logs (DevOps tab) ─────────────────────────────────────────────── */
+.dv-td-logs { cursor: pointer; }
+.dv-td-logs:hover { background: var(--bg3) !important; }
+#build-log-dialog {
+    position: fixed;
+    inset: 4vh 4vw;
+    z-index: 101;
+    background: var(--bg1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 20px 60px #0008;
+}
+.bl-body { display: flex; flex: 1; min-height: 0; }
+.bl-steps {
+    width: 340px;
+    flex-shrink: 0;
+    overflow-y: auto;
+    border-right: 1px solid var(--border);
+    padding: 6px 0;
+}
+.bl-job { margin-bottom: 8px; }
+.bl-job-name {
+    display: flex;
+    gap: 6px;
+    padding: 6px 12px 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text1);
+}
+.bl-stage { color: var(--text3); font-weight: 400; }
+.bl-step {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px 4px 22px;
+    font-size: 12px;
+    color: var(--text2);
+    cursor: pointer;
+}
+.bl-step:hover { background: var(--bg2); }
+.bl-step.selected { background: var(--blue-dark); color: var(--text1); }
+.bl-step.no-log { cursor: default; opacity: 0.6; }
+.bl-step.no-log:hover { background: none; }
+.bl-step-icon { flex-shrink: 0; font-size: 11px; }
+.bl-step-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bl-step-time { color: var(--text3); font-size: 11px; white-space: nowrap; margin-left: 8px; }
+.bl-log { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.bl-log-title {
+    display: flex;
+    align-items: baseline;
+    padding: 10px 14px 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text1);
+}
+.bl-issue {
+    margin: 0 14px 6px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    background: var(--bg2);
+    white-space: pre-wrap;
+}
+.bl-text {
+    flex: 1;
+    overflow: auto;
+    margin: 4px 0 0;
+    padding: 8px 14px 14px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+    background: var(--bg0);
+    border-top: 1px solid var(--border2);
+}
+.bl-line { white-space: pre-wrap; word-break: break-all; color: var(--text2); min-height: 1.5em; }
+.bl-error { color: var(--red); }
+.bl-warning { color: var(--yellow); }
+.bl-section { color: var(--blue); font-weight: 600; }
+.bl-command { color: var(--blue); }
+.bl-debug { color: var(--text3); }

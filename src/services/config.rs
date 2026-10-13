@@ -28,6 +28,9 @@ pub struct WorkspaceLink {
     pub devops_org: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub devops_project: Option<String>,
+    /// Build pipeline last opened in the DevOps tab, reopened next time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub devops_pipeline_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -64,6 +64,19 @@ pub fn open_in_editor(path: &str) {
 /// Cross-platform temp directory for Azurite data.
 /// - macOS/Linux: `/tmp/azurite`   (Docker-accessible, consistent across sessions)
 /// - Windows:     `%TEMP%\azurite`
+/// Open a web page in the default browser.
+pub fn open_in_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    // not `cmd /c start`: cmd would treat the `&` in query strings as a separator
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
 pub fn azurite_dir() -> PathBuf {
     if cfg!(target_os = "windows") {
         std::env::temp_dir().join("azurite")

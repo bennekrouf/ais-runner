@@ -232,14 +232,17 @@ pub fn WelcomeScreen(props: WelcomeScreenProps) -> Element {
                                                 let on_open     = on_open.clone();
                                                 move |_| {
                                                     let mut cfg = app_cfg.read().clone();
+                                                    // keep the DevOps tab's choices across a relink
+                                                    let prev = cfg.get_link(&dir).cloned().unwrap_or_default();
                                                     let link = config::WorkspaceLink {
                                                         subscription_id: site.subscription.clone(),
                                                         resource_group:  site.resource_group.clone(),
                                                         tenant_id:       None,
                                                         logic_app_name:  Some(site.name.clone()),
                                                         sb_namespace:    None,
-                                                        devops_org:      None,
-                                                        devops_project:  None,
+                                                        devops_org:      prev.devops_org,
+                                                        devops_project:  prev.devops_project,
+                                                        devops_pipeline_id: prev.devops_pipeline_id,
                                                     };
                                                     cfg.workspace_links.insert(dir.clone(), link.clone());
                                                     config::save(&cfg);

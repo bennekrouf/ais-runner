@@ -58,5 +58,6 @@ pub fn try_bootstrap_link(logic_apps_dir: &str) -> Option<config::WorkspaceLink>
         sb_namespace: sb_ns,
         devops_org: None,
         devops_project: None,
+        devops_pipeline_id: None,
     })
 }

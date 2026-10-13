@@ -1,3 +1,4 @@
+use crate::components::build_log_dialog::BuildLogDialog;
 use crate::services::config;
 use ais_core::cli::AzError;
 use ais_core::devops_cli::{self, EnvInfo, Pipeline, PipelineRun, ReleaseArtifact};
@@ -33,6 +34,26 @@ fn fmt_error(e: &AzError) -> String {
     }
 }
 
+/// Turn whatever was typed or pasted into the two boxes into the org URL and
+/// project name `az` expects. A full URL in either box wins over the other box.
+fn resolve_target(org_in: &str, proj_in: &str) -> (String, String) {
+    let mut org = org_in.trim().to_string();
+    let mut project = proj_in.trim().to_string();
+    if let Some((o, p)) = devops_cli::split_devops_url(&org) {
+        org = o;
+        if let Some(p) = p {
+            project = p;
+        }
+    }
+    if project.contains('/') {
+        if let Some((o, Some(p))) = devops_cli::split_devops_url(&project) {
+            org = o;
+            project = p;
+        }
+    }
+    (org, project)
+}
+
 #[derive(Props, Clone, PartialEq)]
 pub struct DevOpsPanelProps {
     pub logic_apps_dir: String,
@@ -53,6 +74,10 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
     let mut project = use_signal(|| saved_proj);
     let mut status = use_signal(|| String::new());
     let mut is_err = use_signal(|| false);
+    // projects in the current org, offered as suggestions in the project box
+    let mut projects: Signal<Vec<String>> = use_signal(Vec::new);
+    // organizations the signed-in user belongs to, suggested in the org box
+    let mut orgs: Signal<Vec<String>> = use_signal(Vec::new);
 
     // ── pipeline list ─────────────────────────────────────────────────────
     let mut pipelines: Signal<Vec<Pipeline>> = use_signal(Vec::new);
@@ -82,6 +107,9 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
 
     // ── filter ────────────────────────────────────────────────────────────
     let mut show_deployed_only: Signal<bool> = use_signal(|| false);
+
+    // ── build logs: (build id, build number) ──────────────────────────────
+    let mut log_build: Signal<Option<(u64, String)>> = use_signal(|| None);
 
     // ── all branches for the selected pipeline's repo ─────────────────────
     let mut repo_branches: Signal<Vec<String>> = use_signal(Vec::new);
@@ -135,15 +163,73 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
         });
     };
 
-    // ── auto-load on mount ────────────────────────────────────────────────
-    use_effect(move || {
-        let o = org.read().trim().to_string();
-        let p = project.read().trim().to_string();
-        if o.is_empty() || p.is_empty() || !pipelines.read().is_empty() {
+    // ── project suggestions for an org ────────────────────────────────────
+    let fetch_projects = move |o: String| {
+        if o.is_empty() {
             return;
         }
-        loading_pipes.set(true);
         spawn(async move {
+            let res = tokio::task::spawn_blocking(move || devops_cli::list_projects(&o)).await;
+            if let Ok(Ok(list)) = res {
+                // only one project to choose from: choose it
+                if list.len() == 1 && project.peek().trim().is_empty() {
+                    project.set(list[0].clone());
+                }
+                projects.set(list);
+            }
+        });
+    };
+
+    // ── on mount: use the saved target, or find one, then load ────────────
+    let dir_detect = dir.clone();
+    use_effect(move || {
+        let (o, p) = resolve_target(&org.peek(), &project.peek());
+        let dir = dir_detect.clone();
+        spawn(async move {
+            let res = tokio::task::spawn_blocking(devops_cli::list_organizations).await;
+            if let Ok(Ok(list)) = res {
+                orgs.set(list);
+            }
+        });
+        spawn(async move {
+            let (o, p) = if !o.is_empty() && !p.is_empty() {
+                (o, p)
+            } else {
+                let found = tokio::task::spawn_blocking(move || devops_cli::detect_target(&dir))
+                    .await
+                    .ok()
+                    .flatten();
+                let found = match found {
+                    Some(t) => Some(t),
+                    // nothing configured: if the account is in a single org, that's the one
+                    None => tokio::task::spawn_blocking(devops_cli::list_organizations)
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .filter(|list| list.len() == 1)
+                        .map(|list| devops_cli::DetectedTarget {
+                            org: list[0].clone(),
+                            project: None,
+                            source: "your Azure DevOps account",
+                        }),
+                };
+                let Some(t) = found else { return };
+                let p = t.project.unwrap_or_default();
+                org.set(t.org.clone());
+                project.set(p.clone());
+                status.set(if p.is_empty() {
+                    format!("Organization taken from {} — pick a project.", t.source)
+                } else {
+                    format!("Organization and project taken from {}.", t.source)
+                });
+                is_err.set(false);
+                (t.org, p)
+            };
+            fetch_projects(o.clone());
+            if p.is_empty() {
+                return;
+            }
+            loading_pipes.set(true);
             let res = tokio::task::spawn_blocking(move || devops_cli::list_pipelines(&o, &p))
                 .await
                 .unwrap_or_else(|e| Err(AzError::Other(e.to_string())));
@@ -159,10 +245,14 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
     let on_load = {
         let dir = dir.clone();
         move |_: MouseEvent| {
-            let o = org.read().trim().to_string();
-            let p = project.read().trim().to_string();
+            let (o, p) = resolve_target(&org.read(), &project.read());
+            org.set(o.clone());
+            project.set(p.clone());
             if o.is_empty() || p.is_empty() {
-                status.set("Enter org URL and project name.".into());
+                status.set(
+                    "Paste any Azure DevOps link from your browser, or enter the organization and project."
+                        .into(),
+                );
                 is_err.set(true);
                 return;
             }
@@ -192,8 +282,24 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
     };
 
     // ── select build pipeline → runs + auto-detect release def ───────────
+    // the workspace's config key, as a signal so the closures below stay Copy
+    let dir_key = use_signal(|| dir.clone());
     let mut select_pipeline = move |id: u64| {
         sel_pipeline.set(Some(id));
+        // remember it for this workspace
+        let key = dir_key.peek().clone();
+        spawn(async move {
+            tokio::task::spawn_blocking(move || {
+                let mut cfg = config::load();
+                let link = cfg.workspace_links.entry(key).or_default();
+                if link.devops_pipeline_id != Some(id) {
+                    link.devops_pipeline_id = Some(id);
+                    config::save(&cfg);
+                }
+            })
+            .await
+            .ok();
+        });
         runs.write().clear();
         def_envs.write().clear();
         cur_art.write().clear();
@@ -295,6 +401,22 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
         });
     };
 
+    // ── once the list arrives, reopen the last pipeline (or the first) ────
+    use_effect(move || {
+        let list = pipelines.read();
+        if list.is_empty() || sel_pipeline.peek().is_some() {
+            return;
+        }
+        let saved = config::load()
+            .get_link(&dir_key.peek())
+            .and_then(|l| l.devops_pipeline_id)
+            // it may be from another project, or deleted since
+            .filter(|id| list.iter().any(|p| p.id == *id));
+        let id = saved.unwrap_or(list[0].id);
+        drop(list);
+        select_pipeline(id);
+    });
+
     // ── derived ───────────────────────────────────────────────────────────
     let all_runs = runs.read().clone();
     let env_names: Vec<String> = def_envs.read().iter().map(|e| e.name.clone()).collect();
@@ -351,13 +473,37 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
                 div { style: "display:flex; gap:8px; align-items:center; flex:1; margin-left:16px",
                     input {
                         class: "settings-cfg-val", style: "flex:2; min-width:160px",
-                        placeholder: "https://dev.azure.com/ORG",
+                        placeholder: "Paste an Azure DevOps link, or https://dev.azure.com/ORG",
+                        list: "devops-orgs",
                         value: "{org}", oninput: move |e| org.set(e.value()),
+                        // a pasted page URL fills both boxes
+                        onchange: move |e| {
+                            let (o, p) = resolve_target(&e.value(), &project.peek());
+                            if o != *org.peek() {
+                                org.set(o.clone());
+                            }
+                            if p != *project.peek() {
+                                project.set(p);
+                            }
+                            projects.write().clear();
+                            fetch_projects(o);
+                        },
+                    }
+                    datalist { id: "devops-orgs",
+                        for url in orgs.read().iter() {
+                            option { value: "{url}" }
+                        }
                     }
                     input {
                         class: "settings-cfg-val", style: "flex:1; min-width:120px",
                         placeholder: "Project name",
+                        list: "devops-projects",
                         value: "{project}", oninput: move |e| project.set(e.value()),
+                    }
+                    datalist { id: "devops-projects",
+                        for name in projects.read().iter() {
+                            option { value: "{name}" }
+                        }
                     }
                     button {
                         class: "btn btn-run btn-small",
@@ -496,7 +642,16 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
                                                         td { class: "dv-td dv-td-build",
                                                             span { class: "dv-build-num", "#{build}" }
                                                         }
-                                                        td { class: "dv-td dv-td-status", "{icon}" }
+                                                        td {
+                                                            class: "dv-td dv-td-status dv-td-logs",
+                                                            title: "Show the steps and logs of this build",
+                                                            onclick: {
+                                                                let build = build.clone();
+                                                                let id = run.id;
+                                                                move |_| log_build.set(Some((id, build.clone())))
+                                                            },
+                                                            "{icon}"
+                                                        }
                                                         td { class: "dv-td dv-td-branch",
                                                             span { title: "{branch}", "{branch}" }
                                                         }
@@ -692,6 +847,18 @@ pub fn DevOpsPanel(props: DevOpsPanelProps) -> Element {
                         }
                     }
                 }
+            }
+        }
+
+        // ── Build logs ────────────────────────────────────────────────────
+        if let Some((id, name)) = log_build.read().clone() {
+            BuildLogDialog {
+                key: "{id}",
+                org: org.read().trim().to_string(),
+                project: project.read().trim().to_string(),
+                build_id: id,
+                build_name: name,
+                on_close: move |_| log_build.set(None),
             }
         }
 
