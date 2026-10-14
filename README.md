@@ -181,6 +181,66 @@ workspace contains, and both are a single click. What a `run_process` step does
 is at least stated in plain sight — in a reviewable JSON file, and echoed into
 the run log as `started '<command>'`.
 
+## Using AIS Runner from Claude (MCP)
+
+AIS Runner ships an [MCP](https://modelcontextprotocol.io) server, `ais-mcp`,
+next to the app. Connect it to Claude Desktop, Claude Code or any other MCP
+client and you can ask about your project in chat: *why did the last run of
+this workflow fail?*, *which workflows write to this queue?*, *why did last
+night's build break?*
+
+It only reads. It never starts or stops the local stack, triggers a workflow,
+sends a message or changes a file. Start Azurite and **▶ func** from the app
+as usual; the run tools need the runtime up and say so when it isn't.
+
+| Tool | What it returns |
+|------|-----------------|
+| `list_projects` | Projects recently opened in the app |
+| `list_workflows` | Workflows with their triggers, and their health when func is running |
+| `describe_workflow` | What a workflow touches (queues, blobs, HTTP hosts, maps, SQL) and whether it can run locally |
+| `check_environment` | Installed tools, and whether func, Azurite and the Service Bus emulator are up |
+| `list_runs` / `get_run` / `get_action_io` | Local runs, their actions and errors, the action that broke a failed run, and an action's inputs and outputs |
+| `list_scenarios` | Saved test scenarios and their steps |
+| `list_service_bus_queues` | Queues the workflows read and write, and which workflows use each |
+| `devops_list_pipelines` / `devops_list_runs` / `devops_build_log` | Azure DevOps pipelines, their builds, and a build's steps and failed-step logs |
+
+Tools default to the project last opened in the app; every tool also takes a
+`project` folder. Keys, passwords and signatures in connection strings and URLs
+are masked before anything is returned. The DevOps tools use your `az login`
+and the organization and project from the DevOps tab.
+
+**Where it is installed**
+
+| OS | Path |
+|----|------|
+| macOS | `/Applications/AIS Runner.app/Contents/MacOS/ais-mcp` |
+| Windows | `%LOCALAPPDATA%\Programs\AIS Runner\ais-mcp.exe` (or under `Program Files` for an all-users install) |
+| Linux | `ais-mcp` in the folder you extracted the tarball to |
+
+**Claude Code**
+
+```bash
+claude mcp add ais-runner -- "/Applications/AIS Runner.app/Contents/MacOS/ais-mcp"
+```
+
+**Claude Desktop** — *Settings → Developer → Edit Config*, then add to
+`claude_desktop_config.json` and restart Claude:
+
+```json
+{
+  "mcpServers": {
+    "ais-runner": {
+      "command": "/Applications/AIS Runner.app/Contents/MacOS/ais-mcp"
+    }
+  }
+}
+```
+
+Other MCP clients take the same command. Add `"args": ["--project",
+"/path/to/project"]` to pin a project instead of following the app.
+
+---
+
 ## Service Bus Emulator — known pitfalls
 
 `Config.json` is generated for you, and a hand-edited or otherwise stale copy

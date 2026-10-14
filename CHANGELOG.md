@@ -15,6 +15,19 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Added
+
+- AIS Runner now comes with an MCP server, so you can connect it to Claude
+  Desktop, Claude Code or another MCP client and ask about your project in
+  chat: which workflows read or write a queue, whether a workflow can run
+  locally, why a local run failed and what an action received, your saved
+  test scenarios, and your Azure DevOps builds with the log of the step that
+  broke. It only reads — it never starts anything, triggers a workflow or
+  edits a file — and keys and passwords in connection strings are masked. The
+  README explains how to connect it.
+
 ## [0.5.64] - 2026-10-13
 
 ### Added

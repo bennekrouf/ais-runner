@@ -62,7 +62,13 @@ mock, it never sees the mock's URLs.
   (**▶ Run**, **▶▶ Run all**, **▶▶ Run group**). See
   `references/scenarios.md` for the file format and the `ais-test` CLI.
 - **DevOps**: Azure DevOps build pipelines and a grid of which build is deployed
-  to which environment, via the `az pipelines` CLI.
+  to which environment, via the `az pipelines` CLI. Clicking a run's status
+  icon shows its steps and logs.
+- **MCP server** (`ais-mcp`, installed next to the app): read-only tools for
+  Claude and other MCP clients — workflows, local runs and their errors,
+  scenarios, queues, DevOps builds and logs. If those tools are available to
+  you, use them instead of asking the user to copy text out of the app. The
+  README's "Using AIS Runner from Claude (MCP)" section has the setup.
 - **Logs** (bottom): **Console** (func or Java output, noise filtered),
   **Azurite**, **Service Bus**.
 - **⚠ N unset** chip in the toolbar: settings AIS Runner has no local value for.
