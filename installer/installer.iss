@@ -61,6 +61,8 @@ Name: "desktopicon"; \
 
 [Files]
 Source: "..\target\release\ais-runner.exe";     DestDir: "{app}"; Flags: ignoreversion
+; MCP server, launched by Claude and other MCP clients
+Source: "..\target\release\ais-mcp.exe";        DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\WebView2Loader.dll";  DestDir: "{app}"; Flags: ignoreversion
 Source: "..\scripts\setup-windows.ps1";          DestDir: "{app}"; Flags: ignoreversion
 ; Ship the .ico alongside the .exe so shortcuts can point at it explicitly —

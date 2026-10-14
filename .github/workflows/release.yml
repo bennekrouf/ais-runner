@@ -194,12 +194,15 @@ jobs:
         if: env.HAVE_MAC_SECRETS == 'true'
         run: |
           set -euo pipefail
-          BIN=target/aarch64-apple-darwin/release/ais-runner
-          codesign --force --options runtime --timestamp \
-            --entitlements .github/macos-entitlements.plist \
-            --sign "$SIGNING_IDENTITY" \
-            "$BIN"
-          codesign --verify --strict --verbose=2 "$BIN"
+          # ais-mcp ships inside the .app next to the GUI and is signed the same way.
+          for BIN in target/aarch64-apple-darwin/release/ais-runner \
+                     target/aarch64-apple-darwin/release/ais-mcp; do
+            codesign --force --options runtime --timestamp \
+              --entitlements .github/macos-entitlements.plist \
+              --sign "$SIGNING_IDENTITY" \
+              "$BIN"
+            codesign --verify --strict --verbose=2 "$BIN"
+          done
 
       # ── Generate icon.icns from assets/icon.png (1024x1024 source) ─────────
       # No-op if the PNG is absent; bundle just ships icon-less in that case.
@@ -240,6 +243,9 @@ jobs:
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp "$BIN" "$APP/Contents/MacOS/ais-runner"
           chmod +x "$APP/Contents/MacOS/ais-runner"
+          # The MCP server, for Claude and other MCP clients to launch.
+          cp target/aarch64-apple-darwin/release/ais-mcp "$APP/Contents/MacOS/ais-mcp"
+          chmod +x "$APP/Contents/MacOS/ais-mcp"
 
           ICON_KEY=""
           if [ -f dist/icon.icns ]; then
@@ -543,6 +549,7 @@ jobs:
           DIST="dist/$NAME"
           mkdir -p "$DIST"
           cp target/x86_64-unknown-linux-gnu/release/ais-runner "$DIST/"
+          cp target/x86_64-unknown-linux-gnu/release/ais-mcp "$DIST/"
           cp scripts/setup-linux.sh "$DIST/"
           cp README.md "$DIST/"
           chmod +x "$DIST/setup-linux.sh"
