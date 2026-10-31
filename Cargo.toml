@@ -74,3 +74,27 @@ tempfile = "3"
 [features]
 default = []
 bundle-azurite = []
+
+# ── Debug build size ─────────────────────────────────────────────────────────
+# `rsx!` expands into deeply nested generic component trees, so with the stock
+# `debug = true` the DWARF hung off every instantiation grew
+# libais_runner.rlib to 379 MB — nearly 5× the largest dependency — out of
+# 2.5 MB of source. One clean `cargo build` cost 3.8 GB, 4.7 GB with
+# `--all-targets`. Cargo never garbage-collects target/, so every Cargo.lock
+# change and every toolchain left a further generation behind and this
+# checkout reached 300 GB.
+#
+# Line tables for our own crates keep file:line in panic backtraces, which is
+# the part we actually read; the 364 dependencies get no debuginfo at all.
+# Measured on a clean build: 3.8 GB -> 2.6 GB, rlib 379 MB -> 241 MB. Use
+# `debug = 2` here temporarily when you need a real debugger over dependency
+# frames.
+#
+# rust-toolchain.toml keeps new toolchain generations from appearing. To drop
+# the ones already on disk, run `cargo sweep --time 15`; `--installed` only
+# reclaims anything once an old toolchain has actually been uninstalled.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

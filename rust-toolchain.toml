@@ -1,0 +1,15 @@
+# Pin the toolchain so every build of this project uses one compiler.
+#
+# Cargo keys every artifact by rustc version and never garbage-collects
+# target/, so each extra toolchain that builds here leaves a whole ~3 GB
+# generation behind in target/debug/deps that nothing ever removes. This
+# checkout had accumulated four (1.97.1, 1.98.1, 1.99, nightly).
+#
+# `stable` matches dtolnay/rust-toolchain@stable in .github/workflows/ci.yml
+# and release.yml; the components are the ones those workflows install.
+# Cross-target builds still pass --target explicitly, so the targets are not
+# listed here — that keeps `rustup` from installing Linux and Windows std for
+# everyone who only builds the Mac app.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
