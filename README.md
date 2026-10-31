@@ -209,6 +209,9 @@ Tools default to the project last opened in the app; every tool also takes a
 are masked before anything is returned. The DevOps tools use your `az login`
 and the organization and project from the DevOps tab.
 
+The **MCP** button in the app's header shows both snippets below, already
+pointing at the `ais-mcp` installed next to it, with a Copy button.
+
 **Where it is installed**
 
 | OS | Path |

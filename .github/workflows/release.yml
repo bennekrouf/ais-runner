@@ -357,6 +357,17 @@ jobs:
           MAYORANA_TELEMETRY_URL: ${{ vars.MAYORANA_TELEMETRY_URL }}
         run: cargo build --release
 
+      # The app must start on a PC without the Visual C++ Redistributable, so the
+      # .exe may not import VCRUNTIME140*.dll (see .cargo/config.toml).
+      - name: Check static C runtime
+        shell: pwsh
+        run: |
+          # A script's exit code only fails the step if it is the last one, so stop at the first.
+          foreach ($exe in 'ais-runner.exe', 'ais-mcp.exe') {
+            ./scripts/check-windows-crt.ps1 "target\release\$exe"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+
       - name: Copy WebView2Loader.dll
         shell: pwsh
         run: |

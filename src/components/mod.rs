@@ -9,6 +9,7 @@ pub mod eventgrid_panel;
 pub mod func_panel;
 pub mod graph_panel;
 pub mod log_panel;
+pub mod mcp_dialog;
 pub mod run_detail;
 pub mod run_dialog;
 pub mod run_gate_dialog;

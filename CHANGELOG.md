@@ -15,6 +15,15 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Added
+
+- An **MCP** button in the header shows how to connect AIS Runner to Claude:
+  the text to paste into Claude Desktop and the one line to run for Claude
+  Code, each with a Copy button and already pointing at the `ais-mcp`
+  installed next to the app, so there is no path to look up.
+
 ## [0.5.65] - 2026-10-14
 
 ### Added

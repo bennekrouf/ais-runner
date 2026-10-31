@@ -4646,3 +4646,29 @@ button.update-banner-link {
 .bl-section { color: var(--blue); font-weight: 600; }
 .bl-command { color: var(--blue); }
 .bl-debug { color: var(--text3); }
+
+/* ── "Use AIS Runner from Claude" dialog ─────────────────────────────── */
+.mcp-dialog {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 101;
+    width: 620px; max-width: 92vw; max-height: calc(100vh - 48px); overflow-y: auto;
+    background: var(--bg1); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 20px 60px #0008;
+}
+.mcp-dialog-header {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+    padding: 14px 16px 10px; border-bottom: 1px solid var(--border);
+}
+.mcp-dialog-header h3 { font-size: 14px; color: var(--text1); margin-bottom: 3px; }
+.mcp-dialog-body { padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 6px; }
+.mcp-dialog-body .dialog-label { margin-top: 8px; }
+.mcp-snippet-wrap { position: relative; }
+.mcp-snippet {
+    margin: 0; padding: 10px 76px 10px 12px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg0); color: var(--text1);
+    font: 11.5px var(--mono); line-height: 1.5;
+    white-space: pre-wrap; word-break: break-all; user-select: text; -webkit-user-select: text;
+}
+.mcp-copy { position: absolute; top: 6px; right: 6px; }
+.mcp-path, .mcp-note code { word-break: break-all; }
+.mcp-note { margin-top: 8px; padding: 9px 11px; border-radius: 6px; background: var(--bg2); line-height: 1.6; }
+.mcp-missing { padding: 9px 11px; border-radius: 6px; border: 1px solid var(--warn); color: var(--warn); font-size: 12px; }

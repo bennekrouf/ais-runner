@@ -10,6 +10,7 @@ use crate::components::{
     func_panel::FuncPanel,
     graph_panel::GraphPanel,
     log_panel::{LogLevel, LogLine, LogPanel},
+    mcp_dialog::McpDialog,
     run_detail::RunDetail,
     run_dialog::RunDialog,
     run_gate_dialog::RunGateDialog,
@@ -112,6 +113,8 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let active_tab = ctx.active_tab;
     let mut run_dialog = ctx.run_dialog;
     let mut run_gate = ctx.run_gate;
+    // The "Use AIS Runner from Claude" dialog.
+    let mut mcp_open = use_signal(|| false);
     let mut traced_wfs = ctx.traced_wfs;
     let mut cleared_wfs = ctx.cleared_wfs;
     let mut last_ran = ctx.last_ran;
@@ -918,6 +921,16 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     }
                 }
 
+                // Claude: how to connect the read-only MCP server shipped with the app.
+                div { class: "view-switch",
+                    button {
+                        class: "view-btn",
+                        title: "Use AIS Runner from Claude Desktop or Claude Code",
+                        onclick: move |_| mcp_open.set(true),
+                        "MCP"
+                    }
+                }
+
                 // ── panel toggles: Connections + Azure ────────────────────────
                 div { class: "toolbar-panels",
                     {connections_button(&dir, sql_wfs, msi_wfs, sql_conns, sb_namespace, sb_queues,
@@ -1368,6 +1381,10 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         )
                     },
                 }
+            }
+
+            if mcp_open() {
+                McpDialog { on_close: move |_| mcp_open.set(false) }
             }
 
             // ── Local-readiness consent gate ──────────────────────────────
