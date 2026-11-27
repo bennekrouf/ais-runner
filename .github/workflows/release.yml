@@ -112,7 +112,7 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99
         with:
           targets: aarch64-apple-darwin
 
@@ -327,7 +327,7 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -524,7 +524,7 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99
 
       - name: Cache cargo
         uses: actions/cache@v4

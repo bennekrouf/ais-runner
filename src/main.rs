@@ -1,6 +1,8 @@
 // The module tree lives in `src/lib.rs` so the headless runner
 // (`src/bin/ais-test.rs`) shares one copy of the service layer.
-use ais_runner::{notice, screens, services, telemetry, update_check, utils};
+use ais_runner::{kit, notice, screens, services, telemetry, utils};
+use desktop_kit::self_update::{self, Stage};
+use desktop_kit::update_check::UpdateInfo;
 
 use dioxus::desktop::LogicalSize;
 use dioxus::prelude::*;
@@ -103,6 +105,9 @@ fn refresh_unix_path() {
 }
 
 fn main() {
+    // Names the app to desktop-kit before its update check can run.
+    kit::init();
+
     // Refresh PATH from the Windows registry so tools installed by the setup
     // script (Node, Azure CLI, func, azurite) are visible when we probe them.
     #[cfg(windows)]
@@ -509,19 +514,57 @@ fn AppWindow(initial: Option<String>) -> Element {
         },
     );
 
-    let mut update_info = use_signal(|| Option::<update_check::UpdateInfo>::None);
+    let mut update_info = use_signal(|| Option::<UpdateInfo>::None);
     let mut update_dismissed = use_signal(|| false);
+    // Whether this copy can put the new build in place itself (an installed
+    // app, not a `cargo` build), and how far an install has got. A failure
+    // keeps the banner with the reason and the button to try again. Starts
+    // with what the last attempt left, so an app that quit to update and came
+    // back on the old version says why.
+    let mut update_installable = use_signal(|| false);
+    let mut update_stage = use_signal(|| Option::<Stage>::None);
+    let mut update_failed = use_signal(self_update::last_failure);
     use_coroutine(
         move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            if let Some(info) = update_check::check().await {
+            if let Some(info) = desktop_kit::update_check::check().await {
                 telemetry::record(telemetry::Event::UpdateOffered {
                     to: info.latest_version.clone(),
                 });
+                update_installable.set(self_update::installable(&info));
                 update_info.set(Some(info));
             }
         },
     );
+    // Downloads, checks the digest and signature, and prepares the swap off
+    // the UI thread, showing how far it got, then quits: what desktop-kit
+    // started beside the app puts the new version in place and opens it.
+    let mut install_update = move |info: UpdateInfo| {
+        telemetry::record(telemetry::Event::UpdateClicked {
+            to: info.latest_version.clone(),
+        });
+        update_failed.set(None);
+        update_stage.set(Some(Stage::Downloading(0)));
+        spawn(async move {
+            let (tx, rx) = tokio::sync::watch::channel(Stage::Downloading(0));
+            let job = tokio::task::spawn_blocking(move || {
+                self_update::install(&info, &|stage| {
+                    let _ = tx.send(stage);
+                })
+            });
+            while !job.is_finished() {
+                let stage = rx.borrow().clone();
+                update_stage.set(Some(stage));
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            match job.await {
+                Ok(Ok(())) => std::process::exit(0),
+                Ok(Err(e)) => update_failed.set(Some(e)),
+                Err(e) => update_failed.set(Some(e.to_string())),
+            }
+            update_stage.set(None);
+        });
+    };
 
     // ── Anonymous usage statistics ─────────────────────────────────────────
     // On by default, but only once the person has been told: `start` reads the
@@ -551,24 +594,70 @@ fn AppWindow(initial: Option<String>) -> Element {
         if let (Some(info), false) = (update_info.read().clone(), *update_dismissed.read()) {
             div { class: "update-banner",
                 span { class: "update-banner-text",
-                    "AIS Runner "
-                    strong { "{info.latest_version}" }
-                    " is available (you have {env!(\"CARGO_PKG_VERSION\")})."
+                    match (update_stage(), update_failed()) {
+                        (Some(Stage::Downloading(bytes)), _) => rsx! {
+                            "Downloading AIS Runner "
+                            strong { "{info.latest_version}" }
+                            "… {bytes as f64 / 1_000_000.0:.1} MB"
+                        },
+                        (Some(Stage::Checking), _) => rsx! {
+                            "Checking the download of AIS Runner "
+                            strong { "{info.latest_version}" }
+                            "…"
+                        },
+                        (Some(Stage::Installing), _) => rsx! {
+                            "Installing AIS Runner "
+                            strong { "{info.latest_version}" }
+                            ": it restarts in a moment."
+                        },
+                        (None, Some(e)) => rsx! {
+                            "Couldn't install AIS Runner "
+                            strong { "{info.latest_version}" }
+                            ": {e}."
+                        },
+                        (None, None) => rsx! {
+                            "AIS Runner "
+                            strong { "{info.latest_version}" }
+                            " is available (you have {env!(\"CARGO_PKG_VERSION\")})."
+                        },
+                    }
                 }
-                a {
-                    class: "update-banner-link",
-                    href: "{info.release_url}",
-                    target: "_blank",
-                    onclick: {
-                        let to = info.latest_version.clone();
-                        move |_| telemetry::record(telemetry::Event::UpdateClicked { to: to.clone() })
-                    },
-                    "Download"
-                }
-                button {
-                    class: "update-banner-dismiss",
-                    onclick: move |_| update_dismissed.set(true),
-                    "×"
+                if update_stage().is_none() {
+                    if desktop_kit::policy::get().disable_self_update {
+                        span { class: "update-banner-text", "Your organization installs updates." }
+                    } else if update_installable() {
+                        button {
+                            class: "update-banner-link",
+                            title: "Download {info.latest_version}, check it, install it in place of this version and restart AIS Runner",
+                            onclick: {
+                                let info = info.clone();
+                                move |_| install_update(info.clone())
+                            },
+                            "Install & restart"
+                        }
+                    } else {
+                        // A button, not a link: the address comes from a
+                        // remote file and opens in the browser, never in the
+                        // app's own webview.
+                        button {
+                            class: "update-banner-link",
+                            onclick: {
+                                let info = info.clone();
+                                move |_| {
+                                    telemetry::record(telemetry::Event::UpdateClicked {
+                                        to: info.latest_version.clone(),
+                                    });
+                                    desktop_kit::browser::open(&info.download_url);
+                                }
+                            },
+                            "Download"
+                        }
+                    }
+                    button {
+                        class: "update-banner-dismiss",
+                        onclick: move |_| update_dismissed.set(true),
+                        "×"
+                    }
                 }
             }
         }

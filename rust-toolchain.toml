@@ -1,15 +1,16 @@
-# Pin the toolchain so every build of this project uses one compiler.
+# The Rust version for every build of AIS Runner: local, CI and releases. rustup
+# installs it on first use.
 #
-# Cargo keys every artifact by rustc version and never garbage-collects
-# target/, so each extra toolchain that builds here leaves a whole ~3 GB
-# generation behind in target/debug/deps that nothing ever removes. This
-# checkout had accumulated four (1.97.1, 1.98.1, 1.99, nightly).
+# A number, not `stable`. Floating on stable is what broke the Windows release
+# when Rust 1.100 came out: the build ran on a compiler nobody had tried, and
+# the step that picks WebView2Loader.dll out of the build output found nothing.
+# Each stable release also brings new clippy lints, which CI denies.
 #
-# `stable` matches dtolnay/rust-toolchain@stable in .github/workflows/ci.yml
-# and release.yml; the components are the ones those workflows install.
-# Cross-target builds still pass --target explicitly, so the targets are not
-# listed here — that keeps `rustup` from installing Linux and Windows std for
-# everyone who only builds the Mac app.
+# The same version as every mayorana desktop app, and as the
+# dtolnay/rust-toolchain@1.99 steps in .github/workflows. Bump them together,
+# on purpose, and fix whatever the new compiler and clippy report in the same
+# change. Cross-target builds pass --target explicitly, so the targets are not
+# listed here.
 [toolchain]
-channel = "stable"
+channel = "1.99"
 components = ["rustfmt", "clippy"]
