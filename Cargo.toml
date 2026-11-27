@@ -18,6 +18,10 @@ default-run = "ais-runner"
 
 [dependencies]
 dioxus = { version = "0.6", features = ["desktop"] }
+# What every mayorana desktop app shares. Only its update check and in-place
+# install (self_update) are used: the `ui` feature needs Dioxus 0.7. Pinned to
+# a commit so a change to the kit lands here only when this line moves.
+desktop-kit = { git = "https://github.com/bennekrouf/desktop-kit.git", rev = "d0aee9c1a75b347ffdcc53160f961c8e7cb4cab7" }
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 serde = { version = "1", features = ["derive"] }

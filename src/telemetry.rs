@@ -255,7 +255,7 @@ fn flag_set(value: Option<&str>) -> bool {
 fn env_blocks() -> bool {
     OPT_OUT_VARS.iter().any(|name| {
         let value = std::env::var(name).ok().or_else(|| login_env(name));
-        // DISABLE_UPDATE_CHECK is honoured by mere presence in update_check.rs,
+        // DISABLE_UPDATE_CHECK is honoured by mere presence in the update check,
         // so it is here too; the others follow the usual 0/false convention.
         if *name == "DISABLE_UPDATE_CHECK" {
             value.is_some()

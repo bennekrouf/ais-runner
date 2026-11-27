@@ -157,7 +157,9 @@ begin
            'Your settings and data will be preserved.' + NL + NL +
            'Continue?';
 
-  if MsgBox(Msg, mbConfirmation, MB_YESNO) = IDNO then
+  // A silent install (the app's own "Install & restart") was already told to
+  // go ahead, and nobody is there to answer.
+  if (not WizardSilent) and (MsgBox(Msg, mbConfirmation, MB_YESNO) = IDNO) then
   begin
     Result := False;
     Exit;

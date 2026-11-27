@@ -15,6 +15,17 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Added
+
+- The update banner now offers **Install & restart**. AIS Runner downloads
+  the new version, checks it against the published digest and signature,
+  puts it in place of the one you are running and opens it again. Nothing is
+  left in Downloads and there is no installer to click through. A copy that
+  can't replace itself still gets the **Download** button, and if an install
+  fails, the banner says why and lets you try again.
+
 ## [0.5.66] - 2026-10-31
 
 ### Added
